@@ -1,6 +1,5 @@
 package com.sujan.pipe.ui.ascii
 
-import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,18 +24,14 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -45,7 +40,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
 
 @Composable
 fun AsciiButton(
@@ -82,9 +76,6 @@ fun AsciiButton(
     }
 }
 
-/**
- * Unix pipe keyword pill `[|yt]` or `[|g*]` with 48dp touch target and inverted selection.
- */
 @Composable
 fun AsciiPipePill(
     keyword: String,
@@ -235,9 +226,6 @@ fun AsciiBox(
     }
 }
 
-/**
- * Single-screen top path bar: `~/pipe` on the left, compact `[engines]` `[set]` or `[< back]` on the right.
- */
 @Composable
 fun AsciiTopHeader(
     path: String,

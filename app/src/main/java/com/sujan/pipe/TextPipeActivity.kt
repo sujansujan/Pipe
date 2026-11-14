@@ -21,8 +21,11 @@ class TextPipeActivity : Activity() {
         }?.trim().orEmpty()
 
         val repo = PipeRepository(applicationContext)
-        if (incomingText.isNotEmpty() && repo.loadExternalTextMode() == ExternalTextMode.DIRECT_PIPE) {
+        val mode = repo.loadExternalTextMode()
+
+        if (incomingText.isNotEmpty() && mode == ExternalTextMode.DIRECT_PIPE) {
             val res = QueryRouter.resolve(incomingText, repo.loadEngines())
+            repo.recordResolutionInHistory(incomingText, res)
             val launched = try {
                 startActivity(
                     Intent(Intent.ACTION_VIEW, Uri.parse(res.targetUrl)).apply {
@@ -38,8 +41,14 @@ class TextPipeActivity : Activity() {
             }
         }
 
+        val targetActivity = if (mode == ExternalTextMode.OPEN_PROMPT) {
+            MainActivity::class.java
+        } else {
+            PipeOverlayActivity::class.java
+        }
+
         startActivity(
-            Intent(this, MainActivity::class.java).apply {
+            Intent(this, targetActivity).apply {
                 putExtra(MainActivity.EXTRA_PREFILL_QUERY, incomingText)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             }

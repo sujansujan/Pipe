@@ -48,7 +48,6 @@ data class AsciiColors(
 
 data class AsciiPalette(val name: String, val dark: AsciiColors, val light: AsciiColors)
 
-/** Default Unix terminal phosphor palette (`Moss` from `user:ascii-app`). */
 val Moss = AsciiPalette(
     name = "moss",
     dark = AsciiColors(
@@ -63,7 +62,6 @@ val Moss = AsciiPalette(
     ),
 )
 
-/** WCAG-verified Dracula (Dark) + Alucard (Light) pair matching Plain Text Sports apps. */
 val DraculaAlucard = AsciiPalette(
     name = "dracula",
     dark = AsciiColors(
@@ -147,6 +145,7 @@ enum class ThemeMode { System, Light, Dark }
 fun PipeTheme(
     mode: ThemeMode = ThemeMode.System,
     palette: AsciiPalette = Moss,
+    configureSystemBars: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val dark = when (mode) {
@@ -168,7 +167,7 @@ fun PipeTheme(
         shapes = AsciiSquareShapes,
     ) {
         val view = LocalView.current
-        if (!view.isInEditMode) {
+        if (configureSystemBars && !view.isInEditMode) {
             SideEffect {
                 (view.context as? Activity)?.window?.let { w ->
                     WindowCompat.getInsetsController(w, view).apply {

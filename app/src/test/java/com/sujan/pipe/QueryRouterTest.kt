@@ -109,4 +109,17 @@ class QueryRouterTest {
         assertEquals(engines.map { it.keyword }, roundTripped.map { it.keyword })
         assertEquals(1, roundTripped.count { it.isDefault })
     }
+
+    @Test
+    fun `extractQueryFromSearchUri decodes custom browser search engine URLs`() {
+        val q1 = QueryRouter.extractQueryFromSearchUri("pipe://search?q=yt+lofi+music")
+        assertEquals("yt lofi music", q1)
+        val res1 = QueryRouter.resolve(q1!!, engines)
+        assertEquals("https://www.youtube.com/results?search_query=lofi+music", res1.targetUrl)
+
+        val q2 = QueryRouter.extractQueryFromSearchUri("https://pipe.local/search?q=gh%20compose%20ui")
+        assertEquals("gh compose ui", q2)
+        val res2 = QueryRouter.resolve(q2!!, engines)
+        assertEquals("https://github.com/search?q=compose+ui", res2.targetUrl)
+    }
 }

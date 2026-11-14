@@ -1,10 +1,15 @@
 package com.sujan.pipe
 
+import android.app.PendingIntent
 import android.app.SearchManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
+import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -101,6 +106,9 @@ class MainActivity : ComponentActivity() {
                 onExportJsonString = viewModel::exportJsonString,
                 onImportJsonString = viewModel::importJsonString,
                 onSetJsonStatus = viewModel::setJsonStatusMessage,
+                onLaunchOverlayPreview = ::launchOverlayActivity,
+                onPinOverlayShortcut = ::requestPinOverlayShortcut,
+                onOpenDefaultAppsSettings = ::openDefaultAppsSettings,
                 onUndo = viewModel::performUndo,
                 onDismissUndo = viewModel::dismissUndo,
             )
@@ -118,6 +126,46 @@ class MainActivity : ComponentActivity() {
         val prefill = intent.getStringExtra(EXTRA_PREFILL_QUERY) ?: intent.getStringExtra(SearchManager.QUERY)
         if (!prefill.isNullOrEmpty()) {
             viewModel.setSearchTextFromExternal(prefill)
+        }
+    }
+
+    private fun launchOverlayActivity() {
+        startActivity(
+            Intent(this, PipeOverlayActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+        )
+    }
+
+    private fun requestPinOverlayShortcut() {
+        val sm = getSystemService(ShortcutManager::class.java) ?: return
+        if (!sm.isRequestPinShortcutSupported) {
+            viewModel.setJsonStatusMessage("! launcher does not support pinning; use UbikiTouch -> Shortcuts -> pipe overlay")
+            return
+        }
+        val overlayIntent = Intent(this, PipeOverlayActivity::class.java).apply {
+            action = Intent.ACTION_MAIN
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val info = ShortcutInfo.Builder(this, "pipe_overlay_pinned")
+            .setShortLabel(getString(R.string.overlay_shortcut_label))
+            .setLongLabel(getString(R.string.overlay_shortcut_long))
+            .setIcon(Icon.createWithResource(this, R.mipmap.ic_launcher))
+            .setIntent(overlayIntent)
+            .build()
+        val callback = PendingIntent.getBroadcast(
+            this, 0, sm.createShortcutResultIntent(info),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        sm.requestPinShortcut(info, callback.intentSender)
+        viewModel.setJsonStatusMessage("ok: requested launcher shortcut pin for pipe overlay")
+    }
+
+    private fun openDefaultAppsSettings() {
+        runCatching {
+            startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
+        }.onFailure {
+            runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
         }
     }
 

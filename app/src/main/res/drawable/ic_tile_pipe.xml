@@ -4,7 +4,6 @@
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-    <!-- Unix pipe | multiplexer silhouette -->
     <path
         android:fillColor="#FFFFFF"
         android:pathData="M11,2H13V22H11V2ZM2,10H9V14H2V10ZM15,4H22V7H15V4ZM15,10.5H22V13.5H15V10.5ZM15,17H22V20H15V17Z" />

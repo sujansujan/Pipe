@@ -4,6 +4,7 @@ import com.sujan.pipe.model.DefaultEngines
 import com.sujan.pipe.model.EngineColorRole
 import com.sujan.pipe.model.SearchEngine
 import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
@@ -15,7 +16,6 @@ data class RouteResolution(
     val targetUrl: String,
     val isHomeLaunch: Boolean,
 ) {
-    /** Formats the resolution as a Unix pipeline preview: `"lofi music" | yt -> youtube` */
     val pipelinePreview: String
         get() = when {
             isHomeLaunch -> "echo '' | ${engine.keyword} -> ${engine.homeUrl}"
@@ -78,6 +78,31 @@ object QueryRouter {
                 targetUrl = buildSearchUrl(defaultEngine.urlTemplate, normalizedFullQuery),
                 isHomeLaunch = false,
             )
+        }
+    }
+
+    /**
+     * Extracts a decoded search query from a custom default-search URI such as
+     * `pipe://search?q=yt+lofi+music` or `https://pipe.local/search?q=gh%20compose`.
+     */
+    fun extractQueryFromSearchUri(rawUri: String?): String? {
+        if (rawUri.isNullOrBlank()) return null
+        return try {
+            val uri = URI(rawUri.trim())
+            val rawQuery = uri.rawQuery ?: return null
+            for (pair in rawQuery.split('&')) {
+                val eq = pair.indexOf('=')
+                if (eq > 0) {
+                    val key = pair.substring(0, eq).lowercase()
+                    val value = pair.substring(eq + 1)
+                    if (key == "q" || key == "query" || key == "s" || key == "text") {
+                        return URLDecoder.decode(value, StandardCharsets.UTF_8.name()).trim()
+                    }
+                }
+            }
+            null
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -195,10 +220,6 @@ object QueryRouter {
         return parsed.mapIndexed { idx, eng -> eng.copy(isDefault = idx == defaultIdx) }
     }
 
-    /**
-     * Extracts top-level `{ ... }` JSON object substrings while ignoring braces `{` `}`
-     * that appear inside quoted string values such as `"{query}"`.
-     */
     private fun extractTopLevelJsonObjects(jsonArray: String): List<String> {
         val objects = mutableListOf<String>()
         var inString = false

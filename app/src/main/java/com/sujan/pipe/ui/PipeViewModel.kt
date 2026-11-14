@@ -57,7 +57,7 @@ data class PipeUiState(
     val themeMode: ThemeMode = ThemeMode.System,
     val paletteChoice: PaletteChoice = PaletteChoice.MOSS,
     val historyEnabled: Boolean = true,
-    val externalTextMode: ExternalTextMode = ExternalTextMode.OPEN_PROMPT,
+    val externalTextMode: ExternalTextMode = ExternalTextMode.OPEN_OVERLAY,
     val engineForm: EngineFormState = EngineFormState(),
     val undoBanner: UndoBannerState? = null,
     val launchError: String? = null,
@@ -134,23 +134,8 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             _uiState.update { it.copy(launchError = "! could not pipe to ${resolution.targetUrl}") }
             return
         }
-        if (state.historyEnabled && raw.trim().isNotEmpty()) {
-            val entry = SearchHistoryEntry(
-                id = System.currentTimeMillis(),
-                rawInput = raw.trim(),
-                engineName = resolution.engine.name,
-                engineKeyword = resolution.engine.keyword,
-                queryText = if (resolution.isHomeLaunch) "(home)" else resolution.query,
-                resolvedUrl = resolution.targetUrl,
-                timestampEpochMs = System.currentTimeMillis(),
-            )
-            val deduped = state.history.filterNot { it.rawInput.equals(entry.rawInput, ignoreCase = true) }
-            val updated = listOf(entry) + deduped.take(49)
-            repository.saveHistory(updated)
-            _uiState.update { it.copy(history = updated, launchError = null) }
-        } else {
-            _uiState.update { it.copy(launchError = null) }
-        }
+        repository.recordResolutionInHistory(raw, resolution)
+        _uiState.update { it.copy(history = repository.loadHistory(), launchError = null) }
     }
 
     fun deleteHistoryItem(entry: SearchHistoryEntry) {

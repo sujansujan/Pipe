@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -41,7 +40,6 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
@@ -51,7 +49,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.sujan.pipe.data.ExternalTextMode
-import com.sujan.pipe.model.DefaultEngines
 import com.sujan.pipe.model.EngineColorRole
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
@@ -110,6 +107,9 @@ fun PipeApp(
     onExportJsonString: () -> String,
     onImportJsonString: (String) -> String?,
     onSetJsonStatus: (String) -> Unit,
+    onLaunchOverlayPreview: () -> Unit,
+    onPinOverlayShortcut: () -> Unit,
+    onOpenDefaultAppsSettings: () -> Unit,
     onUndo: () -> Unit,
     onDismissUndo: () -> Unit,
 ) {
@@ -134,6 +134,7 @@ fun PipeApp(
                         onFillHistory = onFillHistory,
                         onDeleteHistory = onDeleteHistory,
                         onClearHistory = onClearHistory,
+                        onLaunchOverlay = onLaunchOverlayPreview,
                     )
                     PipeView.ENGINES -> PipeEnginesScreen(
                         engines = state.engines,
@@ -169,6 +170,9 @@ fun PipeApp(
                         onExportJsonString = onExportJsonString,
                         onImportJsonString = onImportJsonString,
                         onSetJsonStatus = onSetJsonStatus,
+                        onLaunchOverlayPreview = onLaunchOverlayPreview,
+                        onPinOverlayShortcut = onPinOverlayShortcut,
+                        onOpenDefaultAppsSettings = onOpenDefaultAppsSettings,
                     )
                 }
             }
@@ -197,6 +201,7 @@ private fun PipePromptScreen(
     onFillHistory: (SearchHistoryEntry) -> Unit,
     onDeleteHistory: (SearchHistoryEntry) -> Unit,
     onClearHistory: () -> Unit,
+    onLaunchOverlay: () -> Unit,
 ) {
     val c = LocalAscii.current
     val focusRequester = remember { FocusRequester() }
@@ -211,10 +216,14 @@ private fun PipePromptScreen(
     }
 
     Column(Modifier.fillMaxSize()) {
-        // Minimalist single-screen header: ~/pipe on left, [pipes] [set] on right
         AsciiTopHeader(
             path = "~/pipe",
             actions = {
+                AsciiButton(
+                    label = "overlay",
+                    onClick = onLaunchOverlay,
+                    spokenLabel = "open floating overlay prompt",
+                )
                 AsciiButton(
                     label = "pipes (${state.engines.size})",
                     onClick = { onNavigate(PipeView.ENGINES) },
@@ -235,7 +244,6 @@ private fun PipePromptScreen(
                 .padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            // 1. Auto-focused Unix command prompt `$ query |`
             item {
                 Spacer(Modifier.height(6.dp))
                 AsciiTextField(
@@ -270,7 +278,6 @@ private fun PipePromptScreen(
                     },
                 )
 
-                // Terse Unix stdout pipeline trace line right below the prompt
                 Spacer(Modifier.height(4.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(start = 4.dp),
@@ -297,7 +304,6 @@ private fun PipePromptScreen(
                 )
             }
 
-            // 2. Direct keyword filter pills: `[|g* google] [|yt youtube] ...`
             item {
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
@@ -321,7 +327,6 @@ private fun PipePromptScreen(
                 }
             }
 
-            // 3. Plain-text box-table history log
             item {
                 AsciiBox(
                     title = "history (${state.history.size})",
@@ -589,8 +594,12 @@ private fun PipeSettingsScreen(
     onExportJsonString: () -> String,
     onImportJsonString: (String) -> String?,
     onSetJsonStatus: (String) -> Unit,
+    onLaunchOverlayPreview: () -> Unit,
+    onPinOverlayShortcut: () -> Unit,
+    onOpenDefaultAppsSettings: () -> Unit,
 ) {
     val c = LocalAscii.current
+    val clipboard = LocalClipboardManager.current
 
     Column(Modifier.fillMaxSize()) {
         AsciiTopHeader(
@@ -608,6 +617,74 @@ private fun PipeSettingsScreen(
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // 1. Overlay Mode & UbikiTouch Shortcut section
+            AsciiBox(title = "overlay mode & ubitouch shortcut") {
+                AsciiText(
+                    text = "launch ~/pipe/overlay over any app or bind it in UbikiTouch (Shortcuts -> pipe overlay):",
+                    style = AsciiType.small,
+                    color = c.dim,
+                )
+                Spacer(Modifier.height(6.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    AsciiButton(
+                        label = "launch overlay now",
+                        onClick = onLaunchOverlayPreview,
+                        primary = true,
+                    )
+                    AsciiButton(
+                        label = "+ pin overlay shortcut",
+                        onClick = onPinOverlayShortcut,
+                    )
+                }
+            }
+
+            // 2. Default Search Engine & Browser Forwarding section
+            AsciiBox(title = "default search engine forwarding") {
+                AsciiText(
+                    text = "1) system search / assist: set pipe as Default Assist App or Web Search handler.",
+                    style = AsciiType.small,
+                    color = c.fg,
+                )
+                AsciiText(
+                    text = "2) custom browser search url: paste one of the URLs below into Firefox, Brave, Cromite, Vivaldi, or Open-with:",
+                    style = AsciiType.small,
+                    color = c.dim,
+                )
+                Spacer(Modifier.height(4.dp))
+                AsciiText(
+                    text = "   pipe://search?q=%s",
+                    style = AsciiType.small,
+                    color = c.accent,
+                )
+                AsciiText(
+                    text = "   https://pipe.local/search?q=%s",
+                    style = AsciiType.small,
+                    color = c.accent2,
+                )
+                Spacer(Modifier.height(6.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    AsciiButton(
+                        label = "copy pipe:// url",
+                        onClick = {
+                            clipboard.setText(AnnotatedString("pipe://search?q=%s"))
+                            onSetJsonStatus("ok: copied pipe://search?q=%s")
+                        },
+                    )
+                    AsciiButton(
+                        label = "copy https:// url",
+                        onClick = {
+                            clipboard.setText(AnnotatedString("https://pipe.local/search?q=%s"))
+                            onSetJsonStatus("ok: copied https://pipe.local/search?q=%s")
+                        },
+                    )
+                    AsciiButton(
+                        label = "default apps settings",
+                        onClick = onOpenDefaultAppsSettings,
+                    )
+                }
+            }
+
+            // 3. Theme & Palette
             AsciiBox(title = "theme & palette") {
                 AsciiText("mode (follows system by default):", style = AsciiType.small, color = c.dim)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -628,6 +705,7 @@ private fun PipeSettingsScreen(
                 }
             }
 
+            // 4. Share & Process Text Behavior
             AsciiBox(title = "pipeline behavior") {
                 AsciiCheckbox(
                     checked = state.historyEnabled,
@@ -637,9 +715,14 @@ private fun PipeSettingsScreen(
                 Spacer(Modifier.height(6.dp))
                 AsciiText("share sheet & text selection (process text):", style = AsciiType.small, color = c.dim)
                 AsciiRadio(
+                    selected = state.externalTextMode == ExternalTextMode.OPEN_OVERLAY,
+                    onClick = { onExternalTextModeChange(ExternalTextMode.OPEN_OVERLAY) },
+                    label = "open floating ~/pipe/overlay with text pre-filled",
+                )
+                AsciiRadio(
                     selected = state.externalTextMode == ExternalTextMode.OPEN_PROMPT,
                     onClick = { onExternalTextModeChange(ExternalTextMode.OPEN_PROMPT) },
-                    label = "open ~/pipe prompt with text pre-filled",
+                    label = "open full ~/pipe prompt with text pre-filled",
                 )
                 AsciiRadio(
                     selected = state.externalTextMode == ExternalTextMode.DIRECT_PIPE,
@@ -648,6 +731,7 @@ private fun PipeSettingsScreen(
                 )
             }
 
+            // 5. JSON Backup & Reset
             AsciiBox(title = "json import / export & reset") {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     AsciiButton("export json file", onExportJsonToFile)
@@ -665,6 +749,7 @@ private fun PipeSettingsScreen(
                 }
             }
 
+            // 6. About
             AsciiBox(title = "about") {
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
                     val cols = rememberCols(AsciiType.small)
@@ -672,10 +757,10 @@ private fun PipeSettingsScreen(
                         if (cols >= 28) {
                             AsciiText(
                                 text = frame(
-                                    title = "pipe v1.0",
+                                    title = "pipe v1.1",
                                     lines = listOf(
                                         "pipe queries by keyword. nothing else.",
-                                        "syntax  : $ <keyword> <query> | ACTION_VIEW",
+                                        "modes   : prompt, overlay, default search",
                                         "network : zero permissions, zero tracking",
                                     ),
                                     cols = cols,
@@ -688,7 +773,7 @@ private fun PipeSettingsScreen(
                             AsciiText("pipe — pipe queries by keyword. nothing else.", style = AsciiType.title, color = c.accent)
                         }
                         AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
-                        AsciiText(leader("permissions", "none (0)", cols), style = AsciiType.small, color = c.dim, softWrap = false)
+                        AsciiText(leader("overlay", "com.sujan.pipe.PipeOverlayActivity", cols), style = AsciiType.small, color = c.dim, softWrap = false)
                     }
                 }
             }
@@ -696,7 +781,6 @@ private fun PipeSettingsScreen(
     }
 
     if (state.jsonDialogMode != null) {
-        val clipboard = LocalClipboardManager.current
         val initial = if (state.jsonDialogMode == JsonDialogMode.EXPORT) onExportJsonString() else ""
         var textVal by remember(state.jsonDialogMode, initial) {
             mutableStateOf(TextFieldValue(initial, TextRange(initial.length)))
@@ -739,18 +823,6 @@ private fun PreviewPipeDark() {
     PipePreviewHost(PipeUiState(searchInput = TextFieldValue("yt lofi music"), themeMode = ThemeMode.Dark))
 }
 
-@Preview(name = "Pipe Prompt - Moss Light", showBackground = true, widthDp = 380, heightDp = 740)
-@Composable
-private fun PreviewPipeLight() {
-    PipePreviewHost(PipeUiState(searchInput = TextFieldValue("yt lofi music"), themeMode = ThemeMode.Light))
-}
-
-@Preview(name = "Pipe Prompt - 200% Font Scale", showBackground = true, fontScale = 2.0f, widthDp = 380, heightDp = 740)
-@Composable
-private fun PreviewPipeFont2x() {
-    PipePreviewHost(PipeUiState(searchInput = TextFieldValue("gh compose"), themeMode = ThemeMode.Dark))
-}
-
 @Composable
 private fun PipePreviewHost(state: PipeUiState) {
     PipeApp(
@@ -764,6 +836,7 @@ private fun PipePreviewHost(state: PipeUiState) {
         onExternalTextModeChange = {}, onResetDefaults = {}, onOpenJsonExportDialog = {},
         onOpenJsonImportDialog = {}, onExportJsonToFile = {}, onImportJsonFromFile = {},
         onCloseJsonDialog = {}, onExportJsonString = { "[]" }, onImportJsonString = { null },
-        onSetJsonStatus = {}, onUndo = {}, onDismissUndo = {},
+        onSetJsonStatus = {}, onLaunchOverlayPreview = {}, onPinOverlayShortcut = {},
+        onOpenDefaultAppsSettings = {}, onUndo = {}, onDismissUndo = {},
     )
 }

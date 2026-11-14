@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.widget.RemoteViews
 import com.sujan.pipe.MainActivity
+import com.sujan.pipe.PipeOverlayActivity
 import com.sujan.pipe.R
 
 class PipeWidgetProvider : AppWidgetProvider() {
@@ -23,7 +24,7 @@ class PipeWidgetProvider : AppWidgetProvider() {
     }
 
     private fun pending(context: Context, code: Int, prefill: String): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java).apply {
+        val intent = Intent(context, PipeOverlayActivity::class.java).apply {
             putExtra(MainActivity.EXTRA_PREFILL_QUERY, prefill)
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }

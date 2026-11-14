@@ -3,6 +3,7 @@ package com.sujan.pipe.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.sujan.pipe.domain.QueryRouter
+import com.sujan.pipe.domain.RouteResolution
 import com.sujan.pipe.model.DefaultEngines
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
@@ -11,7 +12,7 @@ import com.sujan.pipe.ui.ascii.ThemeMode
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class ExternalTextMode { OPEN_PROMPT, DIRECT_PIPE }
+enum class ExternalTextMode { OPEN_OVERLAY, OPEN_PROMPT, DIRECT_PIPE }
 
 class PipeRepository(context: Context) {
 
@@ -70,6 +71,24 @@ class PipeRepository(context: Context) {
         prefs.edit().putString("history_json", arr.toString()).apply()
     }
 
+    /** Records a dispatched search resolution into history if history recording is enabled. */
+    fun recordResolutionInHistory(rawInput: String, resolution: RouteResolution) {
+        val trimmed = rawInput.trim()
+        if (!isHistoryEnabled() || trimmed.isEmpty()) return
+        val current = loadHistory()
+        val entry = SearchHistoryEntry(
+            id = System.currentTimeMillis(),
+            rawInput = trimmed,
+            engineName = resolution.engine.name,
+            engineKeyword = resolution.engine.keyword,
+            queryText = if (resolution.isHomeLaunch) "(home)" else resolution.query,
+            resolvedUrl = resolution.targetUrl,
+            timestampEpochMs = System.currentTimeMillis(),
+        )
+        val deduped = current.filterNot { it.rawInput.equals(trimmed, ignoreCase = true) }
+        saveHistory(listOf(entry) + deduped.take(49))
+    }
+
     fun loadThemeMode(): ThemeMode =
         ThemeMode.entries.firstOrNull { it.name == prefs.getString("theme_mode", ThemeMode.System.name) }
             ?: ThemeMode.System
@@ -86,8 +105,8 @@ class PipeRepository(context: Context) {
     fun setHistoryEnabled(enabled: Boolean) = prefs.edit().putBoolean("history_enabled", enabled).apply()
 
     fun loadExternalTextMode(): ExternalTextMode =
-        ExternalTextMode.entries.firstOrNull { it.name == prefs.getString("ext_mode", ExternalTextMode.OPEN_PROMPT.name) }
-            ?: ExternalTextMode.OPEN_PROMPT
+        ExternalTextMode.entries.firstOrNull { it.name == prefs.getString("ext_mode", ExternalTextMode.OPEN_OVERLAY.name) }
+            ?: ExternalTextMode.OPEN_OVERLAY
 
     fun saveExternalTextMode(mode: ExternalTextMode) = prefs.edit().putString("ext_mode", mode.name).apply()
 }
