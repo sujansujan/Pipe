@@ -168,12 +168,11 @@ object QueryRouter {
         if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
             throw IllegalArgumentException("! json must be a top-level array [ ... ]")
         }
-        val matches = Regex("\\{[^{}]*\\}").findAll(trimmed).toList()
-        if (matches.isEmpty()) throw IllegalArgumentException("! no engine objects found in json")
+        val blocks = extractTopLevelJsonObjects(trimmed)
+        if (blocks.isEmpty()) throw IllegalArgumentException("! no engine objects found in json")
 
         val parsed = mutableListOf<SearchEngine>()
-        for ((idx, match) in matches.withIndex()) {
-            val block = match.value
+        for ((idx, block) in blocks.withIndex()) {
             val name = extractJsonString(block, "name")?.trim()
                 ?: throw IllegalArgumentException("! item #${idx + 1} missing \"name\"")
             val keyword = extractJsonString(block, "keyword")?.trim()?.lowercase()
@@ -194,6 +193,47 @@ object QueryRouter {
         }
         val defaultIdx = parsed.indexOfFirst { it.isDefault }.let { if (it >= 0) it else 0 }
         return parsed.mapIndexed { idx, eng -> eng.copy(isDefault = idx == defaultIdx) }
+    }
+
+    /**
+     * Extracts top-level `{ ... }` JSON object substrings while ignoring braces `{` `}`
+     * that appear inside quoted string values such as `"{query}"`.
+     */
+    private fun extractTopLevelJsonObjects(jsonArray: String): List<String> {
+        val objects = mutableListOf<String>()
+        var inString = false
+        var escaped = false
+        var depth = 0
+        var objStart = -1
+
+        for (i in jsonArray.indices) {
+            val ch = jsonArray[i]
+            if (inString) {
+                if (escaped) {
+                    escaped = false
+                } else if (ch == '\\') {
+                    escaped = true
+                } else if (ch == '"') {
+                    inString = false
+                }
+            } else {
+                when (ch) {
+                    '"' -> inString = true
+                    '{' -> {
+                        if (depth == 0) objStart = i
+                        depth++
+                    }
+                    '}' -> {
+                        depth--
+                        if (depth == 0 && objStart >= 0) {
+                            objects.add(jsonArray.substring(objStart, i + 1))
+                            objStart = -1
+                        }
+                    }
+                }
+            }
+        }
+        return objects
     }
 
     private fun escapeJson(v: String): String =
