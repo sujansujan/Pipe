@@ -18,7 +18,7 @@ class PipeWidgetProvider : AppWidgetProvider() {
             views.setOnClickPendingIntent(R.id.widget_prompt, pending(context, id * 10 + 1, ""))
             views.setOnClickPendingIntent(R.id.widget_chip_g, pending(context, id * 10 + 2, "g "))
             views.setOnClickPendingIntent(R.id.widget_chip_yt, pending(context, id * 10 + 3, "yt "))
-            views.setOnClickPendingIntent(R.id.widget_chip_gh, pending(context, id * 10 + 4, "gh "))
+            views.setOnClickPendingIntent(R.id.widget_chip_gh, pending(context, id * 10 + 4, "dl "))
             appWidgetManager.updateAppWidget(id, views)
         }
     }

@@ -60,15 +60,15 @@ fun AsciiButton(
     }
     Box(
         modifier = modifier
-            .heightIn(min = 48.dp)
-            .widthIn(min = 48.dp)
+            .heightIn(min = 44.dp)
+            .widthIn(min = 40.dp)
             .background(if (pressed) ink else Color.Transparent)
             .clickable(interactionSource = src, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(horizontal = 4.dp),
+            .padding(horizontal = 3.dp),
         contentAlignment = Alignment.Center,
     ) {
         AsciiText(
-            text = "[ $label ]",
+            text = "[$label]",
             color = if (pressed) c.bg else ink,
             style = if (primary) AsciiType.title else AsciiType.body,
             modifier = Modifier.clearAndSetSemantics { contentDescription = spokenLabel },
@@ -96,7 +96,7 @@ fun AsciiPipePill(
 
     Box(
         modifier = modifier
-            .heightIn(min = 48.dp)
+            .heightIn(min = 42.dp)
             .background(if (inverted) ink else Color.Transparent)
             .border(1.dp, if (selected) c.accent else c.border)
             .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onClick)
@@ -106,7 +106,7 @@ fun AsciiPipePill(
         AsciiText(
             text = display,
             color = if (inverted) c.bg else ink,
-            style = if (selected) AsciiType.title else AsciiType.body,
+            style = if (selected) AsciiType.title else AsciiType.small,
             modifier = Modifier.clearAndSetSemantics {
                 contentDescription = "pipe to ${name ?: keyword}, keyword $keyword"
             },
@@ -237,7 +237,7 @@ fun AsciiTopHeader(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 2.dp),
+                .padding(horizontal = 10.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {

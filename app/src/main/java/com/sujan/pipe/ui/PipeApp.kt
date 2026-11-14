@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -45,11 +46,16 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.sujan.pipe.data.ExternalTextMode
+import com.sujan.pipe.domain.PromptIntentMode
+import com.sujan.pipe.domain.QueryRouter
+import com.sujan.pipe.model.BookmarkKind
+import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.EngineColorRole
+import com.sujan.pipe.model.LocalFileItem
+import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.ui.ascii.AsciiBox
@@ -76,11 +82,29 @@ fun PipeApp(
     onNavigate: (PipeView) -> Unit,
     onSearchInputChange: (TextFieldValue) -> Unit,
     onChipClick: (SearchEngine) -> Unit,
-    onSubmitSearch: () -> Unit,
+    onAliasPillClick: (String) -> Unit,
+    onSubmitPrimaryAction: () -> Unit,
+    onOpenBookmark: (PipeBookmark) -> Unit,
+    onOpenLocalFile: (LocalFileItem) -> Unit,
+    onBookmarkLocalFile: (LocalFileItem) -> Unit,
+    onCallContact: (ContactItem) -> Unit,
+    onSmsContact: (ContactItem) -> Unit,
+    onWhatsAppContact: (ContactItem) -> Unit,
+    onRequestContactsPermission: () -> Unit,
+    onRequestFilesPermission: () -> Unit,
     onRerunHistory: (SearchHistoryEntry) -> Unit,
     onFillHistory: (SearchHistoryEntry) -> Unit,
     onDeleteHistory: (SearchHistoryEntry) -> Unit,
     onClearHistory: () -> Unit,
+    onAddBookmarkClick: () -> Unit,
+    onEditBookmarkClick: (PipeBookmark) -> Unit,
+    onDeleteBookmarkClick: (PipeBookmark) -> Unit,
+    onBookmarkFormAliasChange: (TextFieldValue) -> Unit,
+    onBookmarkFormTitleChange: (TextFieldValue) -> Unit,
+    onBookmarkFormTargetChange: (TextFieldValue) -> Unit,
+    onBookmarkFormKindChange: (BookmarkKind) -> Unit,
+    onBookmarkFormSave: () -> Unit,
+    onBookmarkFormCancel: () -> Unit,
     onAddEngineClick: () -> Unit,
     onEditEngineClick: (SearchEngine) -> Unit,
     onDeleteEngineClick: (SearchEngine) -> Unit,
@@ -129,12 +153,38 @@ fun PipeApp(
                         onNavigate = onNavigate,
                         onSearchInputChange = onSearchInputChange,
                         onChipClick = onChipClick,
-                        onSubmitSearch = onSubmitSearch,
+                        onAliasPillClick = onAliasPillClick,
+                        onSubmitPrimaryAction = onSubmitPrimaryAction,
+                        onOpenBookmark = onOpenBookmark,
+                        onOpenLocalFile = onOpenLocalFile,
+                        onBookmarkLocalFile = onBookmarkLocalFile,
+                        onCallContact = onCallContact,
+                        onSmsContact = onSmsContact,
+                        onWhatsAppContact = onWhatsAppContact,
+                        onRequestContactsPermission = onRequestContactsPermission,
+                        onRequestFilesPermission = onRequestFilesPermission,
                         onRerunHistory = onRerunHistory,
                         onFillHistory = onFillHistory,
                         onDeleteHistory = onDeleteHistory,
                         onClearHistory = onClearHistory,
                         onLaunchOverlay = onLaunchOverlayPreview,
+                    )
+                    PipeView.BOOKMARKS -> PipeBookmarksScreen(
+                        bookmarks = state.bookmarks,
+                        formState = state.bookmarkForm,
+                        hasFilesPermission = state.hasFilesPermission,
+                        onBack = { onNavigate(PipeView.PROMPT) },
+                        onOpenBookmark = onOpenBookmark,
+                        onAddClick = onAddBookmarkClick,
+                        onEditClick = onEditBookmarkClick,
+                        onDeleteClick = onDeleteBookmarkClick,
+                        onRequestFilesPermission = onRequestFilesPermission,
+                        onAliasChange = onBookmarkFormAliasChange,
+                        onTitleChange = onBookmarkFormTitleChange,
+                        onTargetChange = onBookmarkFormTargetChange,
+                        onKindChange = onBookmarkFormKindChange,
+                        onSave = onBookmarkFormSave,
+                        onCancel = onBookmarkFormCancel,
                     )
                     PipeView.ENGINES -> PipeEnginesScreen(
                         engines = state.engines,
@@ -173,6 +223,8 @@ fun PipeApp(
                         onLaunchOverlayPreview = onLaunchOverlayPreview,
                         onPinOverlayShortcut = onPinOverlayShortcut,
                         onOpenDefaultAppsSettings = onOpenDefaultAppsSettings,
+                        onRequestContactsPermission = onRequestContactsPermission,
+                        onRequestFilesPermission = onRequestFilesPermission,
                     )
                 }
             }
@@ -196,7 +248,16 @@ private fun PipePromptScreen(
     onNavigate: (PipeView) -> Unit,
     onSearchInputChange: (TextFieldValue) -> Unit,
     onChipClick: (SearchEngine) -> Unit,
-    onSubmitSearch: () -> Unit,
+    onAliasPillClick: (String) -> Unit,
+    onSubmitPrimaryAction: () -> Unit,
+    onOpenBookmark: (PipeBookmark) -> Unit,
+    onOpenLocalFile: (LocalFileItem) -> Unit,
+    onBookmarkLocalFile: (LocalFileItem) -> Unit,
+    onCallContact: (ContactItem) -> Unit,
+    onSmsContact: (ContactItem) -> Unit,
+    onWhatsAppContact: (ContactItem) -> Unit,
+    onRequestContactsPermission: () -> Unit,
+    onRequestFilesPermission: () -> Unit,
     onRerunHistory: (SearchHistoryEntry) -> Unit,
     onFillHistory: (SearchHistoryEntry) -> Unit,
     onDeleteHistory: (SearchHistoryEntry) -> Unit,
@@ -204,9 +265,11 @@ private fun PipePromptScreen(
     onLaunchOverlay: () -> Unit,
 ) {
     val c = LocalAscii.current
+    val clipboard = LocalClipboardManager.current
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val res = state.liveResolution
+    val cmd = state.parsedCommand
 
     LaunchedEffect(Unit) {
         runCatching {
@@ -219,21 +282,10 @@ private fun PipePromptScreen(
         AsciiTopHeader(
             path = "~/pipe",
             actions = {
-                AsciiButton(
-                    label = "overlay",
-                    onClick = onLaunchOverlay,
-                    spokenLabel = "open floating overlay prompt",
-                )
-                AsciiButton(
-                    label = "pipes (${state.engines.size})",
-                    onClick = { onNavigate(PipeView.ENGINES) },
-                    spokenLabel = "manage search engine pipes",
-                )
-                AsciiButton(
-                    label = "set",
-                    onClick = { onNavigate(PipeView.SETTINGS) },
-                    spokenLabel = "settings",
-                )
+                AsciiButton("ovl", onLaunchOverlay, spokenLabel = "open overlay mode")
+                AsciiButton("bm (${state.bookmarks.size})", { onNavigate(PipeView.BOOKMARKS) }, spokenLabel = "bookmarks")
+                AsciiButton("pipes", { onNavigate(PipeView.ENGINES) }, spokenLabel = "search engines")
+                AsciiButton("set", { onNavigate(PipeView.SETTINGS) }, spokenLabel = "settings")
             },
         )
 
@@ -244,6 +296,7 @@ private fun PipePromptScreen(
                 .padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // 1. Unified Command Prompt (`$ yt lofi`, `$ c kali`, `$ dl`, `$ f report`)
             item {
                 Spacer(Modifier.height(6.dp))
                 AsciiTextField(
@@ -251,14 +304,14 @@ private fun PipePromptScreen(
                     promptPrefix = "$ ",
                     value = state.searchInput,
                     onValueChange = onSearchInputChange,
-                    placeholder = "yt lofi music  |  g best phones",
+                    placeholder = "yt lofi | c kali | dl | f notes",
                     errorText = state.launchError,
                     focusRequester = focusRequester,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Text,
                         imeAction = ImeAction.Search,
                     ),
-                    keyboardActions = KeyboardActions(onSearch = { onSubmitSearch() }),
+                    keyboardActions = KeyboardActions(onSearch = { onSubmitPrimaryAction() }),
                     trailingControl = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (state.searchInput.text.isNotEmpty()) {
@@ -270,48 +323,77 @@ private fun PipePromptScreen(
                             }
                             AsciiButton(
                                 label = "| ->",
-                                onClick = onSubmitSearch,
+                                onClick = onSubmitPrimaryAction,
                                 primary = true,
-                                spokenLabel = "pipe search to ${res.engine.name}",
+                                spokenLabel = "execute pipe command",
                             )
                         }
                     },
                 )
 
+                // Live pipeline trace line
                 Spacer(Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(start = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AsciiText(
-                        text = "+--> ",
-                        style = AsciiType.small,
-                        color = c.dim,
-                        modifier = Modifier.clearAndSetSemantics {},
-                    )
-                    AsciiText(
-                        text = res.pipelinePreview,
-                        style = AsciiType.small,
-                        color = if (res.matchedByKeyword) c.accent else c.accent2,
-                        maxLines = 1,
-                    )
+                val traceText = when {
+                    cmd.exactBookmark != null ->
+                        "+--> [${cmd.exactBookmark.alias}] ${cmd.exactBookmark.kind.badge} :: ${cmd.exactBookmark.target}"
+                    cmd.mode == PromptIntentMode.CONTACTS_ONLY ->
+                        "+--> [c] contacts fuzzy search :: \"${cmd.filterQuery}\""
+                    cmd.mode == PromptIntentMode.FILES_ONLY ->
+                        "+--> [f] storage files fuzzy search :: \"${cmd.filterQuery}\""
+                    cmd.mode == PromptIntentMode.SCOPED_FOLDER ->
+                        "+--> [${cmd.scopedFolderBookmark?.alias}] folder filter :: \"${cmd.filterQuery}\" in ${cmd.scopedFolderBookmark?.target}"
+                    else -> "+--> ${res.pipelinePreview}"
                 }
                 AsciiText(
-                    text = "     ${res.targetUrl}",
+                    text = traceText,
                     style = AsciiType.small,
-                    color = c.dim,
+                    color = c.accent,
                     maxLines = 1,
                 )
             }
 
+            // 2. Quick Mode & Engine Pills (`[|c contacts] [|dl downloads] [|f files] [|g* google] [|yt youtube] ...`)
             item {
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
+                    AsciiPipePill(
+                        keyword = "c",
+                        name = "contacts",
+                        selected = cmd.mode == PromptIntentMode.CONTACTS_ONLY,
+                        accentColor = c.good,
+                        onClick = {
+                            onAliasPillClick("c")
+                            runCatching { focusRequester.requestFocus() }
+                        },
+                    )
+                    AsciiPipePill(
+                        keyword = "dl",
+                        name = "downloads",
+                        selected = cmd.scopedFolderBookmark?.alias == "dl",
+                        accentColor = c.warn,
+                        onClick = {
+                            onAliasPillClick("dl")
+                            runCatching { focusRequester.requestFocus() }
+                        },
+                    )
+                    AsciiPipePill(
+                        keyword = "f",
+                        name = "files",
+                        selected = cmd.mode == PromptIntentMode.FILES_ONLY,
+                        accentColor = c.accent3,
+                        onClick = {
+                            onAliasPillClick("f")
+                            runCatching { focusRequester.requestFocus() }
+                        },
+                    )
                     state.suggestedEngines.forEach { eng ->
-                        val active = res.matchedByKeyword && res.engine.id == eng.id
+                        val active = cmd.mode == PromptIntentMode.GENERAL &&
+                            cmd.exactBookmark == null &&
+                            res.matchedByKeyword &&
+                            res.engine.id == eng.id
                         AsciiPipePill(
                             keyword = eng.keyword,
                             name = eng.name.lowercase(),
@@ -327,6 +409,105 @@ private fun PipePromptScreen(
                 }
             }
 
+            // 3. Permission prompt banners when Contacts or Files are queried without permission
+            if (!state.hasContactsPermission && (cmd.mode == PromptIntentMode.CONTACTS_ONLY || state.searchInput.text.isNotBlank())) {
+                item {
+                    AsciiBox(title = "contacts permission") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AsciiText("grant contacts access for `c <name>` search:", style = AsciiType.small, color = c.warn)
+                            AsciiButton("grant contacts", onRequestContactsPermission, primary = true)
+                        }
+                    }
+                }
+            }
+
+            if (!state.hasFilesPermission && (cmd.mode == PromptIntentMode.FILES_ONLY || cmd.mode == PromptIntentMode.SCOPED_FOLDER)) {
+                item {
+                    AsciiBox(title = "all-files access") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AsciiText("grant storage access to open & search phone files:", style = AsciiType.small, color = c.warn)
+                            AsciiButton("grant files", onRequestFilesPermission, primary = true)
+                        }
+                    }
+                }
+            }
+
+            // 4. Live Contact Fuzzy Search Results (`c kali` or matching contact names)
+            if (state.matchedContacts.isNotEmpty()) {
+                item {
+                    AsciiBox(title = "contacts (${state.matchedContacts.size})") {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            state.matchedContacts.forEach { contact ->
+                                ContactResultRow(
+                                    contact = contact,
+                                    onCall = { onCallContact(contact) },
+                                    onSms = { onSmsContact(contact) },
+                                    onWhatsApp = { onWhatsAppContact(contact) },
+                                    onCopy = { clipboard.setText(AnnotatedString(contact.phoneNumber)) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 5. Live Bookmarks (Folders, Files, Links)
+            if (state.matchedBookmarks.isNotEmpty()) {
+                item {
+                    AsciiBox(
+                        title = "bookmarks (${state.matchedBookmarks.size})",
+                        rightActionLabel = "manage",
+                        onRightAction = { onNavigate(PipeView.BOOKMARKS) },
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            state.matchedBookmarks.forEach { bm ->
+                                BookmarkResultRow(
+                                    bookmark = bm,
+                                    onOpen = { onOpenBookmark(bm) },
+                                    onScopeInto = if (bm.kind == BookmarkKind.FOLDER) {
+                                        {
+                                            onAliasPillClick(bm.alias)
+                                            runCatching { focusRequester.requestFocus() }
+                                        }
+                                    } else null,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 6. Live Fuzzy-Searched Files & Folders
+            if (state.matchedFiles.isNotEmpty()) {
+                val boxTitle = if (cmd.mode == PromptIntentMode.SCOPED_FOLDER) {
+                    "files in ${cmd.scopedFolderBookmark?.title ?: "folder"} (${state.matchedFiles.size})"
+                } else {
+                    "files & folders (${state.matchedFiles.size})"
+                }
+                item {
+                    AsciiBox(title = boxTitle) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            state.matchedFiles.forEach { fileItem ->
+                                FileResultRow(
+                                    item = fileItem,
+                                    onOpen = { onOpenLocalFile(fileItem) },
+                                    onBookmark = { onBookmarkLocalFile(fileItem) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 7. Command History
             item {
                 AsciiBox(
                     title = "history (${state.history.size})",
@@ -335,7 +516,7 @@ private fun PipePromptScreen(
                 ) {
                     if (state.history.isEmpty()) {
                         AsciiText(
-                            text = "nothing piped yet. type a keyword + query above.",
+                            text = "nothing piped yet. try `yt lofi`, `c kali`, or `dl`.",
                             style = AsciiType.small,
                             color = c.dim,
                         )
@@ -363,6 +544,150 @@ private fun PipePromptScreen(
 }
 
 @Composable
+fun ContactResultRow(
+    contact: ContactItem,
+    onCall: () -> Unit,
+    onSms: () -> Unit,
+    onWhatsApp: () -> Unit,
+    onCopy: () -> Unit,
+) {
+    val c = LocalAscii.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, c.border)
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AsciiText(
+                text = "@ ${contact.displayName}",
+                style = AsciiType.title,
+                color = c.good,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            AsciiText(
+                text = contact.phoneNumber,
+                style = AsciiType.small,
+                color = c.fg,
+                maxLines = 1,
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AsciiButton("call", onCall, primary = true, spokenLabel = "call ${contact.displayName}")
+            AsciiButton("sms", onSms, spokenLabel = "text ${contact.displayName}")
+            AsciiButton("wa", onWhatsApp, spokenLabel = "whatsapp ${contact.displayName}")
+            AsciiButton("copy", onCopy, spokenLabel = "copy number for ${contact.displayName}")
+        }
+    }
+}
+
+@Composable
+fun BookmarkResultRow(
+    bookmark: PipeBookmark,
+    onOpen: () -> Unit,
+    onScopeInto: (() -> Unit)? = null,
+) {
+    val c = LocalAscii.current
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val badgeColor = when (bookmark.kind) {
+        BookmarkKind.FOLDER -> c.warn
+        BookmarkKind.FILE -> c.accent3
+        BookmarkKind.LINK -> c.accent2
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
+            .background(if (pressed) c.fg else Color.Transparent)
+            .border(1.dp, c.border)
+            .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onOpen)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (bookmark.alias.isNotBlank()) {
+                    AsciiText(
+                        text = "[${bookmark.alias}] ",
+                        style = AsciiType.title,
+                        color = if (pressed) c.bg else badgeColor,
+                    )
+                }
+                AsciiText(
+                    text = bookmark.title,
+                    style = AsciiType.body,
+                    color = if (pressed) c.bg else c.fg,
+                    maxLines = 1,
+                )
+                AsciiText(
+                    text = " (${bookmark.kind.badge})",
+                    style = AsciiType.small,
+                    color = if (pressed) c.bg else c.dim,
+                )
+            }
+            AsciiText(
+                text = bookmark.target,
+                style = AsciiType.small,
+                color = if (pressed) c.bg else c.dim,
+                maxLines = 1,
+            )
+        }
+        if (onScopeInto != null) {
+            AsciiButton("ls", onScopeInto, spokenLabel = "search files inside ${bookmark.title}")
+        }
+        AsciiButton("open", onOpen, primary = true, spokenLabel = "open ${bookmark.title}")
+    }
+}
+
+@Composable
+fun FileResultRow(
+    item: LocalFileItem,
+    onOpen: () -> Unit,
+    onBookmark: () -> Unit,
+) {
+    val c = LocalAscii.current
+    val prefix = if (item.isDirectory) "[dir] " else "[file]"
+    val tint = if (item.isDirectory) c.warn else c.accent3
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
+            .border(1.dp, c.border)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                role = Role.Button,
+                onClick = onOpen,
+            )
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AsciiText(text = "$prefix ", style = AsciiType.small, color = tint)
+                AsciiText(text = item.name, style = AsciiType.body, color = c.fg, maxLines = 1)
+            }
+            AsciiText(text = item.absolutePath, style = AsciiType.small, color = c.dim, maxLines = 1)
+        }
+        AsciiButton("+bm", onBookmark, spokenLabel = "bookmark ${item.name}")
+        AsciiButton("open", onOpen, primary = true, spokenLabel = "open ${item.name}")
+    }
+}
+
+@Composable
 private fun HistoryPipeRow(
     entry: SearchHistoryEntry,
     onRerun: () -> Unit,
@@ -376,7 +701,7 @@ private fun HistoryPipeRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
+            .heightIn(min = 44.dp)
             .background(if (pressed) c.fg else Color.Transparent)
             .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onRerun)
             .padding(vertical = 2.dp),
@@ -406,6 +731,164 @@ private fun HistoryPipeRow(
         }
         AsciiButton(label = "^", onClick = onFill, spokenLabel = "edit ${entry.rawInput}")
         AsciiButton(label = "x", onClick = onDelete, spokenLabel = "remove ${entry.rawInput}")
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PipeBookmarksScreen(
+    bookmarks: List<PipeBookmark>,
+    formState: BookmarkFormState,
+    hasFilesPermission: Boolean,
+    onBack: () -> Unit,
+    onOpenBookmark: (PipeBookmark) -> Unit,
+    onAddClick: () -> Unit,
+    onEditClick: (PipeBookmark) -> Unit,
+    onDeleteClick: (PipeBookmark) -> Unit,
+    onRequestFilesPermission: () -> Unit,
+    onAliasChange: (TextFieldValue) -> Unit,
+    onTitleChange: (TextFieldValue) -> Unit,
+    onTargetChange: (TextFieldValue) -> Unit,
+    onKindChange: (BookmarkKind) -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val c = LocalAscii.current
+
+    Column(Modifier.fillMaxSize()) {
+        AsciiTopHeader(
+            path = "~/pipe/bm",
+            actions = {
+                AsciiButton(label = "< back", onClick = onBack, spokenLabel = "back to search prompt")
+            },
+        )
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item {
+                Spacer(Modifier.height(4.dp))
+                AsciiText(
+                    text = "type an alias (e.g. `dl`, `docs`, `pic`) in ~/pipe to jump to folders, files, or links.",
+                    style = AsciiType.small,
+                    color = c.dim,
+                )
+                if (!hasFilesPermission) {
+                    Spacer(Modifier.height(4.dp))
+                    AsciiButton("grant all-files access", onRequestFilesPermission, primary = true)
+                }
+            }
+
+            items(bookmarks, key = { it.id }) { bm ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, c.border)
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AsciiText(
+                            text = "[${bm.alias}] ${bm.title}",
+                            style = AsciiType.title,
+                            color = c.accent,
+                        )
+                        AsciiText(
+                            text = bm.kind.badge,
+                            style = AsciiType.small,
+                            color = c.accent2,
+                        )
+                    }
+                    AsciiText(text = bm.target, style = AsciiType.small, color = c.dim, maxLines = 1)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AsciiButton("open", { onOpenBookmark(bm) }, primary = true)
+                        AsciiButton("edit", { onEditClick(bm) })
+                        AsciiButton("del", { onDeleteClick(bm) })
+                    }
+                }
+            }
+
+            item { Spacer(Modifier.height(8.dp)) }
+        }
+
+        Box(Modifier.fillMaxWidth().background(c.bg).padding(horizontal = 12.dp, vertical = 6.dp)) {
+            AsciiButton(
+                label = "+ add bookmark (link / folder / file)",
+                onClick = onAddClick,
+                primary = true,
+                modifier = Modifier.fillMaxWidth().border(1.dp, c.accent),
+            )
+        }
+    }
+
+    if (formState.isOpen) {
+        Dialog(onDismissRequest = onCancel) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(c.bg)
+                    .border(1.dp, c.accent2)
+                    .padding(12.dp)
+                    .verticalScroll(rememberScrollState())
+                    .imePadding(),
+            ) {
+                AsciiBox(title = if (formState.editingId != null) "edit bookmark" else "new bookmark") {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        AsciiText("type:", style = AsciiType.small, color = c.dim)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            BookmarkKind.entries.forEach { k ->
+                                AsciiRadio(
+                                    selected = formState.kind == k,
+                                    onClick = { onKindChange(k) },
+                                    label = k.name.lowercase(),
+                                )
+                            }
+                        }
+                        AsciiTextField(
+                            label = "alias (short trigger, e.g. dl, notes, hn)",
+                            promptPrefix = "| ",
+                            value = formState.alias,
+                            onValueChange = onAliasChange,
+                            placeholder = "dl",
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Next),
+                        )
+                        AsciiTextField(
+                            label = "title",
+                            promptPrefix = "> ",
+                            value = formState.title,
+                            onValueChange = onTitleChange,
+                            placeholder = "Downloads",
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        )
+                        AsciiTextField(
+                            label = if (formState.kind == BookmarkKind.LINK) "url (https://...)" else "phone path (/storage/emulated/0/...)",
+                            promptPrefix = "> ",
+                            value = formState.target,
+                            onValueChange = onTargetChange,
+                            placeholder = if (formState.kind == BookmarkKind.LINK) "https://news.ycombinator.com" else "/storage/emulated/0/Download",
+                            errorText = formState.errorText,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                        )
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            AsciiButton("cancel", onCancel)
+                            AsciiButton("save", onSave, primary = true)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -597,6 +1080,8 @@ private fun PipeSettingsScreen(
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
+    onRequestContactsPermission: () -> Unit,
+    onRequestFilesPermission: () -> Unit,
 ) {
     val c = LocalAscii.current
     val clipboard = LocalClipboardManager.current
@@ -617,70 +1102,38 @@ private fun PipeSettingsScreen(
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // 1. Overlay Mode & UbikiTouch Shortcut section
-            AsciiBox(title = "overlay mode & ubitouch shortcut") {
+            // 1. Permissions & Default Browser Setup
+            AsciiBox(title = "default browser, contacts & storage access") {
                 AsciiText(
-                    text = "launch ~/pipe/overlay over any app or bind it in UbikiTouch (Shortcuts -> pipe overlay):",
+                    text = "pipe is registered as a Browser so Android lets you select it under Default Apps -> Browser app (and Default Assist app).",
                     style = AsciiType.small,
-                    color = c.dim,
+                    color = c.fg,
                 )
                 Spacer(Modifier.height(6.dp))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    AsciiButton("set default browser / assist", onOpenDefaultAppsSettings, primary = true)
                     AsciiButton(
-                        label = "launch overlay now",
-                        onClick = onLaunchOverlayPreview,
-                        primary = true,
+                        label = if (state.hasContactsPermission) "contacts: ok" else "grant contacts",
+                        onClick = onRequestContactsPermission,
                     )
                     AsciiButton(
-                        label = "+ pin overlay shortcut",
-                        onClick = onPinOverlayShortcut,
+                        label = if (state.hasFilesPermission) "files: ok" else "grant all-files",
+                        onClick = onRequestFilesPermission,
                     )
                 }
             }
 
-            // 2. Default Search Engine & Browser Forwarding section
-            AsciiBox(title = "default search engine forwarding") {
+            // 2. Overlay & UbikiTouch Shortcut
+            AsciiBox(title = "overlay mode & ubitouch shortcut") {
                 AsciiText(
-                    text = "1) system search / assist: set pipe as Default Assist App or Web Search handler.",
-                    style = AsciiType.small,
-                    color = c.fg,
-                )
-                AsciiText(
-                    text = "2) custom browser search url: paste one of the URLs below into Firefox, Brave, Cromite, Vivaldi, or Open-with:",
+                    text = "bind in UbikiTouch via Shortcuts -> `pipe overlay` or Activities -> `PipeOverlayActivity`:",
                     style = AsciiType.small,
                     color = c.dim,
                 )
-                Spacer(Modifier.height(4.dp))
-                AsciiText(
-                    text = "   pipe://search?q=%s",
-                    style = AsciiType.small,
-                    color = c.accent,
-                )
-                AsciiText(
-                    text = "   https://pipe.local/search?q=%s",
-                    style = AsciiType.small,
-                    color = c.accent2,
-                )
                 Spacer(Modifier.height(6.dp))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    AsciiButton(
-                        label = "copy pipe:// url",
-                        onClick = {
-                            clipboard.setText(AnnotatedString("pipe://search?q=%s"))
-                            onSetJsonStatus("ok: copied pipe://search?q=%s")
-                        },
-                    )
-                    AsciiButton(
-                        label = "copy https:// url",
-                        onClick = {
-                            clipboard.setText(AnnotatedString("https://pipe.local/search?q=%s"))
-                            onSetJsonStatus("ok: copied https://pipe.local/search?q=%s")
-                        },
-                    )
-                    AsciiButton(
-                        label = "default apps settings",
-                        onClick = onOpenDefaultAppsSettings,
-                    )
+                    AsciiButton("launch overlay now", onLaunchOverlayPreview, primary = true)
+                    AsciiButton("+ pin overlay shortcut", onPinOverlayShortcut)
                 }
             }
 
@@ -757,11 +1210,11 @@ private fun PipeSettingsScreen(
                         if (cols >= 28) {
                             AsciiText(
                                 text = frame(
-                                    title = "pipe v1.1",
+                                    title = "pipe v1.2",
                                     lines = listOf(
-                                        "pipe queries by keyword. nothing else.",
-                                        "modes   : prompt, overlay, default search",
-                                        "network : zero permissions, zero tracking",
+                                        "pipe queries, contacts, files & bookmarks.",
+                                        "aliases : c <contact>, dl <file>, f <file>",
+                                        "browser : loop-safe default search router",
                                     ),
                                     cols = cols,
                                 ),
@@ -770,10 +1223,9 @@ private fun PipeSettingsScreen(
                                 softWrap = false,
                             )
                         } else {
-                            AsciiText("pipe — pipe queries by keyword. nothing else.", style = AsciiType.title, color = c.accent)
+                            AsciiText("pipe v1.2", style = AsciiType.title, color = c.accent)
                         }
                         AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
-                        AsciiText(leader("overlay", "com.sujan.pipe.PipeOverlayActivity", cols), style = AsciiType.small, color = c.dim, softWrap = false)
                     }
                 }
             }
@@ -815,28 +1267,4 @@ private fun PipeSettingsScreen(
             }
         }
     }
-}
-
-@Preview(name = "Pipe Prompt - Moss Dark", showBackground = true, widthDp = 380, heightDp = 740)
-@Composable
-private fun PreviewPipeDark() {
-    PipePreviewHost(PipeUiState(searchInput = TextFieldValue("yt lofi music"), themeMode = ThemeMode.Dark))
-}
-
-@Composable
-private fun PipePreviewHost(state: PipeUiState) {
-    PipeApp(
-        state = state, onNavigate = {}, onSearchInputChange = {}, onChipClick = {}, onSubmitSearch = {},
-        onRerunHistory = {}, onFillHistory = {}, onDeleteHistory = {}, onClearHistory = {},
-        onAddEngineClick = {}, onEditEngineClick = {}, onDeleteEngineClick = {},
-        onMoveEngineUp = {}, onMoveEngineDown = {}, onSetDefaultEngine = {},
-        onFormNameChange = {}, onFormKeywordChange = {}, onFormUrlChange = {},
-        onFormColorChange = {}, onFormDefaultChange = {}, onFormSave = {}, onFormCancel = {},
-        onThemeModeChange = {}, onPaletteChoiceChange = {}, onHistoryEnabledChange = {},
-        onExternalTextModeChange = {}, onResetDefaults = {}, onOpenJsonExportDialog = {},
-        onOpenJsonImportDialog = {}, onExportJsonToFile = {}, onImportJsonFromFile = {},
-        onCloseJsonDialog = {}, onExportJsonString = { "[]" }, onImportJsonString = { null },
-        onSetJsonStatus = {}, onLaunchOverlayPreview = {}, onPinOverlayShortcut = {},
-        onOpenDefaultAppsSettings = {}, onUndo = {}, onDismissUndo = {},
-    )
 }

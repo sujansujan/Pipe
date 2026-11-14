@@ -8,10 +8,18 @@ import androidx.lifecycle.viewModelScope
 import com.sujan.pipe.data.ExternalTextMode
 import com.sujan.pipe.data.PipeRepository
 import com.sujan.pipe.domain.EngineValidationErrors
+import com.sujan.pipe.domain.FuzzyMatcher
+import com.sujan.pipe.domain.ParsedPromptCommand
+import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.domain.RouteResolution
+import com.sujan.pipe.model.BookmarkKind
+import com.sujan.pipe.model.ContactItem
+import com.sujan.pipe.model.DefaultBookmarks
 import com.sujan.pipe.model.DefaultEngines
 import com.sujan.pipe.model.EngineColorRole
+import com.sujan.pipe.model.LocalFileItem
+import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.ui.ascii.PaletteChoice
@@ -24,11 +32,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-enum class PipeView { PROMPT, ENGINES, SETTINGS }
+enum class PipeView { PROMPT, BOOKMARKS, ENGINES, SETTINGS }
 
 sealed interface UndoPayload {
     data class DeletedEngine(val engine: SearchEngine, val index: Int) : UndoPayload
     data class ResetEngines(val previousEngines: List<SearchEngine>) : UndoPayload
+    data class DeletedBookmark(val bookmark: PipeBookmark, val index: Int) : UndoPayload
     data class DeletedHistoryItem(val entry: SearchHistoryEntry, val index: Int) : UndoPayload
     data class ClearedHistory(val previousEntries: List<SearchHistoryEntry>) : UndoPayload
 }
@@ -47,28 +56,93 @@ data class EngineFormState(
     val errors: EngineValidationErrors = EngineValidationErrors(),
 )
 
+data class BookmarkFormState(
+    val isOpen: Boolean = false,
+    val editingId: String? = null,
+    val alias: TextFieldValue = TextFieldValue(""),
+    val title: TextFieldValue = TextFieldValue(""),
+    val target: TextFieldValue = TextFieldValue("/storage/emulated/0/"),
+    val kind: BookmarkKind = BookmarkKind.FOLDER,
+    val errorText: String? = null,
+)
+
 enum class JsonDialogMode { EXPORT, IMPORT }
 
 data class PipeUiState(
     val activeView: PipeView = PipeView.PROMPT,
     val searchInput: TextFieldValue = TextFieldValue(""),
     val engines: List<SearchEngine> = DefaultEngines.LIST,
+    val bookmarks: List<PipeBookmark> = DefaultBookmarks.LIST,
+    val contacts: List<ContactItem> = emptyList(),
+    val storageFiles: List<LocalFileItem> = emptyList(),
+    val scopedFolderFiles: List<LocalFileItem> = emptyList(),
+    val hasContactsPermission: Boolean = false,
+    val hasFilesPermission: Boolean = false,
     val history: List<SearchHistoryEntry> = emptyList(),
     val themeMode: ThemeMode = ThemeMode.System,
     val paletteChoice: PaletteChoice = PaletteChoice.MOSS,
     val historyEnabled: Boolean = true,
     val externalTextMode: ExternalTextMode = ExternalTextMode.OPEN_OVERLAY,
     val engineForm: EngineFormState = EngineFormState(),
+    val bookmarkForm: BookmarkFormState = BookmarkFormState(),
     val undoBanner: UndoBannerState? = null,
     val launchError: String? = null,
     val jsonDialogMode: JsonDialogMode? = null,
     val jsonStatusMessage: String? = null,
 ) {
+    val parsedCommand: ParsedPromptCommand
+        get() = QueryRouter.parsePromptCommand(searchInput.text, bookmarks)
+
     val liveResolution: RouteResolution
         get() = QueryRouter.resolve(searchInput.text, engines)
 
     val suggestedEngines: List<SearchEngine>
         get() = QueryRouter.suggestEngines(searchInput.text, engines)
+
+    val matchedBookmarks: List<PipeBookmark>
+        get() {
+            val cmd = parsedCommand
+            return when (cmd.mode) {
+                PromptIntentMode.CONTACTS_ONLY, PromptIntentMode.FILES_ONLY -> emptyList()
+                PromptIntentMode.BOOKMARKS_ONLY -> FuzzyMatcher.filterBookmarks(cmd.filterQuery, bookmarks, limit = 12)
+                PromptIntentMode.SCOPED_FOLDER -> listOfNotNull(cmd.scopedFolderBookmark)
+                PromptIntentMode.GENERAL -> {
+                    if (searchInput.text.isBlank()) bookmarks.take(6)
+                    else FuzzyMatcher.filterBookmarks(searchInput.text.trim(), bookmarks, limit = 5)
+                }
+            }
+        }
+
+    val matchedContacts: List<ContactItem>
+        get() {
+            val cmd = parsedCommand
+            return when (cmd.mode) {
+                PromptIntentMode.CONTACTS_ONLY -> FuzzyMatcher.filterContacts(cmd.filterQuery, contacts, limit = 10)
+                PromptIntentMode.GENERAL -> {
+                    val q = searchInput.text.trim()
+                    if (q.length < 2) emptyList() else FuzzyMatcher.filterContacts(q, contacts, limit = 4)
+                }
+                else -> emptyList()
+            }
+        }
+
+    val matchedFiles: List<LocalFileItem>
+        get() {
+            val cmd = parsedCommand
+            return when (cmd.mode) {
+                PromptIntentMode.SCOPED_FOLDER -> {
+                    FuzzyMatcher.filterFiles(cmd.filterQuery, scopedFolderFiles, limit = 12)
+                }
+                PromptIntentMode.FILES_ONLY -> {
+                    FuzzyMatcher.filterFiles(cmd.filterQuery, storageFiles, limit = 12)
+                }
+                PromptIntentMode.GENERAL -> {
+                    val q = searchInput.text.trim()
+                    if (q.length < 2) emptyList() else FuzzyMatcher.filterFiles(q, storageFiles, limit = 6)
+                }
+                else -> emptyList()
+            }
+        }
 }
 
 class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
@@ -76,6 +150,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     private val _uiState = MutableStateFlow(
         PipeUiState(
             engines = repository.loadEngines(),
+            bookmarks = repository.loadBookmarks(),
             history = repository.loadHistory(),
             themeMode = repository.loadThemeMode(),
             paletteChoice = repository.loadPaletteChoice(),
@@ -85,6 +160,26 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     )
     val uiState: StateFlow<PipeUiState> = _uiState.asStateFlow()
     private var undoJob: Job? = null
+
+    fun syncDeviceState(
+        hasContactsPerm: Boolean,
+        hasFilesPerm: Boolean,
+        contacts: List<ContactItem>,
+        files: List<LocalFileItem>,
+    ) {
+        _uiState.update {
+            it.copy(
+                hasContactsPermission = hasContactsPerm,
+                hasFilesPermission = hasFilesPerm,
+                contacts = contacts,
+                storageFiles = files,
+            )
+        }
+    }
+
+    fun updateScopedFolderFiles(files: List<LocalFileItem>) {
+        _uiState.update { it.copy(scopedFolderFiles = files) }
+    }
 
     fun navigateTo(view: PipeView) {
         _uiState.update { it.copy(activeView = view, launchError = null, jsonStatusMessage = null) }
@@ -126,6 +221,16 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         }
     }
 
+    fun applyPrefixAlias(alias: String) {
+        val text = "$alias "
+        _uiState.update {
+            it.copy(
+                searchInput = TextFieldValue(text, TextRange(text.length)),
+                launchError = null,
+            )
+        }
+    }
+
     fun submitSearch(overrideInput: String? = null, onOpenUrl: (String) -> Boolean) {
         val state = _uiState.value
         val raw = overrideInput ?: state.searchInput.text
@@ -136,6 +241,117 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         }
         repository.recordResolutionInHistory(raw, resolution)
         _uiState.update { it.copy(history = repository.loadHistory(), launchError = null) }
+    }
+
+    // -----------------------------------------------------------------------
+    // Bookmarks Management (Links, Folders, Files)
+    // -----------------------------------------------------------------------
+    fun openAddBookmarkForm(
+        prefillTitle: String = "",
+        prefillTarget: String = "/storage/emulated/0/",
+        prefillKind: BookmarkKind = BookmarkKind.FOLDER,
+    ) {
+        val suggestedAlias = prefillTitle.lowercase().filter { it.isLetterOrDigit() }.take(6)
+        _uiState.update {
+            it.copy(
+                bookmarkForm = BookmarkFormState(
+                    isOpen = true,
+                    editingId = null,
+                    alias = TextFieldValue(suggestedAlias, TextRange(suggestedAlias.length)),
+                    title = TextFieldValue(prefillTitle, TextRange(prefillTitle.length)),
+                    target = TextFieldValue(prefillTarget, TextRange(prefillTarget.length)),
+                    kind = prefillKind,
+                )
+            )
+        }
+    }
+
+    fun openEditBookmarkForm(bm: PipeBookmark) {
+        _uiState.update {
+            it.copy(
+                bookmarkForm = BookmarkFormState(
+                    isOpen = true,
+                    editingId = bm.id,
+                    alias = TextFieldValue(bm.alias, TextRange(bm.alias.length)),
+                    title = TextFieldValue(bm.title, TextRange(bm.title.length)),
+                    target = TextFieldValue(bm.target, TextRange(bm.target.length)),
+                    kind = bm.kind,
+                )
+            )
+        }
+    }
+
+    fun closeBookmarkForm() = _uiState.update { it.copy(bookmarkForm = BookmarkFormState(isOpen = false)) }
+
+    fun updateBookmarkFormAlias(v: TextFieldValue) = _uiState.update {
+        it.copy(bookmarkForm = it.bookmarkForm.copy(alias = v, errorText = null))
+    }
+
+    fun updateBookmarkFormTitle(v: TextFieldValue) = _uiState.update {
+        it.copy(bookmarkForm = it.bookmarkForm.copy(title = v, errorText = null))
+    }
+
+    fun updateBookmarkFormTarget(v: TextFieldValue) = _uiState.update {
+        it.copy(bookmarkForm = it.bookmarkForm.copy(target = v, errorText = null))
+    }
+
+    fun updateBookmarkFormKind(k: BookmarkKind) = _uiState.update {
+        val defaultTarget = when (k) {
+            BookmarkKind.LINK -> if (it.bookmarkForm.target.text.startsWith("/")) "https://" else it.bookmarkForm.target.text
+            else -> if (it.bookmarkForm.target.text.startsWith("http")) "/storage/emulated/0/" else it.bookmarkForm.target.text
+        }
+        it.copy(
+            bookmarkForm = it.bookmarkForm.copy(
+                kind = k,
+                target = TextFieldValue(defaultTarget, TextRange(defaultTarget.length)),
+                errorText = null,
+            )
+        )
+    }
+
+    fun saveBookmarkForm() {
+        val state = _uiState.value
+        val f = state.bookmarkForm
+        val cleanAlias = f.alias.text.trim().lowercase()
+        val cleanTitle = f.title.text.trim()
+        val cleanTarget = f.target.text.trim()
+
+        if (cleanTitle.isEmpty() || cleanTarget.isEmpty()) {
+            _uiState.update { it.copy(bookmarkForm = f.copy(errorText = "! title and target path/url are required")) }
+            return
+        }
+        if (cleanAlias.any { it.isWhitespace() }) {
+            _uiState.update { it.copy(bookmarkForm = f.copy(errorText = "! alias cannot contain spaces")) }
+            return
+        }
+
+        val updated = if (f.editingId != null) {
+            state.bookmarks.map { existing ->
+                if (existing.id == f.editingId) {
+                    existing.copy(alias = cleanAlias, title = cleanTitle, target = cleanTarget, kind = f.kind)
+                } else existing
+            }
+        } else {
+            state.bookmarks + PipeBookmark(
+                id = "bm_${System.currentTimeMillis()}",
+                alias = cleanAlias,
+                title = cleanTitle,
+                target = cleanTarget,
+                kind = f.kind,
+            )
+        }
+        repository.saveBookmarks(updated)
+        _uiState.update { it.copy(bookmarks = updated, bookmarkForm = BookmarkFormState(isOpen = false)) }
+    }
+
+    fun deleteBookmark(bm: PipeBookmark) {
+        val current = _uiState.value.bookmarks
+        val idx = current.indexOfFirst { it.id == bm.id }
+        if (idx < 0) return
+        val updated = current.toMutableList().apply { removeAt(idx) }
+        repository.saveBookmarks(updated)
+        _uiState.update { it.copy(bookmarks = updated) }
+        postUndo("deleted bookmark ${bm.title}", UndoPayload.DeletedBookmark(bm, idx))
     }
 
     fun deleteHistoryItem(entry: SearchHistoryEntry) {
@@ -341,6 +557,12 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             is UndoPayload.ResetEngines -> {
                 repository.saveEngines(p.previousEngines)
                 _uiState.update { it.copy(engines = p.previousEngines, undoBanner = null) }
+            }
+            is UndoPayload.DeletedBookmark -> {
+                val list = _uiState.value.bookmarks.toMutableList()
+                list.add(p.index.coerceIn(0, list.size), p.bookmark)
+                repository.saveBookmarks(list)
+                _uiState.update { it.copy(bookmarks = list, undoBanner = null) }
             }
             is UndoPayload.DeletedHistoryItem -> {
                 val list = _uiState.value.history.toMutableList()

@@ -17,7 +17,7 @@
         android:minHeight="36dp"
         android:gravity="center_vertical"
         android:singleLine="true"
-        android:text="$ query | target_"
+        android:text="$ query | c | dl_"
         android:textColor="@color/widget_fg"
         android:textSize="13sp" />
 
@@ -58,7 +58,7 @@
         android:gravity="center"
         android:paddingStart="6dp"
         android:paddingEnd="6dp"
-        android:text="|gh"
+        android:text="|dl"
         android:textColor="@color/widget_accent2"
         android:textSize="13sp"
         android:textStyle="bold" />

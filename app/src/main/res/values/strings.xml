@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">pipe</string>
-    <string name="app_tagline">pipe queries by keyword. nothing else.</string>
+    <string name="app_tagline">pipe queries, contacts, files &amp; bookmarks.</string>
     <string name="overlay_name">pipe overlay</string>
     <string name="overlay_shortcut_label">pipe overlay</string>
     <string name="overlay_shortcut_short">overlay</string>
     <string name="overlay_shortcut_long">launch ~/pipe/overlay prompt</string>
-    <string name="search_engine_label">pipe search router</string>
-    <string name="search_hint">keyword + query (e.g. yt lofi)</string>
+    <string name="search_engine_label">pipe browser &amp; search router</string>
+    <string name="search_hint">keyword + query, c contact, or dl file</string>
     <string name="pipe_selection">pipe</string>
     <string name="widget_name">~/pipe overlay bar</string>
     <string name="tile_name">pipe overlay</string>

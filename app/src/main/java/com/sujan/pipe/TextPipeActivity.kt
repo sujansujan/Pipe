@@ -1,10 +1,9 @@
 package com.sujan.pipe
 
 import android.app.Activity
-import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
+import com.sujan.pipe.data.DeviceIntegrationManager
 import com.sujan.pipe.data.ExternalTextMode
 import com.sujan.pipe.data.PipeRepository
 import com.sujan.pipe.domain.QueryRouter
@@ -26,16 +25,7 @@ class TextPipeActivity : Activity() {
         if (incomingText.isNotEmpty() && mode == ExternalTextMode.DIRECT_PIPE) {
             val res = QueryRouter.resolve(incomingText, repo.loadEngines())
             repo.recordResolutionInHistory(incomingText, res)
-            val launched = try {
-                startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse(res.targetUrl)).apply {
-                        addCategory(Intent.CATEGORY_BROWSABLE)
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                )
-                true
-            } catch (_: ActivityNotFoundException) { false }
-            if (launched) {
+            if (DeviceIntegrationManager.openUrlExcludingSelf(this, res.targetUrl)) {
                 finish()
                 return
             }

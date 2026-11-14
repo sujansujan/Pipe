@@ -4,7 +4,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.domain.RouteResolution
+import com.sujan.pipe.model.BookmarkKind
+import com.sujan.pipe.model.DefaultBookmarks
 import com.sujan.pipe.model.DefaultEngines
+import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.ui.ascii.PaletteChoice
@@ -28,6 +31,45 @@ class PipeRepository(context: Context) {
         val idx = engines.indexOfFirst { it.isDefault }.let { if (it >= 0) it else 0 }
         val normalized = engines.ifEmpty { DefaultEngines.LIST }.mapIndexed { i, e -> e.copy(isDefault = i == idx) }
         prefs.edit().putString("engines_json", QueryRouter.exportEnginesToJson(normalized)).apply()
+    }
+
+    fun loadBookmarks(): List<PipeBookmark> {
+        val raw = prefs.getString("bookmarks_json_v1", null) ?: return DefaultBookmarks.LIST
+        return try {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    add(
+                        PipeBookmark(
+                            id = o.optString("id", "bm_$i"),
+                            alias = o.optString("alias", ""),
+                            title = o.optString("title", ""),
+                            target = o.optString("target", ""),
+                            kind = BookmarkKind.fromString(o.optString("kind", "LINK")),
+                        )
+                    )
+                }
+            }.ifEmpty { DefaultBookmarks.LIST }
+        } catch (_: Exception) {
+            DefaultBookmarks.LIST
+        }
+    }
+
+    fun saveBookmarks(bookmarks: List<PipeBookmark>) {
+        val arr = JSONArray()
+        bookmarks.forEach { bm ->
+            arr.put(
+                JSONObject().apply {
+                    put("id", bm.id)
+                    put("alias", bm.alias.trim().lowercase())
+                    put("title", bm.title.trim())
+                    put("target", bm.target.trim())
+                    put("kind", bm.kind.name)
+                }
+            )
+        }
+        prefs.edit().putString("bookmarks_json_v1", arr.toString()).apply()
     }
 
     fun loadHistory(): List<SearchHistoryEntry> {
@@ -71,7 +113,6 @@ class PipeRepository(context: Context) {
         prefs.edit().putString("history_json", arr.toString()).apply()
     }
 
-    /** Records a dispatched search resolution into history if history recording is enabled. */
     fun recordResolutionInHistory(rawInput: String, resolution: RouteResolution) {
         val trimmed = rawInput.trim()
         if (!isHistoryEnabled() || trimmed.isEmpty()) return

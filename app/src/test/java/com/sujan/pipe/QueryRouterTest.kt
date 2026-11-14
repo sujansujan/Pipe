@@ -1,6 +1,10 @@
 package com.sujan.pipe
 
+import com.sujan.pipe.domain.FuzzyMatcher
+import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
+import com.sujan.pipe.model.ContactItem
+import com.sujan.pipe.model.DefaultBookmarks
 import com.sujan.pipe.model.DefaultEngines
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,6 +16,7 @@ import org.junit.Test
 class QueryRouterTest {
 
     private val engines = DefaultEngines.LIST
+    private val bookmarks = DefaultBookmarks.LIST
 
     @Test
     fun `matches standard lowercase keyword and builds encoded search URL`() {
@@ -111,15 +116,36 @@ class QueryRouterTest {
     }
 
     @Test
-    fun `extractQueryFromSearchUri decodes custom browser search engine URLs`() {
-        val q1 = QueryRouter.extractQueryFromSearchUri("pipe://search?q=yt+lofi+music")
-        assertEquals("yt lofi music", q1)
-        val res1 = QueryRouter.resolve(q1!!, engines)
-        assertEquals("https://www.youtube.com/results?search_query=lofi+music", res1.targetUrl)
+    fun `extractQueryFromSearchUri decodes default browser search URLs and ignores normal websites`() {
+        val qGoogle = QueryRouter.extractQueryFromSearchUri("https://www.google.com/search?q=yt+lofi+music&ie=UTF-8")
+        assertEquals("yt lofi music", qGoogle)
 
-        val q2 = QueryRouter.extractQueryFromSearchUri("https://pipe.local/search?q=gh%20compose%20ui")
-        assertEquals("gh compose ui", q2)
-        val res2 = QueryRouter.resolve(q2!!, engines)
-        assertEquals("https://github.com/search?q=compose+ui", res2.targetUrl)
+        val qPipe = QueryRouter.extractQueryFromSearchUri("pipe://search?q=gh+compose")
+        assertEquals("gh compose", qPipe)
+
+        val normalSite = QueryRouter.extractQueryFromSearchUri("https://github.com/sujansujan/Pipe")
+        assertNull(normalSite)
+    }
+
+    @Test
+    fun `contact fuzzy search and folder bookmark aliases parse and rank accurately`() {
+        val cmdContact = QueryRouter.parsePromptCommand("c kali", bookmarks)
+        assertEquals(PromptIntentMode.CONTACTS_ONLY, cmdContact.mode)
+        assertEquals("kali", cmdContact.filterQuery)
+
+        val contacts = listOf(
+            ContactItem("1", "Sujan Devkota", "9841000000"),
+            ContactItem("2", "Kalika Prasad", "9841234567"),
+            ContactItem("3", "Ramesh Kali", "9801112223"),
+        )
+        val matched = FuzzyMatcher.filterContacts("kali", contacts)
+        assertEquals(2, matched.size)
+        assertEquals("Kalika Prasad", matched.first().displayName)
+        assertEquals("9779841234567", QueryRouter.normalizeWhatsAppPhone(matched.first().phoneNumber))
+
+        val cmdDl = QueryRouter.parsePromptCommand("dl invoice", bookmarks)
+        assertEquals(PromptIntentMode.SCOPED_FOLDER, cmdDl.mode)
+        assertEquals("invoice", cmdDl.filterQuery)
+        assertEquals("/storage/emulated/0/Download", cmdDl.scopedFolderBookmark?.target)
     }
 }

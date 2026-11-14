@@ -1,9 +1,7 @@
 package com.sujan.pipe
 
 import android.app.SearchManager
-import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -17,13 +15,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
@@ -36,15 +35,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import com.sujan.pipe.data.DeviceIntegrationManager
 import com.sujan.pipe.data.PipeRepository
+import com.sujan.pipe.domain.FuzzyMatcher
+import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
+import com.sujan.pipe.model.BookmarkKind
+import com.sujan.pipe.model.ContactItem
+import com.sujan.pipe.model.LocalFileItem
+import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.SearchEngine
+import com.sujan.pipe.ui.BookmarkResultRow
+import com.sujan.pipe.ui.ContactResultRow
+import com.sujan.pipe.ui.FileResultRow
 import com.sujan.pipe.ui.ascii.AsciiButton
 import com.sujan.pipe.ui.ascii.AsciiPipePill
 import com.sujan.pipe.ui.ascii.AsciiText
@@ -52,12 +63,9 @@ import com.sujan.pipe.ui.ascii.AsciiTextField
 import com.sujan.pipe.ui.ascii.AsciiType
 import com.sujan.pipe.ui.ascii.LocalAscii
 import com.sujan.pipe.ui.ascii.PipeTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-/**
- * Translucent floating ASCII command overlay (`~/pipe/overlay`).
- * Can be bound directly in UbikiTouch (`Shortcuts -> pipe overlay` or `Activities -> PipeOverlayActivity`),
- * Quick Settings tile, home-screen widget, or system Digital Assistant gesture (`ACTION_ASSIST`).
- */
 class PipeOverlayActivity : ComponentActivity() {
 
     private val repository by lazy { PipeRepository(applicationContext) }
@@ -67,6 +75,7 @@ class PipeOverlayActivity : ComponentActivity() {
 
         val initialText = extractPrefill(intent)
         val engines = repository.loadEngines()
+        val bookmarks = repository.loadBookmarks()
         val themeMode = repository.loadThemeMode()
         val palette = repository.loadPaletteChoice().palette
 
@@ -79,14 +88,39 @@ class PipeOverlayActivity : ComponentActivity() {
                 OverlayPromptWindow(
                     initialQuery = initialText,
                     engines = engines,
-                    onDispatch = { rawInput ->
-                        val resolution = QueryRouter.resolve(rawInput, engines)
-                        val ok = launchExternalUrl(resolution.targetUrl)
+                    bookmarks = bookmarks,
+                    loadContacts = {
+                        withContext(Dispatchers.IO) {
+                            DeviceIntegrationManager.loadDeviceContacts(applicationContext)
+                        }
+                    },
+                    loadFiles = { scopedPath ->
+                        withContext(Dispatchers.IO) {
+                            DeviceIntegrationManager.scanStorageFiles(applicationContext, bookmarks, scopedPath)
+                        }
+                    },
+                    onDispatchUrl = { rawInput, url ->
+                        val ok = DeviceIntegrationManager.openUrlExcludingSelf(this, url)
                         if (ok) {
-                            repository.recordResolutionInHistory(rawInput, resolution)
+                            repository.recordResolutionInHistory(rawInput, QueryRouter.resolve(rawInput, engines))
                             finish()
                         }
                         ok
+                    },
+                    onOpenPath = { path ->
+                        val ok = DeviceIntegrationManager.openLocalFileOrFolder(this, path)
+                        if (ok) finish()
+                        ok
+                    },
+                    onCallContact = { contact ->
+                        if (DeviceIntegrationManager.dialContact(this, contact.phoneNumber)) finish()
+                    },
+                    onSmsContact = { contact ->
+                        if (DeviceIntegrationManager.smsContact(this, contact.phoneNumber)) finish()
+                    },
+                    onWhatsAppContact = { contact ->
+                        val digits = QueryRouter.normalizeWhatsAppPhone(contact.phoneNumber)
+                        if (DeviceIntegrationManager.whatsAppContact(this, digits)) finish()
                     },
                     onOpenFullApp = { currentText ->
                         startActivity(
@@ -103,29 +137,12 @@ class PipeOverlayActivity : ComponentActivity() {
         }
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-    }
-
     private fun extractPrefill(intent: Intent?): String {
         if (intent == null) return ""
         return intent.getStringExtra(MainActivity.EXTRA_PREFILL_QUERY)
             ?: intent.getStringExtra(SearchManager.QUERY)
             ?: intent.getStringExtra(Intent.EXTRA_TEXT)
             ?: ""
-    }
-
-    private fun launchExternalUrl(url: String): Boolean = try {
-        startActivity(
-            Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                addCategory(Intent.CATEGORY_BROWSABLE)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-        )
-        true
-    } catch (_: ActivityNotFoundException) {
-        false
     }
 }
 
@@ -134,11 +151,19 @@ class PipeOverlayActivity : ComponentActivity() {
 private fun OverlayPromptWindow(
     initialQuery: String,
     engines: List<SearchEngine>,
-    onDispatch: (String) -> Boolean,
+    bookmarks: List<PipeBookmark>,
+    loadContacts: suspend () -> List<ContactItem>,
+    loadFiles: suspend (String?) -> List<LocalFileItem>,
+    onDispatchUrl: (String, String) -> Boolean,
+    onOpenPath: (String) -> Boolean,
+    onCallContact: (ContactItem) -> Unit,
+    onSmsContact: (ContactItem) -> Unit,
+    onWhatsAppContact: (ContactItem) -> Unit,
     onOpenFullApp: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val c = LocalAscii.current
+    val clipboard = LocalClipboardManager.current
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
@@ -146,7 +171,13 @@ private fun OverlayPromptWindow(
         mutableStateOf(TextFieldValue(initialQuery, TextRange(initialQuery.length)))
     }
     var errorMsg by remember { mutableStateOf<String?>(null) }
+    var contacts by remember { mutableStateOf<List<ContactItem>>(emptyList()) }
+    var storageFiles by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
+    var scopedFiles by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
 
+    val cmd = remember(input.text, bookmarks) {
+        QueryRouter.parsePromptCommand(input.text, bookmarks)
+    }
     val resolution = remember(input.text, engines) {
         QueryRouter.resolve(input.text, engines)
     }
@@ -159,9 +190,68 @@ private fun OverlayPromptWindow(
             focusRequester.requestFocus()
             keyboardController?.show()
         }
+        contacts = loadContacts()
+        storageFiles = loadFiles(null)
     }
 
-    // Outer scrim: tapping outside the floating ASCII box dismisses the overlay immediately
+    LaunchedEffect(cmd.scopedFolderBookmark?.target) {
+        val target = cmd.scopedFolderBookmark?.target
+        if (target != null) {
+            scopedFiles = loadFiles(target)
+        }
+    }
+
+    val matchedContacts = remember(input.text, cmd, contacts) {
+        when (cmd.mode) {
+            PromptIntentMode.CONTACTS_ONLY -> FuzzyMatcher.filterContacts(cmd.filterQuery, contacts, limit = 5)
+            PromptIntentMode.GENERAL -> if (input.text.trim().length >= 2) {
+                FuzzyMatcher.filterContacts(input.text.trim(), contacts, limit = 3)
+            } else emptyList()
+            else -> emptyList()
+        }
+    }
+
+    val matchedBookmarks = remember(input.text, cmd, bookmarks) {
+        when (cmd.mode) {
+            PromptIntentMode.CONTACTS_ONLY, PromptIntentMode.FILES_ONLY -> emptyList()
+            PromptIntentMode.SCOPED_FOLDER -> listOfNotNull(cmd.scopedFolderBookmark)
+            else -> if (input.text.isBlank()) bookmarks.take(4) else FuzzyMatcher.filterBookmarks(input.text.trim(), bookmarks, limit = 4)
+        }
+    }
+
+    val matchedFiles = remember(input.text, cmd, storageFiles, scopedFiles) {
+        when (cmd.mode) {
+            PromptIntentMode.SCOPED_FOLDER -> FuzzyMatcher.filterFiles(cmd.filterQuery, scopedFiles, limit = 6)
+            PromptIntentMode.FILES_ONLY -> FuzzyMatcher.filterFiles(cmd.filterQuery, storageFiles, limit = 6)
+            PromptIntentMode.GENERAL -> if (input.text.trim().length >= 2) {
+                FuzzyMatcher.filterFiles(input.text.trim(), storageFiles, limit = 4)
+            } else emptyList()
+            else -> emptyList()
+        }
+    }
+
+    val executePrimary = {
+        val exactBm = cmd.exactBookmark
+        if (exactBm != null) {
+            val ok = if (exactBm.kind == BookmarkKind.LINK) {
+                onDispatchUrl(input.text, exactBm.target)
+            } else {
+                onOpenPath(exactBm.target)
+            }
+            if (!ok) errorMsg = "! could not open ${exactBm.target}"
+        } else if (cmd.mode == PromptIntentMode.CONTACTS_ONLY && matchedContacts.isNotEmpty()) {
+            onCallContact(matchedContacts.first())
+        } else if ((cmd.mode == PromptIntentMode.FILES_ONLY || cmd.mode == PromptIntentMode.SCOPED_FOLDER) && matchedFiles.isNotEmpty()) {
+            if (!onOpenPath(matchedFiles.first().absolutePath)) {
+                errorMsg = "! could not open file"
+            }
+        } else {
+            if (!onDispatchUrl(input.text, resolution.targetUrl)) {
+                errorMsg = "! no browser found"
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -173,13 +263,13 @@ private fun OverlayPromptWindow(
             )
             .safeDrawingPadding()
             .imePadding()
-            .padding(horizontal = 14.dp, vertical = 24.dp),
+            .padding(horizontal = 12.dp, vertical = 18.dp),
         contentAlignment = Alignment.TopCenter,
     ) {
-        // Inner floating terminal card: consumes clicks so tapping inside doesn't dismiss
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(max = 520.dp)
                 .background(c.bg)
                 .border(2.dp, c.accent)
                 .clickable(
@@ -187,31 +277,18 @@ private fun OverlayPromptWindow(
                     indication = null,
                     onClick = {},
                 )
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            // Compact Overlay Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText(
-                    text = "~/pipe/overlay",
-                    style = AsciiType.title,
-                    color = c.accent2,
-                )
+                AsciiText("~/pipe/overlay", style = AsciiType.title, color = c.accent2)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    AsciiButton(
-                        label = "full",
-                        onClick = { onOpenFullApp(input.text) },
-                        spokenLabel = "open full pipe app",
-                    )
-                    AsciiButton(
-                        label = "x",
-                        onClick = onDismiss,
-                        spokenLabel = "close overlay",
-                    )
+                    AsciiButton("full", { onOpenFullApp(input.text) })
+                    AsciiButton("x", onDismiss)
                 }
             }
 
@@ -219,48 +296,22 @@ private fun OverlayPromptWindow(
                 label = null,
                 promptPrefix = "$ ",
                 value = input,
-                onValueChange = {
-                    input = it
-                    errorMsg = null
-                },
-                placeholder = "yt lofi  |  g phones",
+                onValueChange = { input = it; errorMsg = null },
+                placeholder = "yt lofi | c kali | dl | f pdf",
                 errorText = errorMsg,
                 focusRequester = focusRequester,
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Text,
-                    imeAction = ImeAction.Search,
-                ),
-                keyboardActions = KeyboardActions(
-                    onSearch = {
-                        if (!onDispatch(input.text)) {
-                            errorMsg = "! no browser or app found"
-                        }
-                    }
-                ),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { executePrimary() }),
                 trailingControl = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (input.text.isNotEmpty()) {
-                            AsciiButton(
-                                label = "c",
-                                onClick = { input = TextFieldValue("") },
-                                spokenLabel = "clear input",
-                            )
+                            AsciiButton("c", { input = TextFieldValue("") })
                         }
-                        AsciiButton(
-                            label = "| ->",
-                            onClick = {
-                                if (!onDispatch(input.text)) {
-                                    errorMsg = "! no browser or app found"
-                                }
-                            },
-                            primary = true,
-                            spokenLabel = "pipe query to ${resolution.engine.name}",
-                        )
+                        AsciiButton("| ->", { executePrimary() }, primary = true)
                     }
                 },
             )
 
-            // Live 1-line pipeline preview
             AsciiText(
                 text = "+--> ${resolution.pipelinePreview}",
                 style = AsciiType.small,
@@ -268,14 +319,22 @@ private fun OverlayPromptWindow(
                 maxLines = 1,
             )
 
-            // Keyword pills
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                suggestions.forEach { eng ->
-                    val active = resolution.matchedByKeyword && resolution.engine.id == eng.id
+                AsciiPipePill("c", "contacts", cmd.mode == PromptIntentMode.CONTACTS_ONLY, accentColor = c.good, onClick = {
+                    input = TextFieldValue("c ", TextRange(2))
+                })
+                AsciiPipePill("dl", "downloads", cmd.scopedFolderBookmark?.alias == "dl", accentColor = c.warn, onClick = {
+                    input = TextFieldValue("dl ", TextRange(3))
+                })
+                AsciiPipePill("f", "files", cmd.mode == PromptIntentMode.FILES_ONLY, accentColor = c.accent3, onClick = {
+                    input = TextFieldValue("f ", TextRange(2))
+                })
+                suggestions.take(5).forEach { eng ->
+                    val active = cmd.mode == PromptIntentMode.GENERAL && resolution.matchedByKeyword && resolution.engine.id == eng.id
                     AsciiPipePill(
                         keyword = eng.keyword,
                         name = eng.name.lowercase(),
@@ -283,20 +342,43 @@ private fun OverlayPromptWindow(
                         isDefault = eng.isDefault,
                         accentColor = c.forRole(eng.colorRole),
                         onClick = {
-                            val trimmedStart = input.text.trimStart()
-                            val tokens = trimmedStart.split(Regex("\\s+"), limit = 2)
-                            val first = tokens.firstOrNull().orEmpty()
-                            val rem = if (tokens.size > 1) tokens[1] else ""
-                            val matchesAny = engines.any { it.keyword.equals(first, ignoreCase = true) }
-                            val next = when {
-                                trimmedStart.isEmpty() -> "${eng.keyword} "
-                                matchesAny && rem.isNotEmpty() -> "${eng.keyword} $rem"
-                                !trimmedStart.contains(' ') -> "${eng.keyword} "
-                                else -> "${eng.keyword} $trimmedStart"
-                            }
+                            val next = "${eng.keyword} "
                             input = TextFieldValue(next, TextRange(next.length))
-                            runCatching { focusRequester.requestFocus() }
                         },
+                    )
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(matchedContacts, key = { "c_${it.id}_${it.phoneNumber}" }) { contact ->
+                    ContactResultRow(
+                        contact = contact,
+                        onCall = { onCallContact(contact) },
+                        onSms = { onSmsContact(contact) },
+                        onWhatsApp = { onWhatsAppContact(contact) },
+                        onCopy = { clipboard.setText(AnnotatedString(contact.phoneNumber)) },
+                    )
+                }
+                items(matchedBookmarks, key = { "bm_${it.id}" }) { bm ->
+                    BookmarkResultRow(
+                        bookmark = bm,
+                        onOpen = {
+                            if (bm.kind == BookmarkKind.LINK) onDispatchUrl(input.text, bm.target)
+                            else onOpenPath(bm.target)
+                        },
+                        onScopeInto = if (bm.kind == BookmarkKind.FOLDER) {
+                            { input = TextFieldValue("${bm.alias} ", TextRange(bm.alias.length + 1)) }
+                        } else null,
+                    )
+                }
+                items(matchedFiles, key = { "f_${it.absolutePath}" }) { fileItem ->
+                    FileResultRow(
+                        item = fileItem,
+                        onOpen = { onOpenPath(fileItem.absolutePath) },
+                        onBookmark = { onOpenFullApp(input.text) },
                     )
                 }
             }

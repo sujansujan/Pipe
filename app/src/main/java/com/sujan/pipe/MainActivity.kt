@@ -1,13 +1,14 @@
 package com.sujan.pipe
 
+import android.Manifest
 import android.app.PendingIntent
 import android.app.SearchManager
-import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.graphics.drawable.Icon
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -17,13 +18,23 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.lifecycleScope
+import com.sujan.pipe.data.DeviceIntegrationManager
 import com.sujan.pipe.data.PipeRepository
+import com.sujan.pipe.domain.PromptIntentMode
+import com.sujan.pipe.domain.QueryRouter
+import com.sujan.pipe.model.BookmarkKind
+import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.ui.JsonDialogMode
 import com.sujan.pipe.ui.PipeApp
 import com.sujan.pipe.ui.PipeView
 import com.sujan.pipe.ui.PipeViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
@@ -34,12 +45,40 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         handleIncomingIntent(intent)
+        refreshDeviceDataAsync()
 
         setContent {
             val state by viewModel.uiState.collectAsState()
 
             BackHandler(enabled = state.activeView != PipeView.PROMPT) {
                 viewModel.navigateTo(PipeView.PROMPT)
+            }
+
+            // Whenever the user types a folder alias like `dl `, load files inside that folder
+            val scopedTarget = state.parsedCommand.scopedFolderBookmark?.target
+            LaunchedEffect(scopedTarget, state.hasFilesPermission) {
+                if (scopedTarget != null && state.hasFilesPermission) {
+                    val files = withContext(Dispatchers.IO) {
+                        DeviceIntegrationManager.scanStorageFiles(
+                            applicationContext,
+                            state.bookmarks,
+                            scopedTarget,
+                        )
+                    }
+                    viewModel.updateScopedFolderFiles(files)
+                }
+            }
+
+            val contactsPermLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestPermission(),
+            ) {
+                refreshDeviceDataAsync()
+            }
+
+            val legacyFilesPermLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestPermission(),
+            ) {
+                refreshDeviceDataAsync()
             }
 
             val exportLauncher = rememberLauncherForActivityResult(
@@ -73,13 +112,69 @@ class MainActivity : ComponentActivity() {
                 onNavigate = viewModel::navigateTo,
                 onSearchInputChange = viewModel::updateSearchInput,
                 onChipClick = viewModel::applyKeywordChip,
-                onSubmitSearch = { viewModel.submitSearch(onOpenUrl = ::launchExternalUrl) },
+                onAliasPillClick = viewModel::applyPrefixAlias,
+                onSubmitPrimaryAction = {
+                    val cmd = state.parsedCommand
+                    val exactBm = cmd.exactBookmark
+                    when {
+                        exactBm != null -> handleOpenBookmark(exactBm)
+                        cmd.mode == PromptIntentMode.CONTACTS_ONLY && state.matchedContacts.isNotEmpty() ->
+                            DeviceIntegrationManager.dialContact(this, state.matchedContacts.first().phoneNumber)
+                        (cmd.mode == PromptIntentMode.FILES_ONLY || cmd.mode == PromptIntentMode.SCOPED_FOLDER) &&
+                            state.matchedFiles.isNotEmpty() ->
+                            DeviceIntegrationManager.openLocalFileOrFolder(this, state.matchedFiles.first().absolutePath)
+                        else ->
+                            viewModel.submitSearch(onOpenUrl = { url ->
+                                DeviceIntegrationManager.openUrlExcludingSelf(this, url)
+                            })
+                    }
+                },
+                onOpenBookmark = ::handleOpenBookmark,
+                onOpenLocalFile = { fileItem ->
+                    if (!DeviceIntegrationManager.openLocalFileOrFolder(this, fileItem.absolutePath)) {
+                        viewModel.setJsonStatusMessage("! no app found to open ${fileItem.name}")
+                    }
+                },
+                onBookmarkLocalFile = { fileItem ->
+                    viewModel.openAddBookmarkForm(
+                        prefillTitle = fileItem.name,
+                        prefillTarget = fileItem.absolutePath,
+                        prefillKind = if (fileItem.isDirectory) BookmarkKind.FOLDER else BookmarkKind.FILE,
+                    )
+                    viewModel.navigateTo(PipeView.BOOKMARKS)
+                },
+                onCallContact = { c -> DeviceIntegrationManager.dialContact(this, c.phoneNumber) },
+                onSmsContact = { c -> DeviceIntegrationManager.smsContact(this, c.phoneNumber) },
+                onWhatsAppContact = { c ->
+                    val digits = QueryRouter.normalizeWhatsAppPhone(c.phoneNumber)
+                    DeviceIntegrationManager.whatsAppContact(this, digits)
+                },
+                onRequestContactsPermission = {
+                    contactsPermLauncher.launch(Manifest.permission.READ_CONTACTS)
+                },
+                onRequestFilesPermission = {
+                    requestStoragePermission(legacyFilesPermLauncher::launch)
+                },
                 onRerunHistory = { entry ->
-                    viewModel.submitSearch(overrideInput = entry.rawInput, onOpenUrl = ::launchExternalUrl)
+                    viewModel.submitSearch(overrideInput = entry.rawInput, onOpenUrl = { url ->
+                        DeviceIntegrationManager.openUrlExcludingSelf(this, url)
+                    })
                 },
                 onFillHistory = { entry -> viewModel.setSearchTextFromExternal(entry.rawInput) },
                 onDeleteHistory = viewModel::deleteHistoryItem,
                 onClearHistory = viewModel::clearAllHistory,
+                onAddBookmarkClick = { viewModel.openAddBookmarkForm() },
+                onEditBookmarkClick = viewModel::openEditBookmarkForm,
+                onDeleteBookmarkClick = viewModel::deleteBookmark,
+                onBookmarkFormAliasChange = viewModel::updateBookmarkFormAlias,
+                onBookmarkFormTitleChange = viewModel::updateBookmarkFormTitle,
+                onBookmarkFormTargetChange = viewModel::updateBookmarkFormTarget,
+                onBookmarkFormKindChange = viewModel::updateBookmarkFormKind,
+                onBookmarkFormSave = {
+                    viewModel.saveBookmarkForm()
+                    refreshDeviceDataAsync()
+                },
+                onBookmarkFormCancel = viewModel::closeBookmarkForm,
                 onAddEngineClick = viewModel::openAddEngineForm,
                 onEditEngineClick = viewModel::openEditEngineForm,
                 onDeleteEngineClick = viewModel::deleteEngine,
@@ -115,10 +210,62 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        refreshDeviceDataAsync()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIncomingIntent(intent)
+    }
+
+    private fun refreshDeviceDataAsync() {
+        val hasContacts = DeviceIntegrationManager.hasContactsPermission(this)
+        val hasFiles = DeviceIntegrationManager.hasAllFilesPermission(this)
+        val currentBookmarks = viewModel.uiState.value.bookmarks
+        lifecycleScope.launch(Dispatchers.IO) {
+            val contacts = if (hasContacts) DeviceIntegrationManager.loadDeviceContacts(applicationContext) else emptyList()
+            val files = if (hasFiles) DeviceIntegrationManager.scanStorageFiles(applicationContext, currentBookmarks) else emptyList()
+            viewModel.syncDeviceState(
+                hasContactsPerm = hasContacts,
+                hasFilesPerm = hasFiles,
+                contacts = contacts,
+                files = files,
+            )
+        }
+    }
+
+    private fun handleOpenBookmark(bm: PipeBookmark) {
+        if (bm.kind == BookmarkKind.LINK) {
+            DeviceIntegrationManager.openUrlExcludingSelf(this, bm.target)
+        } else {
+            if (!DeviceIntegrationManager.hasAllFilesPermission(this)) {
+                requestStoragePermission {}
+                return
+            }
+            DeviceIntegrationManager.openLocalFileOrFolder(this, bm.target)
+        }
+    }
+
+    private fun requestStoragePermission(onLegacyRequest: (String) -> Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:$packageName"),
+                    )
+                )
+            }.onFailure {
+                runCatching {
+                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                }
+            }
+        } else {
+            onLegacyRequest(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
@@ -167,18 +314,6 @@ class MainActivity : ComponentActivity() {
         }.onFailure {
             runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
         }
-    }
-
-    private fun launchExternalUrl(url: String): Boolean = try {
-        startActivity(
-            Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                addCategory(Intent.CATEGORY_BROWSABLE)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-        )
-        true
-    } catch (_: ActivityNotFoundException) {
-        false
     }
 
     companion object {

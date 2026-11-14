@@ -4,10 +4,6 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 
-/**
- * Handles `android.intent.action.CREATE_SHORTCUT` so gesture apps like UbikiTouch (`ubitouch`),
- * Edge Gestures, Tasker, or custom launchers can bind a direct shortcut to `PipeOverlayActivity`.
- */
 class OverlayShortcutCreatorActivity : Activity() {
 
     @Suppress("DEPRECATION")

@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """
 ASCII-Art Pipe Launcher Icon Generator for `pipe` (`com.sujan.pipe`).
-Renders the 20x8 ASCII-art smoking pipe with Unix `|` / `>` smoke flair into:
-- `store/icon_512.png` (512x512 high-res PNG)
-- `drawable/ic_launcher_foreground.xml` (Android vector drawable scanline paths)
-- `drawable/ic_launcher_monochrome.xml` (Android 13+ themed icon vector)
-- `values/icon_colors.xml` & `mipmap-anydpi-v26/ic_launcher*.xml`
 """
 import argparse
 from pathlib import Path
@@ -100,10 +95,6 @@ def render_ascii_pipe_canvas(size: int = 512) -> Image.Image:
     return img
 
 
-def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
-    return f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
-
-
 def quantize_to_palette(rgb: tuple[int, int, int]) -> str:
     best_hex = PALETTE["bg"]
     best_dist = 10**9
@@ -117,7 +108,6 @@ def quantize_to_palette(rgb: tuple[int, int, int]) -> str:
 
 
 def build_vector_xml_from_image(img_512: Image.Image) -> tuple[str, str]:
-    # Sample onto a crisp 108x108 grid matching the adaptive icon viewport
     vp = 108
     small = img_512.resize((vp, vp), Image.Resampling.NEAREST).convert("RGB")
     color_runs: dict[str, list[str]] = {h: [] for h in PALETTE.values() if h != PALETTE["bg"]}
