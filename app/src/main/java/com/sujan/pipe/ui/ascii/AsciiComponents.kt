@@ -372,6 +372,5 @@ fun frame(title: String, lines: List<String>, cols: Int): String {
     val top = "+- $title ".take(safeCols - 1).padEnd(safeCols - 1, '-') + "+"
     val body = lines.map { "| " + it.take(inner - 2).padEnd(inner - 2, ' ') + " |" }
     val bottom = "+" + "-".repeat(inner) + "+"
-    return (listOf(top) + body + bottom).joinToString("
-")
+    return (listOf(top) + body + bottom).joinToString("\n")
 }

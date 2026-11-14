@@ -2,9 +2,8 @@ package com.sujan.pipe.ui.ascii
 
 import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LocalContentColor
-import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -19,11 +18,11 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import com.sujan.pipe.model.EngineColorRole
@@ -132,9 +131,18 @@ private val AsciiTypography = Typography(
     labelLarge = AsciiType.title, labelMedium = AsciiType.body, labelSmall = AsciiType.small,
 )
 
+private val SquareCornerShape = RoundedCornerShape(0.dp)
+
+private val AsciiSquareShapes = Shapes(
+    extraSmall = SquareCornerShape,
+    small = SquareCornerShape,
+    medium = SquareCornerShape,
+    large = SquareCornerShape,
+    extraLarge = SquareCornerShape,
+)
+
 enum class ThemeMode { System, Light, Dark }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PipeTheme(
     mode: ThemeMode = ThemeMode.System,
@@ -157,7 +165,7 @@ fun PipeTheme(
             outline = c.dim, outlineVariant = c.border,
         ),
         typography = AsciiTypography,
-        shapes = Shapes(RectangleShape, RectangleShape, RectangleShape, RectangleShape, RectangleShape),
+        shapes = AsciiSquareShapes,
     ) {
         val view = LocalView.current
         if (!view.isInEditMode) {
@@ -172,7 +180,6 @@ fun PipeTheme(
         }
         CompositionLocalProvider(
             LocalAscii provides c,
-            LocalRippleConfiguration provides null,
             LocalContentColor provides c.fg,
             LocalTextStyle provides AsciiType.body,
             content = content,

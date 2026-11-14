@@ -145,29 +145,19 @@ object QueryRouter {
     }
 
     fun exportEnginesToJson(engines: List<SearchEngine>): String {
-        val sb = StringBuilder("[
-")
+        val sb = StringBuilder("[\n")
         engines.forEachIndexed { idx, e ->
-            sb.append("  {
-")
-            sb.append("    \"id\": \"${escapeJson(e.id)}\",
-")
-            sb.append("    \"name\": \"${escapeJson(e.name)}\",
-")
-            sb.append("    \"keyword\": \"${escapeJson(e.keyword.lowercase())}\",
-")
-            sb.append("    \"urlTemplate\": \"${escapeJson(e.urlTemplate)}\",
-")
-            sb.append("    \"glyph\": \"${escapeJson(e.glyph)}\",
-")
-            sb.append("    \"colorRole\": \"${escapeJson(e.colorRole.name)}\",
-")
-            sb.append("    \"isDefault\": ${e.isDefault}
-")
+            sb.append("  {\n")
+            sb.append("    \"id\": \"${escapeJson(e.id)}\",\n")
+            sb.append("    \"name\": \"${escapeJson(e.name)}\",\n")
+            sb.append("    \"keyword\": \"${escapeJson(e.keyword.lowercase())}\",\n")
+            sb.append("    \"urlTemplate\": \"${escapeJson(e.urlTemplate)}\",\n")
+            sb.append("    \"glyph\": \"${escapeJson(e.glyph)}\",\n")
+            sb.append("    \"colorRole\": \"${escapeJson(e.colorRole.name)}\",\n")
+            sb.append("    \"isDefault\": ${e.isDefault}\n")
             sb.append("  }")
             if (idx < engines.lastIndex) sb.append(",")
-            sb.append("
-")
+            sb.append("\n")
         }
         sb.append("]")
         return sb.toString()
@@ -207,14 +197,12 @@ object QueryRouter {
     }
 
     private fun escapeJson(v: String): String =
-        v.replace("\\", "\\\\").replace("\"", "\\\"").replace("
-", "\\n")
+        v.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
 
     private fun extractJsonString(block: String, key: String): String? {
         val pattern = Regex("\"$key\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
         val raw = pattern.find(block)?.groupValues?.get(1) ?: return null
-        return raw.replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", "
-")
+        return raw.replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", "\n")
     }
 
     private fun extractJsonBoolean(block: String, key: String): Boolean? {
