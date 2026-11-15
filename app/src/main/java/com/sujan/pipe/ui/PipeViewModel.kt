@@ -108,10 +108,10 @@ data class PipeUiState(
     val undoBanner: UndoBannerState? = null,
     val launchError: String? = null,
     val usageCounts: Map<String, Int> = emptyMap(),
+    val paletteResults: List<com.sujan.pipe.domain.PaletteItem> = emptyList(),
     val jsonDialogMode: JsonDialogMode? = null,
     val jsonStatusMessage: String? = null,
 ) {
-    val paletteResults: List<com.sujan.pipe.domain.PaletteItem> = emptyList(),
     val parsedCommand: ParsedPromptCommand
         get() = QueryRouter.parsePromptCommand(searchInput.text, bookmarks)
 
