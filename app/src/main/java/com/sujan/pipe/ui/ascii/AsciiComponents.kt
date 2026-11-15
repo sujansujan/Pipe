@@ -363,25 +363,30 @@ fun leader(key: String, value: String, cols: Int): String {
 fun AsciiFrameDivider(
     leftLabel: String,
     rightLabel: String? = null,
-    borderChar: Char = '─',
-    leftCorner: String = "├─",
-    rightCorner: String = "─┤",
 ) {
     val c = LocalAscii.current
-    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val cols = rememberCols(AsciiType.small)
-        val leftPart = "$leftCorner $leftLabel "
-        val rightPart = if (rightLabel != null) " $rightLabel $rightCorner" else rightCorner
-        val fillCount = (cols - leftPart.length - rightPart.length).coerceAtLeast(2)
-        val line = leftPart + borderChar.toString().repeat(fillCount) + rightPart
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(c.surface)
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         AsciiText(
-            text = line,
+            text = ":: $leftLabel",
             style = AsciiType.small,
-            color = c.dim,
-            softWrap = false,
+            color = c.accent2,
             maxLines = 1,
-            modifier = Modifier.clearAndSetSemantics {},
         )
+        if (rightLabel != null) {
+            AsciiText(
+                text = rightLabel,
+                style = AsciiType.small,
+                color = c.dim,
+                maxLines = 1,
+            )
+        }
     }
 }
 

@@ -103,6 +103,25 @@ object FuzzyMatcher {
             .map { it.first }
     }
 
+    /**
+     * Scores a file or folder against [query] by checking:
+     * 1. Exact/prefix/subsequence match against [LocalFileItem.name] (e.g. `sasu ama.jpg`).
+     * 2. Match against [LocalFileItem.parentName] (so searching `nagarikata` matches both
+     *    the `Nagarikata` folder AND every file inside `.../Nagarikata/`!).
+     */
+    fun scoreFileItem(query: String, item: LocalFileItem): Int {
+        val clean = query.trim()
+        if (clean.isEmpty()) return if (item.isDirectory) 220 else 100
+        val nameScore = score(clean, item.name)
+        val parentScore = score(clean, item.parentName)
+        val effectiveParentScore = if (parentScore >= 550) (parentScore - 80).coerceAtLeast(150) else 0
+        val pathScore = if (clean.contains('/')) score(clean, item.absolutePath) else 0
+        val best = maxOf(nameScore, effectiveParentScore, pathScore)
+        if (best <= 0) return 0
+        val dirBonus = if (item.isDirectory && nameScore > 0) 110 else 0
+        return best + dirBonus
+    }
+
     fun filterFiles(query: String, files: List<LocalFileItem>, limit: Int = 10): List<LocalFileItem> {
         val clean = query.trim()
         if (clean.isEmpty()) {
@@ -110,13 +129,8 @@ object FuzzyMatcher {
         }
         return files
             .mapNotNull { f ->
-                val nameScore = score(clean, f.name)
-                val pathScore = if (clean.contains('/')) score(clean, f.absolutePath) else 0
-                val baseScore = maxOf(nameScore, pathScore)
-                if (baseScore > 0) {
-                    val dirBonus = if (f.isDirectory) 120 else 0
-                    f to (baseScore + dirBonus)
-                } else null
+                val s = scoreFileItem(clean, f)
+                if (s > 0) f to s else null
             }
             .sortedByDescending { it.second }
             .take(limit)
@@ -343,11 +357,7 @@ object QueryRouter {
                 storageFiles.mapNotNull { f ->
                     val uKey = "file:${f.absolutePath}"
                     val uCount = usageOf(uKey)
-                    val dirBoost = if (f.isDirectory) 120 else 0
-                    val fScore = if (q.isEmpty()) (100 + dirBoost) else {
-                        val s = maxOf(FuzzyMatcher.score(q, f.name), if (q.contains('/')) FuzzyMatcher.score(q, f.absolutePath) else 0)
-                        if (s > 0) s + dirBoost else 0
-                    }
+                    val fScore = FuzzyMatcher.scoreFileItem(q, f)
                     if (fScore > 0) {
                         PaletteItem.FileAction(f, uKey, fScore + usageBonus(uKey), uCount)
                     } else null
@@ -505,11 +515,10 @@ object QueryRouter {
                         }
                     }
                     storageFiles.forEach { f ->
-                        val s = FuzzyMatcher.score(q, f.name)
+                        val s = FuzzyMatcher.scoreFileItem(q, f)
                         if (s > 0) {
                             val uKey = "file:${f.absolutePath}"
-                            val dirBoost = if (f.isDirectory) 120 else 0
-                            pool.add(PaletteItem.FileAction(f, uKey, s + dirBoost + usageBonus(uKey), usageOf(uKey)))
+                            pool.add(PaletteItem.FileAction(f, uKey, s + usageBonus(uKey), usageOf(uKey)))
                         }
                     }
                     engines.forEach { eng ->

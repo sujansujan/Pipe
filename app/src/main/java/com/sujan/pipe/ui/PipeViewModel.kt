@@ -83,6 +83,12 @@ data class PipeUiState(
     val paletteChoice: PaletteChoice = PaletteChoice.MOSS,
     val historyEnabled: Boolean = true,
     val externalTextMode: ExternalTextMode = ExternalTextMode.OPEN_OVERLAY,
+    val overlayOpacity: Float = 0.82f,
+    val overlayDimAmount: Float = 0.35f,
+    val overlayCornerRadiusDp: Int = 16,
+    val overlayBottomAnchored: Boolean = false,
+    val overlayForceDark: Boolean = true,
+    val overlayShowIdleSuggestions: Boolean = false,
     val engineForm: EngineFormState = EngineFormState(),
     val bookmarkForm: BookmarkFormState = BookmarkFormState(),
     val undoBanner: UndoBannerState? = null,
@@ -169,6 +175,12 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             paletteChoice = repository.loadPaletteChoice(),
             historyEnabled = repository.isHistoryEnabled(),
             externalTextMode = repository.loadExternalTextMode(),
+            overlayOpacity = repository.loadOverlayOpacity(),
+            overlayDimAmount = repository.loadOverlayDimAmount(),
+            overlayCornerRadiusDp = repository.loadOverlayCornerRadiusDp(),
+            overlayBottomAnchored = repository.loadOverlayBottomAnchored(),
+            overlayForceDark = repository.loadOverlayForceDark(),
+            overlayShowIdleSuggestions = repository.loadOverlayShowIdleSuggestions(),
         )
     )
     val uiState: StateFlow<PipeUiState> = _uiState.asStateFlow()
@@ -525,6 +537,39 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun setHistoryEnabled(e: Boolean) {
         repository.setHistoryEnabled(e)
         _uiState.update { it.copy(historyEnabled = e) }
+    }
+
+    fun setOverlayOpacity(alpha: Float) {
+        val clamped = alpha.coerceIn(0.15f, 1.0f)
+        repository.saveOverlayOpacity(clamped)
+        _uiState.update { it.copy(overlayOpacity = clamped) }
+    }
+
+    fun setOverlayDimAmount(dim: Float) {
+        val clamped = dim.coerceIn(0.0f, 0.85f)
+        repository.saveOverlayDimAmount(clamped)
+        _uiState.update { it.copy(overlayDimAmount = clamped) }
+    }
+
+    fun setOverlayCornerRadiusDp(dp: Int) {
+        val clamped = dp.coerceIn(0, 28)
+        repository.saveOverlayCornerRadiusDp(clamped)
+        _uiState.update { it.copy(overlayCornerRadiusDp = clamped) }
+    }
+
+    fun setOverlayBottomAnchored(bottom: Boolean) {
+        repository.saveOverlayBottomAnchored(bottom)
+        _uiState.update { it.copy(overlayBottomAnchored = bottom) }
+    }
+
+    fun setOverlayForceDark(forceDark: Boolean) {
+        repository.saveOverlayForceDark(forceDark)
+        _uiState.update { it.copy(overlayForceDark = forceDark) }
+    }
+
+    fun setOverlayShowIdleSuggestions(show: Boolean) {
+        repository.saveOverlayShowIdleSuggestions(show)
+        _uiState.update { it.copy(overlayShowIdleSuggestions = show) }
     }
 
     fun setExternalTextMode(m: ExternalTextMode) {

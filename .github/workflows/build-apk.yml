@@ -32,14 +32,20 @@ jobs:
           fi
           chmod +x ./gradlew
 
+      - name: Ensure release keystore exists
+        run: |
+          if [ ! -f app/release-keystore.jks ]; then
+            keytool -genkeypair -v               -keystore app/release-keystore.jks               -keyalg RSA -keysize 2048 -validity 10000               -alias pipe_release               -storepass pipe123456 -keypass pipe123456               -dname "CN=Sujan Devkota, OU=Pipe, O=Sujan, L=Kathmandu, S=Bagmati, C=NP"
+          fi
+
       - name: Run unit tests
-        run: ./gradlew testDebugUnitTest --stacktrace
+        run: ./gradlew testReleaseUnitTest --stacktrace
 
-      - name: Assemble Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Assemble Signed Release APK
+        run: ./gradlew assembleRelease --stacktrace
 
-      - name: Upload Debug APK
+      - name: Upload Signed Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: pipe-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: pipe-release-apk
+          path: app/build/outputs/apk/release/*.apk

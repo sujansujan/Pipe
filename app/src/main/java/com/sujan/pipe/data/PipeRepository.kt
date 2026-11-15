@@ -171,6 +171,24 @@ class PipeRepository(context: Context) {
     fun isHistoryEnabled(): Boolean = prefs.getBoolean("history_enabled", true)
     fun setHistoryEnabled(enabled: Boolean) = prefs.edit().putBoolean("history_enabled", enabled).apply()
 
+    fun loadOverlayOpacity(): Float = prefs.getFloat("overlay_opacity_v1", 0.82f).coerceIn(0.15f, 1.0f)
+    fun saveOverlayOpacity(alpha: Float) = prefs.edit().putFloat("overlay_opacity_v1", alpha.coerceIn(0.15f, 1.0f)).apply()
+
+    fun loadOverlayDimAmount(): Float = prefs.getFloat("overlay_dim_v1", 0.35f).coerceIn(0.0f, 0.85f)
+    fun saveOverlayDimAmount(dim: Float) = prefs.edit().putFloat("overlay_dim_v1", dim.coerceIn(0.0f, 0.85f)).apply()
+
+    fun loadOverlayCornerRadiusDp(): Int = prefs.getInt("overlay_corner_dp_v1", 16).coerceIn(0, 28)
+    fun saveOverlayCornerRadiusDp(dp: Int) = prefs.edit().putInt("overlay_corner_dp_v1", dp.coerceIn(0, 28)).apply()
+
+    fun loadOverlayBottomAnchored(): Boolean = prefs.getBoolean("overlay_bottom_v1", false)
+    fun saveOverlayBottomAnchored(bottom: Boolean) = prefs.edit().putBoolean("overlay_bottom_v1", bottom).apply()
+
+    fun loadOverlayForceDark(): Boolean = prefs.getBoolean("overlay_force_dark_v1", true)
+    fun saveOverlayForceDark(forceDark: Boolean) = prefs.edit().putBoolean("overlay_force_dark_v1", forceDark).apply()
+
+    fun loadOverlayShowIdleSuggestions(): Boolean = prefs.getBoolean("overlay_idle_suggestions_v1", false)
+    fun saveOverlayShowIdleSuggestions(show: Boolean) = prefs.edit().putBoolean("overlay_idle_suggestions_v1", show).apply()
+
     fun loadExternalTextMode(): ExternalTextMode =
         ExternalTextMode.entries.firstOrNull { it.name == prefs.getString("ext_mode", ExternalTextMode.OPEN_OVERLAY.name) }
             ?: ExternalTextMode.OPEN_OVERLAY

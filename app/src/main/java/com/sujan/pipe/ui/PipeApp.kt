@@ -132,6 +132,12 @@ fun PipeApp(
     onExportJsonString: () -> String,
     onImportJsonString: (String) -> String?,
     onSetJsonStatus: (String) -> Unit,
+    onOverlayOpacityChange: (Float) -> Unit = {},
+    onOverlayDimChange: (Float) -> Unit = {},
+    onOverlayCornerChange: (Int) -> Unit = {},
+    onOverlayBottomChange: (Boolean) -> Unit = {},
+    onOverlayForceDarkChange: (Boolean) -> Unit = {},
+    onOverlayIdleChange: (Boolean) -> Unit = {},
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
@@ -221,6 +227,12 @@ fun PipeApp(
                         onExportJsonString = onExportJsonString,
                         onImportJsonString = onImportJsonString,
                         onSetJsonStatus = onSetJsonStatus,
+                        onOverlayOpacityChange = onOverlayOpacityChange,
+                        onOverlayDimChange = onOverlayDimChange,
+                        onOverlayCornerChange = onOverlayCornerChange,
+                        onOverlayBottomChange = onOverlayBottomChange,
+                        onOverlayForceDarkChange = onOverlayForceDarkChange,
+                        onOverlayIdleChange = onOverlayIdleChange,
                         onLaunchOverlayPreview = onLaunchOverlayPreview,
                         onPinOverlayShortcut = onPinOverlayShortcut,
                         onOpenDefaultAppsSettings = onOpenDefaultAppsSettings,
@@ -698,7 +710,7 @@ private fun AsciiRaycastRow(
                         maxLines = 1,
                     )
                     AsciiText(
-                        text = "../${f.parentName}",
+                        text = "${f.parentName} · ${f.formattedSize}",
                         style = AsciiType.small,
                         color = if (pressed) c.bg else c.dim,
                         maxLines = 1,
@@ -707,7 +719,7 @@ private fun AsciiRaycastRow(
                 if (onBookmarkFile != null) {
                     AsciiButton("+bm", { onBookmarkFile(f) })
                 }
-                val kindTag = if (f.isDirectory) "dir" else "file"
+                val kindTag = f.formattedSize
                 val meta = if (item.usageCount > 0) "$kindTag #${item.usageCount}" else kindTag
                 AsciiText(
                     text = " $meta",
@@ -1130,6 +1142,12 @@ private fun PipeSettingsScreen(
     onExportJsonString: () -> String,
     onImportJsonString: (String) -> String?,
     onSetJsonStatus: (String) -> Unit,
+    onOverlayOpacityChange: (Float) -> Unit,
+    onOverlayDimChange: (Float) -> Unit,
+    onOverlayCornerChange: (Int) -> Unit,
+    onOverlayBottomChange: (Boolean) -> Unit,
+    onOverlayForceDarkChange: (Boolean) -> Unit,
+    onOverlayIdleChange: (Boolean) -> Unit,
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
@@ -1176,17 +1194,63 @@ private fun PipeSettingsScreen(
                 }
             }
 
-            // 2. Overlay & UbikiTouch Shortcut
-            AsciiBox(title = "overlay mode & ubitouch shortcut") {
-                AsciiText(
-                    text = "bind in UbikiTouch via Shortcuts -> `pipe overlay` or Activities -> `PipeOverlayActivity`:",
-                    style = AsciiType.small,
-                    color = c.dim,
+            // 2. Raycast Overlay Design, Transparency, Soft Edges & Position
+            AsciiBox(title = "raycast overlay appearance & ubitouch") {
+                val pct = (state.overlayOpacity * 100).toInt()
+                val dimPct = (state.overlayDimAmount * 100).toInt()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AsciiText("card opacity: $pct%", style = AsciiType.body, color = c.fg)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        AsciiButton("-10%", { onOverlayOpacityChange(state.overlayOpacity - 0.10f) })
+                        AsciiButton("+10%", { onOverlayOpacityChange(state.overlayOpacity + 0.10f) })
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AsciiText("background dim: $dimPct%", style = AsciiType.body, color = c.fg)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        AsciiButton("-10%", { onOverlayDimChange(state.overlayDimAmount - 0.10f) })
+                        AsciiButton("+10%", { onOverlayDimChange(state.overlayDimAmount + 0.10f) })
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                AsciiText("soft corner radius:", style = AsciiType.small, color = c.dim)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(0 to "0dp", 10 to "10dp", 16 to "16dp", 24 to "24dp").forEach { (dpVal, label) ->
+                        AsciiRadio(
+                            selected = state.overlayCornerRadiusDp == dpVal,
+                            onClick = { onOverlayCornerChange(dpVal) },
+                            label = label,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                AsciiText("overlay position:", style = AsciiType.small, color = c.dim)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AsciiRadio(!state.overlayBottomAnchored, { onOverlayBottomChange(false) }, "top")
+                    AsciiRadio(state.overlayBottomAnchored, { onOverlayBottomChange(true) }, "bottom (above keyboard)")
+                }
+                AsciiCheckbox(
+                    checked = state.overlayForceDark,
+                    onChange = onOverlayForceDarkChange,
+                    label = "force dark glass theme in overlay",
+                )
+                AsciiCheckbox(
+                    checked = state.overlayShowIdleSuggestions,
+                    onChange = onOverlayIdleChange,
+                    label = "show top most-used items before typing",
                 )
                 Spacer(Modifier.height(6.dp))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    AsciiButton("launch overlay now", onLaunchOverlayPreview, primary = true)
-                    AsciiButton("+ pin overlay shortcut", onPinOverlayShortcut)
+                    AsciiButton("test overlay now", onLaunchOverlayPreview, primary = true)
+                    AsciiButton("+ pin ubitouch shortcut", onPinOverlayShortcut)
                 }
             }
 

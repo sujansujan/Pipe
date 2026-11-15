@@ -198,5 +198,20 @@ class QueryRouterTest {
         )
         assertTrue(allMostUsed.size <= 10)
         assertEquals("bm:bm_dl", allMostUsed.first().usageKey)
+
+        // Verify multi-word file ("sasu ama.jpg") and nested folder-path matching ("Nagarikata")
+        val deepStorage = listOf(
+            com.sujan.pipe.model.LocalFileItem("sasu ama.jpg", "/storage/emulated/0/DCIM/Camera/sasu ama.jpg", isDirectory = false, parentName = "DCIM/Camera", sizeBytes = 2_400_000L),
+            com.sujan.pipe.model.LocalFileItem("Nagarikata", "/storage/emulated/0/Documents/Legal/Nagarikata", isDirectory = true, parentName = "Documents/Legal", sizeBytes = 0L),
+            com.sujan.pipe.model.LocalFileItem("front_scan.jpg", "/storage/emulated/0/Documents/Legal/Nagarikata/front_scan.jpg", isDirectory = false, parentName = "Documents/Legal/Nagarikata", sizeBytes = 850_000L),
+            com.sujan.pipe.model.LocalFileItem("back_scan.jpg", "/storage/emulated/0/Documents/Legal/Nagarikata/back_scan.jpg", isDirectory = false, parentName = "Documents/Legal/Nagarikata", sizeBytes = 910_000L),
+        )
+        val sasuMatches = FuzzyMatcher.filterFiles("sasu ama", deepStorage)
+        assertEquals(1, sasuMatches.size)
+        assertEquals("sasu ama.jpg", sasuMatches.first().name)
+
+        // Searching "nagarikata" returns BOTH the Nagarikata folder AND the files inside .../Nagarikata/
+        val nagarikataMatches = FuzzyMatcher.filterFiles("nagarikata", deepStorage)
+        assertEquals(3, nagarikataMatches.size)
     }
 }

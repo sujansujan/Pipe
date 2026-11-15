@@ -81,7 +81,18 @@ data class LocalFileItem(
     val absolutePath: String,
     val isDirectory: Boolean,
     val parentName: String,
-)
+    val sizeBytes: Long = 0L,
+) {
+    val formattedSize: String
+        get() {
+            if (isDirectory) return "dir"
+            if (sizeBytes <= 0L) return "file"
+            val kb = sizeBytes / 1024.0
+            if (kb < 1024.0) return "${kb.toInt().coerceAtLeast(1)} KB"
+            val mb = kb / 1024.0
+            return String.format(java.util.Locale.US, "%.1f MB", mb)
+        }
+}
 
 data class SearchHistoryEntry(
     val id: Long,

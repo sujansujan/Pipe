@@ -105,6 +105,14 @@ object DeviceIntegrationManager {
      *   that every folder on the phone is searchable via `f <query>` even when `Download` has thousands of files.
      * - Phase 2 collects files with a per-directory cap so no single folder monopolizes the index.
      */
+    /**
+     * Comprehensive Full-Storage Indexer:
+     * 1. Queries Android's `MediaStore.Files.getContentUri("external")` for all indexed files/folders.
+     * 2. Walks `/storage/emulated/0` recursively with unlimited depth (up to depth 14, max 25,000 items),
+     *    skipping only `/storage/emulated/0/Android/data` and `/storage/emulated/0/Android/obb` cache blobs.
+     * 3. Stores relative parent paths (e.g. `Documents/Legal/Nagarikata`) so searching a folder name
+     *    surfaces both the folder and every file inside it, and searching `sasu ama.jpg` finds it anywhere on the phone.
+     */
     fun scanStorageFiles(
         context: Context,
         bookmarks: List<PipeBookmark>,
@@ -113,154 +121,152 @@ object DeviceIntegrationManager {
         if (!hasAllFilesPermission(context)) return emptyList()
         val results = mutableListOf<LocalFileItem>()
         val seenPaths = HashSet<String>()
+        val rootDir = Environment.getExternalStorageDirectory()
+        val rootPrefix = rootDir.absolutePath
+
+        fun computeRelativeParent(file: File): String {
+            val parentPath = file.parentFile?.absolutePath ?: return "storage"
+            if (parentPath == rootPrefix) return "storage"
+            return if (parentPath.startsWith("$rootPrefix/")) {
+                parentPath.removePrefix("$rootPrefix/")
+            } else {
+                file.parentFile?.name ?: "storage"
+            }
+        }
 
         if (scopedFolderPath != null) {
             val baseDir = File(scopedFolderPath)
             if (baseDir.exists() && baseDir.isDirectory) {
-                indexDirectoriesBreadthFirst(listOf(baseDir), maxDepth = 3, maxDirs = 500, seenPaths = seenPaths, out = results)
-                indexFilesBalanced(listOf(baseDir), maxDepth = 2, maxFilesPerRoot = 600, maxTotalItems = 1200, seenPaths = seenPaths, out = results)
+                crawlStorageBreadthFirst(
+                    roots = listOf(baseDir),
+                    maxDepth = 8,
+                    maxItems = 5000,
+                    seenPaths = seenPaths,
+                    out = results,
+                    relativeParentFn = ::computeRelativeParent,
+                )
             }
             return results
         }
 
-        val root = Environment.getExternalStorageDirectory()
-        val priorityRoots = linkedSetOf<File>()
-        if (root.exists() && root.isDirectory) priorityRoots.add(root)
+        // 1. Breadth-first full filesystem walk across `/storage/emulated/0` + bookmarked paths
+        val roots = linkedSetOf<File>()
+        if (rootDir.exists() && rootDir.isDirectory) roots.add(rootDir)
         bookmarks.forEach { bm ->
             val f = File(bm.target)
-            if (f.exists() && f.isDirectory) priorityRoots.add(f)
-        }
-        listOf("Download", "Documents", "Pictures", "DCIM", "Music", "Movies").forEach { sub ->
-            val f = File(root, sub)
-            if (f.exists() && f.isDirectory) priorityRoots.add(f)
+            if (f.exists() && f.isDirectory) roots.add(f)
         }
 
-        // Phase 1: Index ALL folders across storage (breadth-first up to depth 5)
-        indexDirectoriesBreadthFirst(
-            roots = priorityRoots.toList(),
-            maxDepth = 5,
-            maxDirs = 1500,
+        crawlStorageBreadthFirst(
+            roots = roots.toList(),
+            maxDepth = 14,
+            maxItems = 25_000,
             seenPaths = seenPaths,
             out = results,
+            relativeParentFn = ::computeRelativeParent,
         )
 
-        // Phase 2: Index files evenly across top-level folders
-        val fileRoots = priorityRoots.filter { it != root } + listOfNotNull(root.takeIf { it.exists() })
-        indexFilesBalanced(
-            roots = fileRoots,
-            maxDepth = 2,
-            maxFilesPerRoot = 350,
-            maxTotalItems = 3500,
-            seenPaths = seenPaths,
-            out = results,
-        )
+        // 2. Supplement with MediaStore.Files in case any external volume or media entry was outside standard roots
+        runCatching {
+            val uri = android.provider.MediaStore.Files.getContentUri("external")
+            val projection = arrayOf(
+                android.provider.MediaStore.Files.FileColumns.DATA,
+                android.provider.MediaStore.Files.FileColumns.SIZE,
+            )
+            context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                val dataCol = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.DATA)
+                val sizeCol = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.SIZE)
+                if (dataCol >= 0) {
+                    while (cursor.moveToNext() && results.size < 30_000) {
+                        val path = cursor.getString(dataCol) ?: continue
+                        if (path.contains("/Android/data/") || path.contains("/Android/obb/") || path.contains("/.")) continue
+                        if (seenPaths.add(path)) {
+                            val f = File(path)
+                            if (f.exists()) {
+                                val size = if (sizeCol >= 0) cursor.getLong(sizeCol) else f.length()
+                                results.add(
+                                    LocalFileItem(
+                                        name = f.name,
+                                        absolutePath = path,
+                                        isDirectory = f.isDirectory,
+                                        parentName = computeRelativeParent(f),
+                                        sizeBytes = size,
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         return results
     }
 
-    private fun indexDirectoriesBreadthFirst(
+    /**
+     * Lists direct child files and subfolders of [folderPath] for inline folder peek (`[+]`) in the overlay.
+     */
+    fun listDirectChildren(folderPath: String): List<LocalFileItem> {
+        val dir = File(folderPath)
+        if (!dir.exists() || !dir.isDirectory || !dir.canRead()) return emptyList()
+        val children = dir.listFiles() ?: return emptyList()
+        return children
+            .filter { !it.name.startsWith(".") }
+            .sortedWith(compareByDescending<File> { it.isDirectory }.thenBy { it.name.lowercase() })
+            .take(50)
+            .map { child ->
+                LocalFileItem(
+                    name = child.name,
+                    absolutePath = child.absolutePath,
+                    isDirectory = child.isDirectory,
+                    parentName = dir.name.ifEmpty { "storage" },
+                    sizeBytes = if (child.isDirectory) 0L else child.length(),
+                )
+            }
+    }
+
+    private fun crawlStorageBreadthFirst(
         roots: List<File>,
         maxDepth: Int,
-        maxDirs: Int,
+        maxItems: Int,
         seenPaths: HashSet<String>,
         out: MutableList<LocalFileItem>,
+        relativeParentFn: (File) -> String,
     ) {
         val queue = ArrayDeque<Pair<File, Int>>()
         for (r in roots) {
             if (r.exists() && r.isDirectory) {
-                // Also add the root folder itself (e.g. Download, Documents, DCIM) if it has a parent
-                val abs = r.absolutePath
-                if (r.parentFile != null && r.name.isNotEmpty() && r.name != "0" && seenPaths.add(abs)) {
-                    out.add(
-                        LocalFileItem(
-                            name = r.name,
-                            absolutePath = abs,
-                            isDirectory = true,
-                            parentName = r.parentFile?.name?.takeIf { it != "0" } ?: "storage",
-                        )
-                    )
-                }
                 queue.add(r to 0)
             }
         }
 
-        var dirCount = 0
-        while (queue.isNotEmpty() && dirCount < maxDirs) {
+        while (queue.isNotEmpty() && out.size < maxItems) {
             val (dir, depth) = queue.removeFirst()
-            if (depth >= maxDepth || !dir.canRead()) continue
+            if (depth > maxDepth || !dir.canRead()) continue
             val children = dir.listFiles() ?: continue
+
+            // Sort directories and files so user folders are visited cleanly
             for (child in children) {
-                if (!child.isDirectory) continue
+                if (out.size >= maxItems) break
                 val name = child.name
                 if (name.startsWith(".")) continue
-                // Skip noisy app-private cache trees under /storage/emulated/0/Android/data & obb
-                if (depth <= 1 && (name.equals("data", ignoreCase = true) || name.equals("obb", ignoreCase = true)) &&
-                    dir.name.equals("Android", ignoreCase = true)
-                ) {
-                    continue
-                }
                 val abs = child.absolutePath
+                if (abs.contains("/Android/data") || abs.contains("/Android/obb")) continue
+
+                val isDir = child.isDirectory
                 if (seenPaths.add(abs)) {
                     out.add(
                         LocalFileItem(
                             name = name,
                             absolutePath = abs,
-                            isDirectory = true,
-                            parentName = dir.name.takeIf { it.isNotEmpty() && it != "0" } ?: "storage",
+                            isDirectory = isDir,
+                            parentName = relativeParentFn(child),
+                            sizeBytes = if (isDir) 0L else child.length(),
                         )
                     )
-                    dirCount++
-                    if (dirCount >= maxDirs) break
                 }
-                queue.add(child to (depth + 1))
-            }
-        }
-    }
-
-    private fun indexFilesBalanced(
-        roots: List<File>,
-        maxDepth: Int,
-        maxFilesPerRoot: Int,
-        maxTotalItems: Int,
-        seenPaths: HashSet<String>,
-        out: MutableList<LocalFileItem>,
-    ) {
-        for (root in roots) {
-            if (out.size >= maxTotalItems) break
-            var countForThisRoot = 0
-            val queue = ArrayDeque<Pair<File, Int>>()
-            queue.add(root to 0)
-
-            while (queue.isNotEmpty() && countForThisRoot < maxFilesPerRoot && out.size < maxTotalItems) {
-                val (dir, depth) = queue.removeFirst()
-                if (!dir.canRead()) continue
-                val children = dir.listFiles() ?: continue
-                for (child in children) {
-                    val name = child.name
-                    if (name.startsWith(".")) continue
-                    if (child.isDirectory) {
-                        if (depth == 0 && root.name == "0" && name in setOf("Download", "Documents", "Pictures", "DCIM", "Music", "Movies", "Android")) {
-                            // Handled by dedicated roots
-                            continue
-                        }
-                        if (depth + 1 <= maxDepth) {
-                            queue.add(child to (depth + 1))
-                        }
-                    } else {
-                        val abs = child.absolutePath
-                        if (seenPaths.add(abs)) {
-                            out.add(
-                                LocalFileItem(
-                                    name = name,
-                                    absolutePath = abs,
-                                    isDirectory = false,
-                                    parentName = dir.name.takeIf { it.isNotEmpty() && it != "0" } ?: "storage",
-                                )
-                            )
-                            countForThisRoot++
-                            if (countForThisRoot >= maxFilesPerRoot || out.size >= maxTotalItems) break
-                        }
-                    }
+                if (isDir && depth + 1 <= maxDepth) {
+                    queue.add(child to (depth + 1))
                 }
             }
         }
