@@ -2,8 +2,10 @@ package com.sujan.pipe.domain
 
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
+import com.sujan.pipe.model.ContactQuickAction
 import com.sujan.pipe.model.DefaultEngines
 import com.sujan.pipe.model.EngineColorRole
+import com.sujan.pipe.model.InstalledAppItem
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.SearchEngine
@@ -153,7 +155,8 @@ object FuzzyMatcher {
                 }
                 val titleScore = scorePreLowered(clean, bm.title.lowercase())
                 val pathScore = scorePreLowered(clean, bm.target.substringAfterLast('/').lowercase())
-                val best = maxOf(aliasScore, titleScore, pathScore)
+                val tagScore = if (bm.tagsLower.isNotEmpty()) scorePreLowered(clean.removePrefix("#"), bm.tagsLower) + 80 else 0
+                val best = maxOf(aliasScore, titleScore, pathScore, tagScore)
                 if (best > 0) bm to best else null
             }
             .sortedByDescending { it.second }
@@ -217,6 +220,7 @@ enum class PromptIntentMode(val scopeBadge: String) {
     FILES_ONLY("f:files+dirs"),
     DIRS_ONLY("d:folders"),
     BOOKMARKS_ONLY("bm:bookmarks"),
+    APPS_ONLY("app:launcher"),
     SCOPED_FOLDER("dir:scoped"),
     ENGINE_ONLY("pipe:web"),
 }
@@ -227,6 +231,7 @@ data class ParsedPromptCommand(
     val exactBookmark: PipeBookmark? = null,
     val scopedFolderBookmark: PipeBookmark? = null,
     val matchedEngine: SearchEngine? = null,
+    val contactAction: ContactQuickAction = ContactQuickAction.CALL,
 )
 
 /**
@@ -257,6 +262,14 @@ sealed interface PaletteItem {
 
     data class ContactAction(
         val contact: ContactItem,
+        val preferredAction: ContactQuickAction = ContactQuickAction.CALL,
+        override val usageKey: String,
+        override val rankScore: Int,
+        override val usageCount: Int,
+    ) : PaletteItem
+
+    data class AppAction(
+        val app: InstalledAppItem,
         override val usageKey: String,
         override val rankScore: Int,
         override val usageCount: Int,
@@ -315,9 +328,32 @@ object QueryRouter {
         val hasSpace = rawInput.trimStart().length > first.length
         val remainder = if (tokens.size > 1) tokens[1].trim() else ""
 
-        // 1. Contact alias: `c` or `c <name>`
+        // 1. Contact alias: `c <name>` with optional action chaining (`c kali wa`, `c kali sms`, `c kali call`)
         if (first == "c" || first == "call" || first == "contact") {
-            return ParsedPromptCommand(PromptIntentMode.CONTACTS_ONLY, remainder)
+            val subTokens = remainder.trim().split(WHITESPACE_REGEX)
+            if (subTokens.size >= 2) {
+                val lastToken = subTokens.last().lowercase()
+                val chainedAction = when (lastToken) {
+                    "wa", "whatsapp", "w" -> ContactQuickAction.WHATSAPP
+                    "sms", "text", "msg", "s" -> ContactQuickAction.SMS
+                    "call", "dial", "tel" -> ContactQuickAction.CALL
+                    else -> null
+                }
+                if (chainedAction != null) {
+                    val namePart = subTokens.dropLast(1).joinToString(" ")
+                    return ParsedPromptCommand(
+                        mode = PromptIntentMode.CONTACTS_ONLY,
+                        filterQuery = namePart,
+                        contactAction = chainedAction,
+                    )
+                }
+            }
+            return ParsedPromptCommand(PromptIntentMode.CONTACTS_ONLY, remainder, contactAction = ContactQuickAction.CALL)
+        }
+
+        // 1b. Direct App Launcher alias: `app <query>` or `ap <query>`
+        if (first == "app" || first == "apps" || first == "ap") {
+            return ParsedPromptCommand(PromptIntentMode.APPS_ONLY, remainder)
         }
 
         // 2. File + Folder search alias: `f` or `file` or `files`
@@ -387,6 +423,7 @@ object QueryRouter {
         scopedFolderFiles: List<LocalFileItem>,
         history: List<SearchHistoryEntry>,
         usageMap: Map<String, Int>,
+        installedApps: List<InstalledAppItem> = emptyList(),
     ): List<PaletteItem> {
         val cmd = parsePromptCommand(rawInput, bookmarks, engines)
         fun usageOf(key: String): Int = usageMap[key] ?: 0
@@ -394,18 +431,40 @@ object QueryRouter {
 
         return when (cmd.mode) {
             PromptIntentMode.CONTACTS_ONLY -> {
-                val q = cmd.filterQuery.trim()
+                val q = cmd.filterQuery.trim().lowercase()
                 contacts.mapNotNull { c ->
-                    val uKey = "contact:${c.phoneNumber.filter { it.isDigit() }}"
+                    val uKey = "contact:${c.cleanPhone}"
                     val uCount = usageOf(uKey)
                     val fScore = if (q.isEmpty()) 100 else maxOf(
-                        FuzzyMatcher.score(q, c.displayName),
-                        FuzzyMatcher.score(q, c.phoneNumber.replace(" ", "").replace("-", "")),
+                        FuzzyMatcher.scorePreLowered(q, c.nameLower),
+                        if (q[0].isDigit()) FuzzyMatcher.scorePreLowered(q, c.cleanPhone) else 0,
                     )
                     if (fScore > 0) {
-                        PaletteItem.ContactAction(c, uKey, fScore + usageBonus(uKey), uCount)
+                        PaletteItem.ContactAction(
+                            contact = c,
+                            preferredAction = cmd.contactAction,
+                            usageKey = uKey,
+                            rankScore = fScore + usageBonus(uKey),
+                            usageCount = uCount,
+                        )
                     } else null
                 }.sortedWith(compareByDescending<PaletteItem.ContactAction> { it.rankScore }.thenByDescending { it.usageCount })
+                    .take(MAX_PALETTE_RESULTS)
+            }
+
+            PromptIntentMode.APPS_ONLY -> {
+                val q = cmd.filterQuery.trim().lowercase()
+                installedApps.mapNotNull { app ->
+                    val uKey = "app:${app.packageName}"
+                    val uCount = usageOf(uKey)
+                    val fScore = if (q.isEmpty()) 100 else maxOf(
+                        FuzzyMatcher.scorePreLowered(q, app.labelLower),
+                        FuzzyMatcher.scorePreLowered(q, app.pkgLower.substringAfterLast('.')),
+                    )
+                    if (fScore > 0) {
+                        PaletteItem.AppAction(app, uKey, fScore + usageBonus(uKey), uCount)
+                    } else null
+                }.sortedWith(compareByDescending<PaletteItem.AppAction> { it.rankScore }.thenByDescending { it.usageCount })
                     .take(MAX_PALETTE_RESULTS)
             }
 
@@ -441,10 +500,12 @@ object QueryRouter {
                 bookmarks.mapNotNull { bm ->
                     val uKey = "bm:${bm.id}"
                     val uCount = usageOf(uKey)
-                    val fScore = if (q.isEmpty()) 200 else maxOf(
-                        if (bm.alias.equals(q, ignoreCase = true)) 2000 else FuzzyMatcher.score(q, bm.alias) + 120,
-                        FuzzyMatcher.score(q, bm.title),
-                        FuzzyMatcher.score(q, bm.target.substringAfterLast('/')),
+                    val qClean = q.removePrefix("#").lowercase()
+                    val fScore = if (qClean.isEmpty()) 200 else maxOf(
+                        if (bm.alias.equals(qClean, ignoreCase = true)) 2000 else FuzzyMatcher.score(qClean, bm.alias) + 120,
+                        FuzzyMatcher.score(qClean, bm.title),
+                        FuzzyMatcher.score(qClean, bm.target.substringAfterLast('/')),
+                        if (bm.tagsLower.isNotEmpty()) FuzzyMatcher.scorePreLowered(qClean, bm.tagsLower) + 100 else 0,
                     )
                     if (fScore > 0) {
                         PaletteItem.BookmarkAction(bm, uKey, fScore + usageBonus(uKey), uCount)
@@ -534,10 +595,17 @@ object QueryRouter {
                         )
                     }
                     contacts.forEach { c ->
-                        val uKey = "contact:${c.phoneNumber.filter { it.isDigit() }}"
+                        val uKey = "contact:${c.cleanPhone}"
                         val uCount = usageOf(uKey)
                         if (uCount > 0) {
-                            pool.add(PaletteItem.ContactAction(c, uKey, 70 + usageBonus(uKey), uCount))
+                            pool.add(PaletteItem.ContactAction(c, ContactQuickAction.CALL, uKey, 70 + usageBonus(uKey), uCount))
+                        }
+                    }
+                    installedApps.forEach { app ->
+                        val uKey = "app:${app.packageName}"
+                        val uCount = usageOf(uKey)
+                        if (uCount > 0) {
+                            pool.add(PaletteItem.AppAction(app, uKey, 72 + usageBonus(uKey), uCount))
                         }
                     }
                     storageFiles.forEach { f ->
@@ -554,8 +622,14 @@ object QueryRouter {
                     }
                 } else {
                     // Non-empty query without alias: fuzzy search ALL categories + include default web search fallback!
+                    val qLower = q.lowercase()
+                    val qTag = qLower.removePrefix("#")
                     bookmarks.forEach { bm ->
-                        val s = maxOf(FuzzyMatcher.score(q, bm.alias), FuzzyMatcher.score(q, bm.title))
+                        val s = maxOf(
+                            FuzzyMatcher.score(qTag, bm.alias),
+                            FuzzyMatcher.score(qTag, bm.title),
+                            if (bm.tagsLower.isNotEmpty()) FuzzyMatcher.scorePreLowered(qTag, bm.tagsLower) + 80 else 0,
+                        )
                         if (s > 0) {
                             val uKey = "bm:${bm.id}"
                             pool.add(PaletteItem.BookmarkAction(bm, uKey, s + 60 + usageBonus(uKey), usageOf(uKey)))
@@ -563,12 +637,19 @@ object QueryRouter {
                     }
                     contacts.forEach { c ->
                         val s = maxOf(
-                            FuzzyMatcher.score(q, c.displayName),
-                            FuzzyMatcher.score(q, c.phoneNumber.replace(" ", "").replace("-", "")),
+                            FuzzyMatcher.scorePreLowered(qLower, c.nameLower),
+                            if (qLower[0].isDigit()) FuzzyMatcher.scorePreLowered(qLower, c.cleanPhone) else 0,
                         )
                         if (s > 0) {
-                            val uKey = "contact:${c.phoneNumber.filter { it.isDigit() }}"
-                            pool.add(PaletteItem.ContactAction(c, uKey, s + 40 + usageBonus(uKey), usageOf(uKey)))
+                            val uKey = "contact:${c.cleanPhone}"
+                            pool.add(PaletteItem.ContactAction(c, ContactQuickAction.CALL, uKey, s + 40 + usageBonus(uKey), usageOf(uKey)))
+                        }
+                    }
+                    installedApps.forEach { app ->
+                        val s = FuzzyMatcher.scorePreLowered(qLower, app.labelLower)
+                        if (s > 0) {
+                            val uKey = "app:${app.packageName}"
+                            pool.add(PaletteItem.AppAction(app, uKey, s + 45 + usageBonus(uKey), usageOf(uKey)))
                         }
                     }
                     storageFiles.forEach { f ->

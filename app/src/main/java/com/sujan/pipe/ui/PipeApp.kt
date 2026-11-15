@@ -1,7 +1,14 @@
 package com.sujan.pipe.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -87,6 +94,9 @@ fun PipeApp(
     onSubmitPrimaryAction: () -> Unit,
     onOpenBookmark: (PipeBookmark) -> Unit,
     onOpenLocalFile: (LocalFileItem) -> Unit,
+    onShareLocalFile: (LocalFileItem) -> Unit = {},
+    onPreviewImageFile: (LocalFileItem?) -> Unit = {},
+    onLaunchInstalledApp: (com.sujan.pipe.model.InstalledAppItem) -> Unit = {},
     onBookmarkLocalFile: (LocalFileItem) -> Unit,
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
@@ -103,6 +113,7 @@ fun PipeApp(
     onBookmarkFormAliasChange: (TextFieldValue) -> Unit,
     onBookmarkFormTitleChange: (TextFieldValue) -> Unit,
     onBookmarkFormTargetChange: (TextFieldValue) -> Unit,
+    onBookmarkFormTagsChange: (TextFieldValue) -> Unit = {},
     onBookmarkFormKindChange: (BookmarkKind) -> Unit,
     onBookmarkFormSave: () -> Unit,
     onBookmarkFormCancel: () -> Unit,
@@ -141,6 +152,13 @@ fun PipeApp(
     onSelectSettingsSection: (SettingsSection) -> Unit = {},
     onHourlyAutoIndexChange: (Boolean) -> Unit = {},
     onRebuildIndexNow: () -> Unit = {},
+    onPreferredBrowserChange: (String) -> Unit = {},
+    onAddExcludedFolder: (String) -> Unit = {},
+    onRemoveExcludedFolder: (String) -> Unit = {},
+    onSearchBoxPrefixChange: (String) -> Unit = {},
+    onSearchBoxPlaceholderChange: (String) -> Unit = {},
+    onShowScopeBadgeChange: (Boolean) -> Unit = {},
+    onShowMenuBtnChange: (Boolean) -> Unit = {},
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
@@ -167,6 +185,9 @@ fun PipeApp(
                         onSubmitPrimaryAction = onSubmitPrimaryAction,
                         onOpenBookmark = onOpenBookmark,
                         onOpenLocalFile = onOpenLocalFile,
+                        onShareLocalFile = onShareLocalFile,
+                        onPreviewImageFile = onPreviewImageFile,
+                        onLaunchInstalledApp = onLaunchInstalledApp,
                         onBookmarkLocalFile = onBookmarkLocalFile,
                         onCallContact = onCallContact,
                         onSmsContact = onSmsContact,
@@ -192,6 +213,7 @@ fun PipeApp(
                         onAliasChange = onBookmarkFormAliasChange,
                         onTitleChange = onBookmarkFormTitleChange,
                         onTargetChange = onBookmarkFormTargetChange,
+                        onTagsChange = onBookmarkFormTagsChange,
                         onKindChange = onBookmarkFormKindChange,
                         onSave = onBookmarkFormSave,
                         onCancel = onBookmarkFormCancel,
@@ -239,6 +261,13 @@ fun PipeApp(
                         onSelectSettingsSection = onSelectSettingsSection,
                         onHourlyAutoIndexChange = onHourlyAutoIndexChange,
                         onRebuildIndexNow = onRebuildIndexNow,
+                        onPreferredBrowserChange = onPreferredBrowserChange,
+                        onAddExcludedFolder = onAddExcludedFolder,
+                        onRemoveExcludedFolder = onRemoveExcludedFolder,
+                        onSearchBoxPrefixChange = onSearchBoxPrefixChange,
+                        onSearchBoxPlaceholderChange = onSearchBoxPlaceholderChange,
+                        onShowScopeBadgeChange = onShowScopeBadgeChange,
+                        onShowMenuBtnChange = onShowMenuBtnChange,
                         onLaunchOverlayPreview = onLaunchOverlayPreview,
                         onPinOverlayShortcut = onPinOverlayShortcut,
                         onOpenDefaultAppsSettings = onOpenDefaultAppsSettings,
@@ -246,6 +275,21 @@ fun PipeApp(
                         onRequestFilesPermission = onRequestFilesPermission,
                     )
                 }
+            }
+
+            if (state.previewImageFile != null) {
+                AsciiImagePreviewDialog(
+                    file = state.previewImageFile,
+                    onOpen = {
+                        onOpenLocalFile(state.previewImageFile)
+                        onPreviewImageFile(null)
+                    },
+                    onShare = {
+                        onShareLocalFile(state.previewImageFile)
+                        onPreviewImageFile(null)
+                    },
+                    onDismiss = { onPreviewImageFile(null) },
+                )
             }
 
             if (state.undoBanner != null) {
@@ -271,6 +315,9 @@ private fun PipePromptScreen(
     onSubmitPrimaryAction: () -> Unit,
     onOpenBookmark: (PipeBookmark) -> Unit,
     onOpenLocalFile: (LocalFileItem) -> Unit,
+    onShareLocalFile: (LocalFileItem) -> Unit,
+    onPreviewImageFile: (LocalFileItem?) -> Unit,
+    onLaunchInstalledApp: (com.sujan.pipe.model.InstalledAppItem) -> Unit,
     onBookmarkLocalFile: (LocalFileItem) -> Unit,
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
@@ -309,6 +356,9 @@ private fun PipePromptScreen(
             hasContactsPermission = state.hasContactsPermission,
             hasFilesPermission = state.hasFilesPermission,
             launchError = state.launchError,
+            promptPrefix = state.searchBoxPrefix,
+            placeholderText = state.searchBoxPlaceholder,
+            showScopeBadge = state.showSearchBoxScopeBadge,
             focusRequester = focusRequester,
             headerRightActions = {
                 AsciiButton("ovl", onLaunchOverlay, spokenLabel = "overlay")
@@ -330,7 +380,14 @@ private fun PipePromptScreen(
                     }
                     is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> onOpenBookmark(item.bookmark)
                     is com.sujan.pipe.domain.PaletteItem.FileAction -> onOpenLocalFile(item.file)
-                    is com.sujan.pipe.domain.PaletteItem.ContactAction -> onCallContact(item.contact)
+                    is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
+                        when (item.preferredAction) {
+                            com.sujan.pipe.model.ContactQuickAction.WHATSAPP -> onWhatsAppContact(item.contact)
+                            com.sujan.pipe.model.ContactQuickAction.SMS -> onSmsContact(item.contact)
+                            com.sujan.pipe.model.ContactQuickAction.CALL -> onCallContact(item.contact)
+                        }
+                    }
+                    is com.sujan.pipe.domain.PaletteItem.AppAction -> onLaunchInstalledApp(item.app)
                     is com.sujan.pipe.domain.PaletteItem.HistoryAction -> onRerunHistory(item.entry)
                 }
             },
@@ -342,6 +399,8 @@ private fun PipePromptScreen(
                 runCatching { focusRequester.requestFocus() }
             },
             onBookmarkFile = onBookmarkLocalFile,
+            onShareFile = onShareLocalFile,
+            onPreviewImage = { onPreviewImageFile(it) },
             onRequestContactsPermission = onRequestContactsPermission,
             onRequestFilesPermission = onRequestFilesPermission,
             modifier = Modifier.weight(1f),
@@ -365,6 +424,9 @@ fun AsciiRaycastPaletteWindow(
     hasFilesPermission: Boolean,
     launchError: String?,
     focusRequester: FocusRequester,
+    promptPrefix: String = "> ",
+    placeholderText: String = "pipe (c, f, d, app, dl, yt)...",
+    showScopeBadge: Boolean = true,
     headerRightActions: @Composable () -> Unit,
     onAliasPillClick: (String) -> Unit,
     onSubmitPrimary: () -> Unit,
@@ -374,6 +436,8 @@ fun AsciiRaycastPaletteWindow(
     onWhatsAppContact: (ContactItem) -> Unit,
     onScopeIntoFolder: (String) -> Unit,
     onBookmarkFile: ((LocalFileItem) -> Unit)? = null,
+    onShareFile: ((LocalFileItem) -> Unit)? = null,
+    onPreviewImage: ((LocalFileItem) -> Unit)? = null,
     onRequestContactsPermission: (() -> Unit)? = null,
     onRequestFilesPermission: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -421,18 +485,20 @@ fun AsciiRaycastPaletteWindow(
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AsciiText(
-                text = "> ",
-                style = AsciiType.title,
-                color = c.accent,
-            )
+            if (promptPrefix.isNotEmpty()) {
+                AsciiText(
+                    text = promptPrefix,
+                    style = AsciiType.title,
+                    color = c.accent,
+                )
+            }
             Box(
                 modifier = Modifier.weight(1f),
                 contentAlignment = Alignment.CenterStart,
             ) {
-                if (searchInput.text.isEmpty()) {
+                if (searchInput.text.isEmpty() && placeholderText.isNotEmpty()) {
                     AsciiText(
-                        text = "type alias (c, f, dl, yt) or search all...",
+                        text = placeholderText,
                         style = AsciiType.body,
                         color = c.dim,
                         maxLines = 1,
@@ -454,13 +520,14 @@ fun AsciiRaycastPaletteWindow(
                     keyboardActions = KeyboardActions(onSearch = { onSubmitPrimary() }),
                 )
             }
-            // Raycast right-hand Scope Tag `[all]` / `[c:contacts]` / `[f:files+dirs]`
-            AsciiText(
-                text = "[$scopeBadge]",
-                style = AsciiType.small,
-                color = if (parsedCommand.mode == PromptIntentMode.ALL) c.dim else c.accent,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
+            if (showScopeBadge) {
+                AsciiText(
+                    text = "[$scopeBadge]",
+                    style = AsciiType.small,
+                    color = if (parsedCommand.mode == PromptIntentMode.ALL) c.dim else c.accent,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+            }
             if (searchInput.text.isNotEmpty()) {
                 AsciiButton(
                     label = "x",
@@ -544,6 +611,8 @@ fun AsciiRaycastPaletteWindow(
                         onWhatsAppContact = onWhatsAppContact,
                         onScopeIntoFolder = onScopeIntoFolder,
                         onBookmarkFile = onBookmarkFile,
+                        onShareFile = onShareFile,
+                        onPreviewImage = onPreviewImage,
                     )
                 }
             }
@@ -562,7 +631,7 @@ fun AsciiRaycastPaletteWindow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AsciiButton("c:", { onAliasPillClick("c") }, spokenLabel = "contacts alias c")
                 AsciiButton("f:", { onAliasPillClick("f") }, spokenLabel = "files and folders alias f")
-                AsciiButton("d:", { onAliasPillClick("d") }, spokenLabel = "folders alias d")
+                AsciiButton("app:", { onAliasPillClick("app") }, spokenLabel = "apps alias app")
                 AsciiButton("dl:", { onAliasPillClick("dl") }, spokenLabel = "downloads alias dl")
                 AsciiButton("yt:", { onAliasPillClick("yt") }, spokenLabel = "youtube alias yt")
             }
@@ -580,6 +649,98 @@ fun AsciiRaycastPaletteWindow(
 }
 
 @Composable
+fun AsciiThumbnailBadge(
+    filePath: String,
+    onClick: () -> Unit,
+) {
+    val c = LocalAscii.current
+    var bitmap by remember(filePath) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(filePath) {
+        bitmap = withContext(Dispatchers.IO) {
+            com.sujan.pipe.data.DeviceIntegrationManager.loadImageThumbnail(filePath, 96)
+        }
+    }
+    val bmp = bitmap
+    if (bmp != null) {
+        Box(
+            modifier = Modifier
+                .padding(end = 6.dp)
+                .size(34.dp)
+                .border(1.dp, c.accent2)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onClick,
+                ),
+        ) {
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = "image thumbnail",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
+}
+
+@Composable
+fun AsciiImagePreviewDialog(
+    file: LocalFileItem,
+    onOpen: () -> Unit,
+    onShare: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = LocalAscii.current
+    var bitmap by remember(file.absolutePath) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(file.absolutePath) {
+        bitmap = withContext(Dispatchers.IO) {
+            com.sujan.pipe.data.DeviceIntegrationManager.loadImageThumbnail(file.absolutePath, 512)
+        }
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(c.bg)
+                .border(1.dp, c.accent)
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AsciiText(text = "+- preview: ${file.name}", style = AsciiType.title, color = c.accent2, maxLines = 1)
+            AsciiText(text = "${file.parentName} · ${file.formattedSize}", style = AsciiType.small, color = c.dim, maxLines = 1)
+            val bmp = bitmap
+            if (bmp != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 180.dp, max = 320.dp)
+                        .border(1.dp, c.border),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = file.name,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            } else {
+                AsciiText("loading image preview...", style = AsciiType.small, color = c.dim)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiButton("close", onDismiss)
+                AsciiButton("shr", onShare)
+                AsciiButton("open", onOpen, primary = true)
+            }
+        }
+    }
+}
+
+@Composable
 private fun AsciiRaycastRow(
     item: com.sujan.pipe.domain.PaletteItem,
     isTop: Boolean,
@@ -589,8 +750,11 @@ private fun AsciiRaycastRow(
     onWhatsAppContact: (ContactItem) -> Unit,
     onScopeIntoFolder: (String) -> Unit,
     onBookmarkFile: ((LocalFileItem) -> Unit)?,
+    onShareFile: ((LocalFileItem) -> Unit)? = null,
+    onPreviewImage: ((LocalFileItem) -> Unit)? = null,
 ) {
     val c = LocalAscii.current
+    val clipboard = LocalClipboardManager.current
     val src = remember { MutableInteractionSource() }
     val pressed by src.collectIsPressedAsState()
     val rowBg = when {
@@ -603,12 +767,13 @@ private fun AsciiRaycastRow(
     when (item) {
         is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
             val contact = item.contact
+            val pref = item.preferredAction
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 44.dp)
                     .background(rowBg)
-                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = { onCallContact(contact) })
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
                     .padding(horizontal = 6.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -631,16 +796,9 @@ private fun AsciiRaycastRow(
                         maxLines = 1,
                     )
                 }
-                if (item.usageCount > 0) {
-                    AsciiText(
-                        text = "#${item.usageCount} ",
-                        style = AsciiType.small,
-                        color = if (pressed) c.bg else c.dim,
-                    )
-                }
-                AsciiButton("call", { onCallContact(contact) }, primary = isTop)
-                AsciiButton("sms", { onSmsContact(contact) })
-                AsciiButton("wa", { onWhatsAppContact(contact) })
+                AsciiButton("call", { onCallContact(contact) }, primary = isTop && pref == com.sujan.pipe.model.ContactQuickAction.CALL)
+                AsciiButton("sms", { onSmsContact(contact) }, primary = isTop && pref == com.sujan.pipe.model.ContactQuickAction.SMS)
+                AsciiButton("wa", { onWhatsAppContact(contact) }, primary = isTop && pref == com.sujan.pipe.model.ContactQuickAction.WHATSAPP)
             }
         }
 
@@ -670,13 +828,22 @@ private fun AsciiRaycastRow(
                     style = if (isTop) AsciiType.title else AsciiType.small,
                     color = if (pressed) c.bg else badgeCol,
                 )
-                AsciiText(
-                    text = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title,
-                    style = if (isTop) AsciiType.title else AsciiType.body,
-                    color = if (pressed) c.bg else c.fg,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f),
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(
+                        text = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title,
+                        style = if (isTop) AsciiType.title else AsciiType.body,
+                        color = if (pressed) c.bg else c.fg,
+                        maxLines = 1,
+                    )
+                    if (bm.tags.isNotBlank()) {
+                        AsciiText(
+                            text = bm.tags,
+                            style = AsciiType.small,
+                            color = if (pressed) c.bg else c.accent,
+                            maxLines = 1,
+                        )
+                    }
+                }
                 if (bm.kind == BookmarkKind.FOLDER && bm.alias.isNotBlank()) {
                     AsciiButton("ls", { onScopeIntoFolder(bm.alias) })
                 }
@@ -708,6 +875,12 @@ private fun AsciiRaycastRow(
                     style = if (isTop) AsciiType.title else AsciiType.small,
                     color = if (pressed) c.bg else badgeCol,
                 )
+                if (f.isImageFile) {
+                    AsciiThumbnailBadge(
+                        filePath = f.absolutePath,
+                        onClick = { onPreviewImage?.invoke(f) ?: onExecute() },
+                    )
+                }
                 Column(modifier = Modifier.weight(1f)) {
                     AsciiText(
                         text = f.name,
@@ -722,11 +895,50 @@ private fun AsciiRaycastRow(
                         maxLines = 1,
                     )
                 }
+                if (f.isImageFile && onPreviewImage != null) {
+                    AsciiButton("view", { onPreviewImage(f) })
+                }
+                if (!f.isDirectory && onShareFile != null) {
+                    AsciiButton("shr", { onShareFile(f) })
+                }
+                AsciiButton("cp", { clipboard.setText(AnnotatedString(f.absolutePath)) })
                 if (onBookmarkFile != null) {
                     AsciiButton("+bm", { onBookmarkFile(f) })
                 }
-                val kindTag = f.formattedSize
-                val meta = if (item.usageCount > 0) "$kindTag #${item.usageCount}" else kindTag
+            }
+        }
+
+        is com.sujan.pipe.domain.PaletteItem.AppAction -> {
+            val app = item.app
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .background(rowBg)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText(
+                    text = "$pointer [app] ",
+                    style = if (isTop) AsciiType.title else AsciiType.small,
+                    color = if (pressed) c.bg else c.accent,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(
+                        text = app.label,
+                        style = if (isTop) AsciiType.title else AsciiType.body,
+                        color = if (pressed) c.bg else c.fg,
+                        maxLines = 1,
+                    )
+                    AsciiText(
+                        text = app.packageName,
+                        style = AsciiType.small,
+                        color = if (pressed) c.bg else c.dim,
+                        maxLines = 1,
+                    )
+                }
+                val meta = if (item.usageCount > 0) "app #${item.usageCount}" else "app"
                 AsciiText(
                     text = " $meta",
                     style = AsciiType.small,
@@ -820,6 +1032,7 @@ private fun PipeBookmarksScreen(
     onAliasChange: (TextFieldValue) -> Unit,
     onTitleChange: (TextFieldValue) -> Unit,
     onTargetChange: (TextFieldValue) -> Unit,
+    onTagsChange: (TextFieldValue) -> Unit,
     onKindChange: (BookmarkKind) -> Unit,
     onSave: () -> Unit,
     onCancel: () -> Unit,
@@ -879,6 +1092,9 @@ private fun PipeBookmarksScreen(
                         )
                     }
                     AsciiText(text = bm.target, style = AsciiType.small, color = c.dim, maxLines = 1)
+                    if (bm.tags.isNotBlank()) {
+                        AsciiText(text = "tags: ${bm.tags}", style = AsciiType.small, color = c.accent2, maxLines = 1)
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End,
@@ -950,7 +1166,15 @@ private fun PipeBookmarksScreen(
                             onValueChange = onTargetChange,
                             placeholder = if (formState.kind == BookmarkKind.LINK) "https://news.ycombinator.com" else "/storage/emulated/0/Download",
                             errorText = formState.errorText,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+                        )
+                        AsciiTextField(
+                            label = "optional #tags (e.g. #legal #work #docs)",
+                            promptPrefix = "# ",
+                            value = formState.tags,
+                            onValueChange = onTagsChange,
+                            placeholder = "#legal #id",
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                         )
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             AsciiButton("cancel", onCancel)
@@ -1157,6 +1381,13 @@ private fun PipeSettingsScreen(
     onSelectSettingsSection: (SettingsSection) -> Unit,
     onHourlyAutoIndexChange: (Boolean) -> Unit,
     onRebuildIndexNow: () -> Unit,
+    onPreferredBrowserChange: (String) -> Unit,
+    onAddExcludedFolder: (String) -> Unit,
+    onRemoveExcludedFolder: (String) -> Unit,
+    onSearchBoxPrefixChange: (String) -> Unit,
+    onSearchBoxPlaceholderChange: (String) -> Unit,
+    onShowScopeBadgeChange: (Boolean) -> Unit,
+    onShowMenuBtnChange: (Boolean) -> Unit,
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
@@ -1294,6 +1525,44 @@ private fun PipeSettingsScreen(
                             AsciiText(state.jsonStatusMessage, style = AsciiType.small, color = c.good)
                         }
                     }
+
+                    // Search Box Customization (Prompt prefix, placeholder text, right-hand badges)
+                    AsciiBox(title = "search box customization") {
+                        var placeholderField by remember(state.searchBoxPlaceholder) {
+                            mutableStateOf(TextFieldValue(state.searchBoxPlaceholder, TextRange(state.searchBoxPlaceholder.length)))
+                        }
+                        AsciiTextField(
+                            label = "custom placeholder text (leave empty for blank prompt)",
+                            promptPrefix = "> ",
+                            value = placeholderField,
+                            onValueChange = {
+                                placeholderField = it
+                                onSearchBoxPlaceholderChange(it.text)
+                            },
+                            placeholder = "type anything or leave blank...",
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        AsciiText("prompt prefix symbol:", style = AsciiType.small, color = c.dim)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("> " to ">", "$ " to "$", "| " to "|", "λ " to "λ", "" to "none").forEach { (prefVal, label) ->
+                                AsciiRadio(
+                                    selected = state.searchBoxPrefix == prefVal,
+                                    onClick = { onSearchBoxPrefixChange(prefVal) },
+                                    label = label,
+                                )
+                            }
+                        }
+                        AsciiCheckbox(
+                            checked = state.showSearchBoxScopeBadge,
+                            onChange = onShowScopeBadgeChange,
+                            label = "show right-side [scope] indicator in search box",
+                        )
+                        AsciiCheckbox(
+                            checked = state.showSearchBoxMenuBtn,
+                            onChange = onShowMenuBtnChange,
+                            label = "show [::] quick-settings button in overlay search box",
+                        )
+                    }
                 }
 
                 // TAB 2: PERSISTENT STORAGE INDEX & PERMISSIONS
@@ -1360,6 +1629,46 @@ private fun PipeSettingsScreen(
                             )
                         }
                     }
+
+                    // Custom Excluded Folders List
+                    AsciiBox(title = "excluded folders (${state.excludedFolders.size})") {
+                        var newFolderInput by remember { mutableStateOf(TextFieldValue("")) }
+                        AsciiText(
+                            text = "folders matching these names are skipped during storage indexing:",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        AsciiTextField(
+                            label = "add folder name to exclude",
+                            promptPrefix = "- ",
+                            value = newFolderInput,
+                            onValueChange = { newFolderInput = it },
+                            placeholder = "Telegram, .Statuses, Backups",
+                            trailingControl = {
+                                AsciiButton(
+                                    label = "+ add",
+                                    primary = true,
+                                    onClick = {
+                                        if (newFolderInput.text.isNotBlank()) {
+                                            onAddExcludedFolder(newFolderInput.text)
+                                            newFolderInput = TextFieldValue("")
+                                        }
+                                    },
+                                )
+                            },
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            state.excludedFolders.forEach { folderName ->
+                                AsciiButton(
+                                    label = "$folderName x",
+                                    onClick = { onRemoveExcludedFolder(folderName) },
+                                    spokenLabel = "remove $folderName from excluded folders",
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // TAB 3: THEME & PALETTE
@@ -1389,6 +1698,26 @@ private fun PipeSettingsScreen(
 
                 // TAB 4: DEFAULT BROWSER & ROUTING
                 SettingsSection.ROUTING -> {
+                    AsciiBox(title = "preferred browser for links & searches") {
+                        AsciiText(
+                            text = "choose which browser opens web links and searches (prevents forcing Chrome when pipe is Default Browser):",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        AsciiRadio(
+                            selected = state.preferredBrowserPackage == "auto",
+                            onClick = { onPreferredBrowserChange("auto") },
+                            label = "system default browser (auto)",
+                        )
+                        state.installedBrowsers.forEach { browserApp ->
+                            AsciiRadio(
+                                selected = state.preferredBrowserPackage == browserApp.packageName,
+                                onClick = { onPreferredBrowserChange(browserApp.packageName) },
+                                label = "${browserApp.label} (${browserApp.packageName})",
+                            )
+                        }
+                    }
                     AsciiBox(title = "default browser & system search") {
                         AsciiText(
                             text = "pipe is registered as a Browser so Android lets you select it under Default Apps -> Browser app (and Default Assist app).",

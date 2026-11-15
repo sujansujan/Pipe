@@ -47,6 +47,7 @@ class PipeRepository(context: Context) {
                             title = o.optString("title", ""),
                             target = o.optString("target", ""),
                             kind = BookmarkKind.fromString(o.optString("kind", "LINK")),
+                            tags = o.optString("tags", ""),
                         )
                     )
                 }
@@ -66,6 +67,7 @@ class PipeRepository(context: Context) {
                     put("title", bm.title.trim())
                     put("target", bm.target.trim())
                     put("kind", bm.kind.name)
+                    put("tags", bm.tags.trim())
                 }
             )
         }
@@ -203,6 +205,30 @@ class PipeRepository(context: Context) {
 
     fun loadOverlayShowIdleSuggestions(): Boolean = prefs.getBoolean("overlay_idle_suggestions_v1", false)
     fun saveOverlayShowIdleSuggestions(show: Boolean) = prefs.edit().putBoolean("overlay_idle_suggestions_v1", show).apply()
+
+    fun loadPreferredBrowserPackage(): String = prefs.getString("preferred_browser_pkg_v1", "auto") ?: "auto"
+    fun savePreferredBrowserPackage(pkg: String) = prefs.edit().putString("preferred_browser_pkg_v1", pkg).apply()
+
+    fun loadExcludedFolders(): List<String> {
+        val raw = prefs.getString("excluded_folders_v1", ".Statuses,.thumbnails,Telegram Audio,WhatsApp Voice Notes") ?: ""
+        return raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+    }
+
+    fun saveExcludedFolders(folders: List<String>) {
+        prefs.edit().putString("excluded_folders_v1", folders.map { it.trim() }.filter { it.isNotEmpty() }.joinToString(",")).apply()
+    }
+
+    fun loadSearchBoxPrefix(): String = prefs.getString("search_box_prefix_v1", "> ") ?: "> "
+    fun saveSearchBoxPrefix(prefix: String) = prefs.edit().putString("search_box_prefix_v1", prefix).apply()
+
+    fun loadSearchBoxPlaceholder(): String = prefs.getString("search_box_placeholder_v1", "pipe (c, f, d, app, dl, yt)...") ?: ""
+    fun saveSearchBoxPlaceholder(hint: String) = prefs.edit().putString("search_box_placeholder_v1", hint).apply()
+
+    fun loadShowSearchBoxScopeBadge(): Boolean = prefs.getBoolean("search_box_scope_badge_v1", true)
+    fun saveShowSearchBoxScopeBadge(show: Boolean) = prefs.edit().putBoolean("search_box_scope_badge_v1", show).apply()
+
+    fun loadShowSearchBoxMenuBtn(): Boolean = prefs.getBoolean("search_box_menu_btn_v1", true)
+    fun saveShowSearchBoxMenuBtn(show: Boolean) = prefs.edit().putBoolean("search_box_menu_btn_v1", show).apply()
 
     fun loadExternalTextMode(): ExternalTextMode =
         ExternalTextMode.entries.firstOrNull { it.name == prefs.getString("ext_mode", ExternalTextMode.OPEN_OVERLAY.name) }

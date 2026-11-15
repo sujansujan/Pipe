@@ -70,6 +70,7 @@ data class BookmarkFormState(
     val alias: TextFieldValue = TextFieldValue(""),
     val title: TextFieldValue = TextFieldValue(""),
     val target: TextFieldValue = TextFieldValue("/storage/emulated/0/"),
+    val tags: TextFieldValue = TextFieldValue(""),
     val kind: BookmarkKind = BookmarkKind.FOLDER,
     val errorText: String? = null,
 )
@@ -82,6 +83,15 @@ data class PipeUiState(
     val engines: List<SearchEngine> = DefaultEngines.LIST,
     val bookmarks: List<PipeBookmark> = DefaultBookmarks.LIST,
     val contacts: List<ContactItem> = emptyList(),
+    val installedApps: List<com.sujan.pipe.model.InstalledAppItem> = emptyList(),
+    val installedBrowsers: List<com.sujan.pipe.model.InstalledAppItem> = emptyList(),
+    val preferredBrowserPackage: String = "auto",
+    val excludedFolders: List<String> = listOf(".Statuses", ".thumbnails"),
+    val searchBoxPrefix: String = "> ",
+    val searchBoxPlaceholder: String = "pipe (c, f, d, app, dl, yt)...",
+    val showSearchBoxScopeBadge: Boolean = true,
+    val showSearchBoxMenuBtn: Boolean = true,
+    val previewImageFile: LocalFileItem? = null,
     val storageFiles: List<LocalFileItem> = emptyList(),
     val scopedFolderFiles: List<LocalFileItem> = emptyList(),
     val hasContactsPermission: Boolean = false,
@@ -189,6 +199,12 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             lastIndexedTimestampMs = repository.loadLastIndexedTimestampMs(),
             indexedFileCount = repository.loadIndexedFileCount(),
             indexedFolderCount = repository.loadIndexedFolderCount(),
+            preferredBrowserPackage = repository.loadPreferredBrowserPackage(),
+            excludedFolders = repository.loadExcludedFolders(),
+            searchBoxPrefix = repository.loadSearchBoxPrefix(),
+            searchBoxPlaceholder = repository.loadSearchBoxPlaceholder(),
+            showSearchBoxScopeBadge = repository.loadShowSearchBoxScopeBadge(),
+            showSearchBoxMenuBtn = repository.loadShowSearchBoxMenuBtn(),
         )
     )
     val uiState: StateFlow<PipeUiState> = _uiState.asStateFlow()
@@ -212,6 +228,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 scopedFolderFiles = snap.scopedFolderFiles,
                 history = snap.history,
                 usageMap = snap.usageCounts,
+                installedApps = snap.installedApps,
             )
             _uiState.update { it.copy(paletteResults = computed) }
         }
@@ -222,6 +239,8 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         hasFilesPerm: Boolean,
         contacts: List<ContactItem>,
         files: List<LocalFileItem>,
+        apps: List<com.sujan.pipe.model.InstalledAppItem> = _uiState.value.installedApps,
+        browsers: List<com.sujan.pipe.model.InstalledAppItem> = _uiState.value.installedBrowsers,
         isIndexing: Boolean = false,
     ) {
         _uiState.update {
@@ -229,6 +248,8 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 hasContactsPermission = hasContactsPerm,
                 hasFilesPermission = hasFilesPerm,
                 contacts = contacts,
+                installedApps = apps,
+                installedBrowsers = browsers,
                 storageFiles = files,
                 isIndexingInProgress = isIndexing,
                 lastIndexedTimestampMs = repository.loadLastIndexedTimestampMs(),
@@ -360,6 +381,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                     alias = TextFieldValue(bm.alias, TextRange(bm.alias.length)),
                     title = TextFieldValue(bm.title, TextRange(bm.title.length)),
                     target = TextFieldValue(bm.target, TextRange(bm.target.length)),
+                    tags = TextFieldValue(bm.tags, TextRange(bm.tags.length)),
                     kind = bm.kind,
                 )
             )
@@ -378,6 +400,53 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
 
     fun updateBookmarkFormTarget(v: TextFieldValue) = _uiState.update {
         it.copy(bookmarkForm = it.bookmarkForm.copy(target = v, errorText = null))
+    }
+
+    fun updateBookmarkFormTags(v: TextFieldValue) = _uiState.update {
+        it.copy(bookmarkForm = it.bookmarkForm.copy(tags = v, errorText = null))
+    }
+
+    fun setPreviewImageFile(file: LocalFileItem?) = _uiState.update {
+        it.copy(previewImageFile = file)
+    }
+
+    fun setPreferredBrowserPackage(pkg: String) {
+        repository.savePreferredBrowserPackage(pkg)
+        _uiState.update { it.copy(preferredBrowserPackage = pkg) }
+    }
+
+    fun addExcludedFolder(pattern: String) {
+        val clean = pattern.trim()
+        if (clean.isEmpty()) return
+        val updated = (_uiState.value.excludedFolders + clean).distinct()
+        repository.saveExcludedFolders(updated)
+        _uiState.update { it.copy(excludedFolders = updated) }
+    }
+
+    fun removeExcludedFolder(pattern: String) {
+        val updated = _uiState.value.excludedFolders.filterNot { it.equals(pattern, ignoreCase = true) }
+        repository.saveExcludedFolders(updated)
+        _uiState.update { it.copy(excludedFolders = updated) }
+    }
+
+    fun setSearchBoxPrefix(prefix: String) {
+        repository.saveSearchBoxPrefix(prefix)
+        _uiState.update { it.copy(searchBoxPrefix = prefix) }
+    }
+
+    fun setSearchBoxPlaceholder(hint: String) {
+        repository.saveSearchBoxPlaceholder(hint)
+        _uiState.update { it.copy(searchBoxPlaceholder = hint) }
+    }
+
+    fun setShowSearchBoxScopeBadge(show: Boolean) {
+        repository.saveShowSearchBoxScopeBadge(show)
+        _uiState.update { it.copy(showSearchBoxScopeBadge = show) }
+    }
+
+    fun setShowSearchBoxMenuBtn(show: Boolean) {
+        repository.saveShowSearchBoxMenuBtn(show)
+        _uiState.update { it.copy(showSearchBoxMenuBtn = show) }
     }
 
     fun updateBookmarkFormKind(k: BookmarkKind) = _uiState.update {
@@ -400,6 +469,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         val cleanAlias = f.alias.text.trim().lowercase()
         val cleanTitle = f.title.text.trim()
         val cleanTarget = f.target.text.trim()
+        val cleanTags = f.tags.text.trim()
 
         if (cleanTitle.isEmpty() || cleanTarget.isEmpty()) {
             _uiState.update { it.copy(bookmarkForm = f.copy(errorText = "! title and target path/url are required")) }
@@ -413,7 +483,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         val updated = if (f.editingId != null) {
             state.bookmarks.map { existing ->
                 if (existing.id == f.editingId) {
-                    existing.copy(alias = cleanAlias, title = cleanTitle, target = cleanTarget, kind = f.kind)
+                    existing.copy(alias = cleanAlias, title = cleanTitle, target = cleanTarget, kind = f.kind, tags = cleanTags)
                 } else existing
             }
         } else {
@@ -423,6 +493,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 title = cleanTitle,
                 target = cleanTarget,
                 kind = f.kind,
+                tags = cleanTags,
             )
         }
         repository.saveBookmarks(updated)

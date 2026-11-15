@@ -56,13 +56,30 @@ enum class BookmarkKind(val badge: String) {
  * User bookmark supporting Links (`https://...`), Folders (`/storage/emulated/0/Download`),
  * and Files (`/storage/emulated/0/Documents/notes.txt`), triggered by [alias] or fuzzy search.
  */
+enum class ContactQuickAction(val badge: String) {
+    CALL("call"),
+    SMS("sms"),
+    WHATSAPP("wa"),
+}
+
 data class PipeBookmark(
     val id: String,
     val alias: String,
     val title: String,
     val target: String,
     val kind: BookmarkKind,
-)
+    val tags: String = "",
+) {
+    val tagsLower: String = tags.trim().lowercase()
+}
+
+data class InstalledAppItem(
+    val label: String,
+    val packageName: String,
+) {
+    val labelLower: String = label.trim().lowercase()
+    val pkgLower: String = packageName.trim().lowercase()
+}
 
 /**
  * Device contact entry for live fuzzy search (`c kali` -> call, sms, whatsapp).
@@ -90,6 +107,12 @@ data class LocalFileItem(
     val nameLower: String = name.trim().lowercase()
     val parentLower: String = parentName.trim().lowercase()
     val pathLower: String = absolutePath.trim().lowercase()
+
+    val isImageFile: Boolean = !isDirectory && (
+        nameLower.endsWith(".jpg") || nameLower.endsWith(".jpeg") ||
+            nameLower.endsWith(".png") || nameLower.endsWith(".webp") ||
+            nameLower.endsWith(".bmp") || nameLower.endsWith(".gif")
+        )
 
     val formattedSize: String
         get() {

@@ -213,5 +213,16 @@ class QueryRouterTest {
         // Searching "nagarikata" returns BOTH the Nagarikata folder AND the files inside .../Nagarikata/
         val nagarikataMatches = FuzzyMatcher.filterFiles("nagarikata", deepStorage)
         assertEquals(3, nagarikataMatches.size)
+
+        // Verify Feature 1: Contact action chaining (`c kali wa` -> WHATSAPP, filterQuery = "kali")
+        val cmdWa = QueryRouter.parsePromptCommand("c kali wa", bookmarks, engines)
+        assertEquals(PromptIntentMode.CONTACTS_ONLY, cmdWa.mode)
+        assertEquals("kali", cmdWa.filterQuery)
+        assertEquals(com.sujan.pipe.model.ContactQuickAction.WHATSAPP, cmdWa.contactAction)
+
+        // Verify Feature 6: Direct App Launcher alias (`app mix` -> APPS_ONLY)
+        val cmdApp = QueryRouter.parsePromptCommand("app mix", bookmarks, engines)
+        assertEquals(PromptIntentMode.APPS_ONLY, cmdApp.mode)
+        assertEquals("mix", cmdApp.filterQuery)
     }
 }

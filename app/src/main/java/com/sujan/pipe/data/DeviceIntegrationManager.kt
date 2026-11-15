@@ -236,6 +236,16 @@ object DeviceIntegrationManager {
         val seenPaths = HashSet<String>()
         val rootDir = Environment.getExternalStorageDirectory()
         val rootPrefix = rootDir.absolutePath
+        val excludedPatterns = PipeRepository(context).loadExcludedFolders()
+            .map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() }
+
+        fun isExcludedPath(name: String, absPath: String): Boolean {
+            if (absPath.contains("/Android/data") || absPath.contains("/Android/obb")) return true
+            val lowerName = name.lowercase()
+            val lowerPath = absPath.lowercase()
+            return excludedPatterns.any { pat -> lowerName == pat || lowerPath.contains("/$pat/") || lowerPath.endsWith("/$pat") }
+        }
 
         fun computeRelativeParent(file: File): String {
             val parentPath = file.parentFile?.absolutePath ?: return "storage"
@@ -277,6 +287,7 @@ object DeviceIntegrationManager {
             seenPaths = seenPaths,
             out = results,
             relativeParentFn = ::computeRelativeParent,
+            excludedCheck = ::isExcludedPath,
         )
 
         // 2. Supplement with MediaStore.Files in case any external volume or media entry was outside standard roots
@@ -292,7 +303,7 @@ object DeviceIntegrationManager {
                 if (dataCol >= 0) {
                     while (cursor.moveToNext() && results.size < 30_000) {
                         val path = cursor.getString(dataCol) ?: continue
-                        if (path.contains("/Android/data/") || path.contains("/Android/obb/") || path.contains("/.")) continue
+                        if (path.contains("/.") || isExcludedPath(path.substringAfterLast('/'), path)) continue
                         if (seenPaths.add(path)) {
                             val f = File(path)
                             if (f.exists()) {
@@ -345,6 +356,7 @@ object DeviceIntegrationManager {
         seenPaths: HashSet<String>,
         out: MutableList<LocalFileItem>,
         relativeParentFn: (File) -> String,
+        excludedCheck: (String, String) -> Boolean = { _, abs -> abs.contains("/Android/data") || abs.contains("/Android/obb") },
     ) {
         val queue = ArrayDeque<Pair<File, Int>>()
         for (r in roots) {
@@ -364,7 +376,7 @@ object DeviceIntegrationManager {
                 val name = child.name
                 if (name.startsWith(".")) continue
                 val abs = child.absolutePath
-                if (abs.contains("/Android/data") || abs.contains("/Android/obb")) continue
+                if (excludedCheck(name, abs)) continue
 
                 val isDir = child.isDirectory
                 if (seenPaths.add(abs)) {
@@ -385,6 +397,124 @@ object DeviceIntegrationManager {
         }
     }
 
+    private val thumbnailCache = object : android.util.LruCache<String, android.graphics.Bitmap>(48) {}
+
+    @Volatile
+    private var memoryAppsIndex: List<com.sujan.pipe.model.InstalledAppItem>? = null
+
+    fun peekMemoryInstalledApps(): List<com.sujan.pipe.model.InstalledAppItem> = memoryAppsIndex ?: emptyList()
+
+    fun loadInstalledApps(context: Context): List<com.sujan.pipe.model.InstalledAppItem> {
+        memoryAppsIndex?.let { if (it.isNotEmpty()) return it }
+        val pm = context.packageManager
+        val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+        val selfPkg = context.packageName
+        val apps = runCatching {
+            pm.queryIntentActivities(mainIntent, 0)
+                .mapNotNull { ri ->
+                    val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
+                    if (pkg == selfPkg) return@mapNotNull null
+                    val label = ri.loadLabel(pm)?.toString()?.trim().orEmpty()
+                    if (label.isEmpty()) null else com.sujan.pipe.model.InstalledAppItem(label, pkg)
+                }
+                .distinctBy { it.packageName }
+                .sortedBy { it.labelLower }
+        }.getOrDefault(emptyList())
+        if (apps.isNotEmpty()) {
+            memoryAppsIndex = apps
+        }
+        return apps
+    }
+
+    fun launchInstalledApp(context: Context, packageName: String): Boolean {
+        val intent = runCatching {
+            context.packageManager.getLaunchIntentForPackage(packageName)?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        }.getOrNull() ?: return false
+        return runCatching {
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
+    }
+
+    fun listInstalledBrowsers(context: Context): List<com.sujan.pipe.model.InstalledAppItem> {
+        val pm = context.packageManager
+        val selfPkg = context.packageName
+        val probe = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+        }
+        return runCatching {
+            pm.queryIntentActivities(probe, PackageManager.MATCH_ALL)
+                .mapNotNull { ri ->
+                    val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
+                    if (pkg == selfPkg) return@mapNotNull null
+                    val label = ri.loadLabel(pm)?.toString()?.trim().takeIf { !it.isNullOrEmpty() } ?: pkg
+                    com.sujan.pipe.model.InstalledAppItem(label, pkg)
+                }
+                .distinctBy { it.packageName }
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Loads a downsampled thumbnail bitmap for an image file, caching it in `thumbnailCache`.
+     */
+    fun loadImageThumbnail(path: String, targetPx: Int = 96): android.graphics.Bitmap? {
+        thumbnailCache.get(path)?.let { return it }
+        return runCatching {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(path, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            var sample = 1
+            while (bounds.outWidth / sample > targetPx * 2 && bounds.outHeight / sample > targetPx * 2) {
+                sample *= 2
+            }
+            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+            val bmp = android.graphics.BitmapFactory.decodeFile(path, opts)
+            if (bmp != null) {
+                thumbnailCache.put(path, bmp)
+            }
+            bmp
+        }.getOrNull()
+    }
+
+    /**
+     * Shares a local file via `Intent.ACTION_SEND` using `FileProvider`.
+     */
+    fun shareLocalFile(context: Context, path: String): Boolean {
+        val file = File(path)
+        if (!file.exists() || file.isDirectory) return false
+        val authority = "${context.packageName}.fileprovider"
+        val contentUri = runCatching {
+            FileProvider.getUriForFile(context, authority, file)
+        }.getOrElse { Uri.fromFile(file) }
+        val ext = file.extension.lowercase()
+        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(Intent.EXTRA_STREAM, contentUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val chooser = Intent.createChooser(shareIntent, "Share ${file.name}").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return runCatching {
+            context.startActivity(chooser)
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Opens [url] while respecting the user's real Default Browser:
+     * 1. Checks `pm.resolveActivity(baseIntent, MATCH_DEFAULT_ONLY)`. If the system default handler
+     *    is NOT `com.sujan.pipe` (and not the generic Android ResolverActivity), it fires `baseIntent`
+     *    directly without `setPackage(...)` so your actual default browser (Brave, Firefox, Open-with, Hermit) opens!
+     * 2. If a dedicated native domain app (e.g. YouTube, GitHub, Reddit, Maps) is installed, prefers it.
+     * 3. If `com.sujan.pipe` IS set as the system Default Browser, uses the user's configured
+     *    `preferredBrowserPackage` from `PipeRepository` (or the first non-self browser).
+     */
     fun openUrlExcludingSelf(context: Context, url: String): Boolean {
         val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return false
         val baseIntent = Intent(Intent.ACTION_VIEW, uri).apply {
@@ -394,7 +524,9 @@ object DeviceIntegrationManager {
 
         val pm = context.packageManager
         val selfPkg = context.packageName
+        val preferredPkg = PipeRepository(context).loadPreferredBrowserPackage()
 
+        // 1. Check if a dedicated domain-specific native app (e.g. YouTube, GitHub) handles this URL
         val handlers = runCatching {
             pm.queryIntentActivities(baseIntent, PackageManager.MATCH_ALL)
                 .map { it.activityInfo.packageName }
@@ -402,27 +534,56 @@ object DeviceIntegrationManager {
                 .filter { it != selfPkg }
         }.getOrDefault(emptyList())
 
-        if (handlers.isNotEmpty()) {
-            val probeIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")).apply {
-                addCategory(Intent.CATEGORY_BROWSABLE)
-            }
-            val browserPkgs = runCatching {
-                pm.queryIntentActivities(probeIntent, PackageManager.MATCH_ALL)
-                    .map { it.activityInfo.packageName }
-                    .toSet()
-            }.getOrDefault(emptySet())
+        val probeIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+        }
+        val browserPkgs = runCatching {
+            pm.queryIntentActivities(probeIntent, PackageManager.MATCH_ALL)
+                .map { it.activityInfo.packageName }
+                .toSet()
+        }.getOrDefault(emptySet())
 
-            val nativeAppPkg = handlers.firstOrNull { it !in browserPkgs }
-            val targetPkg = nativeAppPkg ?: handlers.first()
-
-            val targetedIntent = Intent(baseIntent).apply {
-                setPackage(targetPkg)
-            }
-            val launched = runCatching {
-                context.startActivity(targetedIntent)
+        val nativeAppPkg = handlers.firstOrNull { it !in browserPkgs }
+        if (nativeAppPkg != null) {
+            val launchedNative = runCatching {
+                context.startActivity(Intent(baseIntent).apply { setPackage(nativeAppPkg) })
                 true
             }.getOrDefault(false)
-            if (launched) return true
+            if (launchedNative) return true
+        }
+
+        // 2. If user explicitly selected a preferred browser in ~/pipe/set/rte, use it
+        if (preferredPkg.isNotBlank() && preferredPkg != "auto" && preferredPkg in handlers) {
+            val launchedPref = runCatching {
+                context.startActivity(Intent(baseIntent).apply { setPackage(preferredPkg) })
+                true
+            }.getOrDefault(false)
+            if (launchedPref) return true
+        }
+
+        // 3. Check the OS default browser via MATCH_DEFAULT_ONLY!
+        //    If the default handler is NOT `com.sujan.pipe` and not the system chooser ("android"),
+        //    launch `baseIntent` untouched so the user's real default browser opens!
+        val defaultResolvedPkg = runCatching {
+            pm.resolveActivity(baseIntent, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName
+        }.getOrNull()
+
+        if (defaultResolvedPkg != null && defaultResolvedPkg != selfPkg && defaultResolvedPkg != "android") {
+            val launchedDefault = runCatching {
+                context.startActivity(baseIntent)
+                true
+            }.getOrDefault(false)
+            if (launchedDefault) return true
+        }
+
+        // 4. Fallback when `com.sujan.pipe` is set as Default Browser: prefer non-Chrome third-party browser if installed, else first available
+        if (handlers.isNotEmpty()) {
+            val nonChromeBrowser = handlers.firstOrNull { it != "com.android.chrome" } ?: handlers.first()
+            val launchedFallback = runCatching {
+                context.startActivity(Intent(baseIntent).apply { setPackage(nonChromeBrowser) })
+                true
+            }.getOrDefault(false)
+            if (launchedFallback) return true
         }
 
         return try {

@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,8 +42,10 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -57,10 +58,14 @@ import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
+import com.sujan.pipe.model.ContactQuickAction
+import com.sujan.pipe.model.InstalledAppItem
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
+import com.sujan.pipe.ui.AsciiImagePreviewDialog
+import com.sujan.pipe.ui.AsciiThumbnailBadge
 import com.sujan.pipe.ui.ascii.AsciiButton
 import com.sujan.pipe.ui.ascii.AsciiText
 import com.sujan.pipe.ui.ascii.AsciiType
@@ -70,12 +75,6 @@ import com.sujan.pipe.ui.ascii.ThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Sleek, translucent Raycast-inspired ASCII Overlay (`PipeOverlayActivity`).
- * - Respects user-configured Card Opacity (`15%–100%`), Background Dim (`0%–85%`),
- *   Soft Rounded Corners (`0dp–24dp`), Top vs. Bottom-Above-Keyboard position,
- *   Force-Dark Glass mode, and Inline Folder Peek (`[+]`/`[-]`).
- */
 class PipeOverlayActivity : ComponentActivity() {
 
     private val repository by lazy { PipeRepository(applicationContext) }
@@ -104,6 +103,10 @@ class PipeOverlayActivity : ComponentActivity() {
         val cornerRadiusDp = repository.loadOverlayCornerRadiusDp()
         val bottomAnchored = repository.loadOverlayBottomAnchored()
         val showIdleSuggestions = repository.loadOverlayShowIdleSuggestions()
+        val promptPrefix = repository.loadSearchBoxPrefix()
+        val placeholderText = repository.loadSearchBoxPlaceholder()
+        val showScopeBadge = repository.loadShowSearchBoxScopeBadge()
+        val showMenuBtn = repository.loadShowSearchBoxMenuBtn()
 
         setContent {
             PipeTheme(
@@ -121,10 +124,20 @@ class PipeOverlayActivity : ComponentActivity() {
                     cornerRadiusDp = cornerRadiusDp,
                     bottomAnchored = bottomAnchored,
                     showIdleSuggestions = showIdleSuggestions,
+                    promptPrefix = promptPrefix,
+                    placeholderText = placeholderText,
+                    showScopeBadge = showScopeBadge,
+                    showMenuBtn = showMenuBtn,
                     initialCachedFiles = DeviceIntegrationManager.peekMemoryStorageFiles(),
+                    initialCachedApps = DeviceIntegrationManager.peekMemoryInstalledApps(),
                     loadContacts = {
                         withContext(Dispatchers.IO) {
                             DeviceIntegrationManager.getCachedOrLoadContacts(applicationContext)
+                        }
+                    },
+                    loadApps = {
+                        withContext(Dispatchers.IO) {
+                            DeviceIntegrationManager.loadInstalledApps(applicationContext)
                         }
                     },
                     loadFiles = { scopedPath ->
@@ -155,16 +168,22 @@ class PipeOverlayActivity : ComponentActivity() {
                         if (ok) finish()
                         ok
                     },
+                    onShareFile = { path ->
+                        if (DeviceIntegrationManager.shareLocalFile(this, path)) finish()
+                    },
+                    onLaunchApp = { pkg ->
+                        if (DeviceIntegrationManager.launchInstalledApp(this, pkg)) finish()
+                    },
                     onCallContact = { contact ->
-                        repository.incrementUsage("contact:${contact.phoneNumber.filter { it.isDigit() }}")
+                        repository.incrementUsage("contact:${contact.cleanPhone}")
                         if (DeviceIntegrationManager.dialContact(this, contact.phoneNumber)) finish()
                     },
                     onSmsContact = { contact ->
-                        repository.incrementUsage("contact:${contact.phoneNumber.filter { it.isDigit() }}")
+                        repository.incrementUsage("contact:${contact.cleanPhone}")
                         if (DeviceIntegrationManager.smsContact(this, contact.phoneNumber)) finish()
                     },
                     onWhatsAppContact = { contact ->
-                        repository.incrementUsage("contact:${contact.phoneNumber.filter { it.isDigit() }}")
+                        repository.incrementUsage("contact:${contact.cleanPhone}")
                         val digits = QueryRouter.normalizeWhatsAppPhone(contact.phoneNumber)
                         if (DeviceIntegrationManager.whatsAppContact(this, digits)) finish()
                     },
@@ -203,12 +222,20 @@ private fun SleekRaycastOverlay(
     cornerRadiusDp: Int,
     bottomAnchored: Boolean,
     showIdleSuggestions: Boolean,
-    initialCachedFiles: List<LocalFileItem> = emptyList(),
+    promptPrefix: String,
+    placeholderText: String,
+    showScopeBadge: Boolean,
+    showMenuBtn: Boolean,
+    initialCachedFiles: List<LocalFileItem>,
+    initialCachedApps: List<InstalledAppItem>,
     loadContacts: suspend () -> List<ContactItem>,
+    loadApps: suspend () -> List<InstalledAppItem>,
     loadFiles: suspend (String?) -> List<LocalFileItem>,
     onRecordUsage: (String) -> Map<String, Int>,
     onDispatchUrl: (String, String) -> Boolean,
     onOpenPath: (String) -> Boolean,
+    onShareFile: (String) -> Unit,
+    onLaunchApp: (String) -> Unit,
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
@@ -225,10 +252,12 @@ private fun SleekRaycastOverlay(
     var usageMap by remember { mutableStateOf(initialUsage) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var contacts by remember { mutableStateOf<List<ContactItem>>(emptyList()) }
+    var installedApps by remember { mutableStateOf(initialCachedApps) }
     var storageFiles by remember { mutableStateOf(initialCachedFiles) }
     var scopedFiles by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
     var expandedFolderPath by remember { mutableStateOf<String?>(null) }
     var expandedFolderChildren by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
+    var previewImageFile by remember { mutableStateOf<LocalFileItem?>(null) }
 
     val parsedCommand = remember(input.text, bookmarks, engines) {
         QueryRouter.parsePromptCommand(input.text, bookmarks, engines)
@@ -245,11 +274,12 @@ private fun SleekRaycastOverlay(
                 scopedFolderFiles = emptyList(),
                 history = history,
                 usageMap = initialUsage,
+                installedApps = initialCachedApps,
             )
         )
     }
 
-    LaunchedEffect(input.text, engines, bookmarks, contacts, storageFiles, scopedFiles, history, usageMap) {
+    LaunchedEffect(input.text, engines, bookmarks, contacts, installedApps, storageFiles, scopedFiles, history, usageMap) {
         val computed = withContext(Dispatchers.Default) {
             QueryRouter.buildPaletteResults(
                 rawInput = input.text,
@@ -260,6 +290,7 @@ private fun SleekRaycastOverlay(
                 scopedFolderFiles = scopedFiles,
                 history = history,
                 usageMap = usageMap,
+                installedApps = installedApps,
             )
         }
         results = computed
@@ -271,6 +302,7 @@ private fun SleekRaycastOverlay(
             keyboardController?.show()
         }
         contacts = loadContacts()
+        installedApps = loadApps()
         storageFiles = loadFiles(null)
     }
 
@@ -307,7 +339,14 @@ private fun SleekRaycastOverlay(
             is PaletteItem.FileAction -> {
                 if (!onOpenPath(item.file.absolutePath)) errorMsg = "! could not open ${item.file.name}"
             }
-            is PaletteItem.ContactAction -> onCallContact(item.contact)
+            is PaletteItem.ContactAction -> {
+                when (item.preferredAction) {
+                    ContactQuickAction.WHATSAPP -> onWhatsAppContact(item.contact)
+                    ContactQuickAction.SMS -> onSmsContact(item.contact)
+                    ContactQuickAction.CALL -> onCallContact(item.contact)
+                }
+            }
+            is PaletteItem.AppAction -> onLaunchApp(item.app.packageName)
             is PaletteItem.HistoryAction -> {
                 if (!onDispatchUrl(item.entry.rawInput, item.entry.resolvedUrl)) errorMsg = "! no browser found"
             }
@@ -353,25 +392,26 @@ private fun SleekRaycastOverlay(
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
-            // 1. Zero-Chrome Raycast Search Bar (`> query_                 [scope] [::]`)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 44.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText(
-                    text = "> ",
-                    style = AsciiType.title,
-                    color = c.accent,
-                )
+                if (promptPrefix.isNotEmpty()) {
+                    AsciiText(
+                        text = promptPrefix,
+                        style = AsciiType.title,
+                        color = c.accent,
+                    )
+                }
                 Box(
                     modifier = Modifier.weight(1f),
                     contentAlignment = Alignment.CenterStart,
                 ) {
-                    if (input.text.isEmpty()) {
+                    if (input.text.isEmpty() && placeholderText.isNotEmpty()) {
                         AsciiText(
-                            text = "pipe (c, f, d, dl, yt)...",
+                            text = placeholderText,
                             style = AsciiType.body,
                             color = c.dim,
                             maxLines = 1,
@@ -408,12 +448,14 @@ private fun SleekRaycastOverlay(
                     )
                 }
 
-                AsciiText(
-                    text = "[$scopeBadge]",
-                    style = AsciiType.small,
-                    color = if (parsedCommand.mode == PromptIntentMode.ALL) c.dim else c.accent,
-                    modifier = Modifier.padding(horizontal = 4.dp),
-                )
+                if (showScopeBadge) {
+                    AsciiText(
+                        text = "[$scopeBadge]",
+                        style = AsciiType.small,
+                        color = if (parsedCommand.mode == PromptIntentMode.ALL) c.dim else c.accent,
+                        modifier = Modifier.padding(horizontal = 4.dp),
+                    )
+                }
 
                 if (input.text.isNotEmpty()) {
                     AsciiButton(
@@ -421,7 +463,7 @@ private fun SleekRaycastOverlay(
                         onClick = { input = TextFieldValue("") },
                         spokenLabel = "clear",
                     )
-                } else {
+                } else if (showMenuBtn) {
                     AsciiButton(
                         label = "::",
                         onClick = { onOpenFullApp(input.text) },
@@ -439,7 +481,6 @@ private fun SleekRaycastOverlay(
                 )
             }
 
-            // 2. Results List (only shown when typing, or when idle suggestions are enabled)
             if (shouldShowList && results.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
                 Box(
@@ -470,6 +511,8 @@ private fun SleekRaycastOverlay(
                                 usageMap = onRecordUsage("file:${child.absolutePath}")
                                 onOpenPath(child.absolutePath)
                             },
+                            onShareFile = { f -> onShareFile(f.absolutePath) },
+                            onPreviewImage = { f -> previewImageFile = f },
                             onCallContact = onCallContact,
                             onSmsContact = onSmsContact,
                             onWhatsAppContact = onWhatsAppContact,
@@ -478,6 +521,23 @@ private fun SleekRaycastOverlay(
                 }
             }
         }
+    }
+
+    if (previewImageFile != null) {
+        AsciiImagePreviewDialog(
+            file = previewImageFile!!,
+            onOpen = {
+                val target = previewImageFile!!
+                previewImageFile = null
+                onOpenPath(target.absolutePath)
+            },
+            onShare = {
+                val target = previewImageFile!!
+                previewImageFile = null
+                onShareFile(target.absolutePath)
+            },
+            onDismiss = { previewImageFile = null },
+        )
     }
 }
 
@@ -491,11 +551,14 @@ private fun SleekOverlayRow(
     onExecute: () -> Unit,
     onToggleFolderPeek: (String) -> Unit,
     onOpenChildFile: (LocalFileItem) -> Unit,
+    onShareFile: (LocalFileItem) -> Unit,
+    onPreviewImage: (LocalFileItem) -> Unit,
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
 ) {
     val c = LocalAscii.current
+    val clipboard = LocalClipboardManager.current
     val src = remember { MutableInteractionSource() }
     val pressed by src.collectIsPressedAsState()
     val rowShape = RoundedCornerShape(8.dp)
@@ -509,13 +572,14 @@ private fun SleekOverlayRow(
     when (item) {
         is PaletteItem.ContactAction -> {
             val contact = item.contact
+            val pref = item.preferredAction
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 42.dp)
                     .clip(rowShape)
                     .background(rowBg, rowShape)
-                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = { onCallContact(contact) })
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -524,9 +588,9 @@ private fun SleekOverlayRow(
                     AsciiText(contact.displayName, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
                     AsciiText(contact.phoneNumber, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
                 }
-                AsciiButton("call", { onCallContact(contact) }, primary = isTop)
-                AsciiButton("sms", { onSmsContact(contact) })
-                AsciiButton("wa", { onWhatsAppContact(contact) })
+                AsciiButton("call", { onCallContact(contact) }, primary = isTop && pref == ContactQuickAction.CALL)
+                AsciiButton("sms", { onSmsContact(contact) }, primary = isTop && pref == ContactQuickAction.SMS)
+                AsciiButton("wa", { onWhatsAppContact(contact) }, primary = isTop && pref == ContactQuickAction.WHATSAPP)
             }
         }
 
@@ -549,6 +613,12 @@ private fun SleekOverlayRow(
                         style = AsciiType.small,
                         color = if (pressed) c.bg else if (f.isDirectory) c.warn else c.accent3,
                     )
+                    if (f.isImageFile) {
+                        AsciiThumbnailBadge(
+                            filePath = f.absolutePath,
+                            onClick = { onPreviewImage(f) },
+                        )
+                    }
                     Column(modifier = Modifier.weight(1f)) {
                         AsciiText(
                             text = f.name,
@@ -563,6 +633,13 @@ private fun SleekOverlayRow(
                             maxLines = 1,
                         )
                     }
+                    if (f.isImageFile) {
+                        AsciiButton("view", { onPreviewImage(f) })
+                    }
+                    if (!f.isDirectory) {
+                        AsciiButton("shr", { onShareFile(f) })
+                    }
+                    AsciiButton("cp", { clipboard.setText(AnnotatedString(f.absolutePath)) })
                     if (f.isDirectory) {
                         AsciiButton(
                             label = if (isExpanded) "-" else "+",
@@ -595,6 +672,12 @@ private fun SleekOverlayRow(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
+                                    if (child.isImageFile) {
+                                        AsciiThumbnailBadge(
+                                            filePath = child.absolutePath,
+                                            onClick = { onPreviewImage(child) },
+                                        )
+                                    }
                                     AsciiText(
                                         text = "├─ ${child.name}",
                                         style = AsciiType.small,
@@ -602,11 +685,9 @@ private fun SleekOverlayRow(
                                         maxLines = 1,
                                         modifier = Modifier.weight(1f),
                                     )
-                                    AsciiText(
-                                        text = child.formattedSize,
-                                        style = AsciiType.small,
-                                        color = c.dim,
-                                    )
+                                    if (!child.isDirectory) {
+                                        AsciiButton("shr", { onShareFile(child) })
+                                    }
                                 }
                             }
                         }
@@ -635,13 +716,17 @@ private fun SleekOverlayRow(
                         BookmarkKind.LINK -> "[bm]"
                     }
                     AsciiText("$ptr $badge ", style = AsciiType.small, color = if (pressed) c.bg else c.warn)
-                    AsciiText(
-                        text = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title,
-                        style = if (isTop) AsciiType.title else AsciiType.body,
-                        color = if (pressed) c.bg else c.fg,
-                        maxLines = 1,
-                        modifier = Modifier.weight(1f),
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        AsciiText(
+                            text = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title,
+                            style = if (isTop) AsciiType.title else AsciiType.body,
+                            color = if (pressed) c.bg else c.fg,
+                            maxLines = 1,
+                        )
+                        if (bm.tags.isNotBlank()) {
+                            AsciiText(text = bm.tags, style = AsciiType.small, color = if (pressed) c.bg else c.accent, maxLines = 1)
+                        }
+                    }
                     if (bm.kind == BookmarkKind.FOLDER) {
                         AsciiButton(
                             label = if (isExpanded) "-" else "+",
@@ -678,11 +763,31 @@ private fun SleekOverlayRow(
                                     maxLines = 1,
                                     modifier = Modifier.weight(1f),
                                 )
-                                AsciiText(text = child.formattedSize, style = AsciiType.small, color = c.dim)
+                                if (!child.isDirectory) {
+                                    AsciiButton("shr", { onShareFile(child) })
+                                }
                             }
                         }
                     }
                 }
+            }
+        }
+
+        is PaletteItem.AppAction -> {
+            val app = item.app
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr [app] ", style = AsciiType.small, color = if (pressed) c.bg else c.accent)
+                AsciiText(app.label, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
+                AsciiText("app", style = AsciiType.small, color = if (pressed) c.bg else c.dim)
             }
         }
 

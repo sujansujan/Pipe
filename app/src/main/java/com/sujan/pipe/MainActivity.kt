@@ -126,7 +126,20 @@ class MainActivity : ComponentActivity() {
                         }
                         is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
                             viewModel.recordItemUsage(top.usageKey)
-                            DeviceIntegrationManager.dialContact(this, top.contact.phoneNumber)
+                            when (top.preferredAction) {
+                                com.sujan.pipe.model.ContactQuickAction.WHATSAPP -> {
+                                    val digits = QueryRouter.normalizeWhatsAppPhone(top.contact.phoneNumber)
+                                    DeviceIntegrationManager.whatsAppContact(this, digits)
+                                }
+                                com.sujan.pipe.model.ContactQuickAction.SMS ->
+                                    DeviceIntegrationManager.smsContact(this, top.contact.phoneNumber)
+                                com.sujan.pipe.model.ContactQuickAction.CALL ->
+                                    DeviceIntegrationManager.dialContact(this, top.contact.phoneNumber)
+                            }
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.AppAction -> {
+                            viewModel.recordItemUsage(top.usageKey)
+                            DeviceIntegrationManager.launchInstalledApp(this, top.app.packageName)
                         }
                         is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
                             viewModel.recordItemUsage(top.usageKey)
@@ -154,6 +167,15 @@ class MainActivity : ComponentActivity() {
                     if (!DeviceIntegrationManager.openLocalFileOrFolder(this, fileItem.absolutePath)) {
                         viewModel.setJsonStatusMessage("! no app found to open ${fileItem.name}")
                     }
+                },
+                onShareLocalFile = { fileItem ->
+                    viewModel.recordItemUsage("file:${fileItem.absolutePath}")
+                    DeviceIntegrationManager.shareLocalFile(this, fileItem.absolutePath)
+                },
+                onPreviewImageFile = viewModel::setPreviewImageFile,
+                onLaunchInstalledApp = { app ->
+                    viewModel.recordItemUsage("app:${app.packageName}")
+                    DeviceIntegrationManager.launchInstalledApp(this, app.packageName)
                 },
                 onBookmarkLocalFile = { fileItem ->
                     viewModel.openAddBookmarkForm(
@@ -190,6 +212,7 @@ class MainActivity : ComponentActivity() {
                 onBookmarkFormAliasChange = viewModel::updateBookmarkFormAlias,
                 onBookmarkFormTitleChange = viewModel::updateBookmarkFormTitle,
                 onBookmarkFormTargetChange = viewModel::updateBookmarkFormTarget,
+                onBookmarkFormTagsChange = viewModel::updateBookmarkFormTags,
                 onBookmarkFormKindChange = viewModel::updateBookmarkFormKind,
                 onBookmarkFormSave = {
                     viewModel.saveBookmarkForm()
@@ -234,6 +257,19 @@ class MainActivity : ComponentActivity() {
                     DeviceIntegrationManager.syncHourlyIndexSchedule(this, enabled)
                 },
                 onRebuildIndexNow = { refreshDeviceDataAsync(forceRebuild = true) },
+                onPreferredBrowserChange = viewModel::setPreferredBrowserPackage,
+                onAddExcludedFolder = { folder ->
+                    viewModel.addExcludedFolder(folder)
+                    refreshDeviceDataAsync(forceRebuild = true)
+                },
+                onRemoveExcludedFolder = { folder ->
+                    viewModel.removeExcludedFolder(folder)
+                    refreshDeviceDataAsync(forceRebuild = true)
+                },
+                onSearchBoxPrefixChange = viewModel::setSearchBoxPrefix,
+                onSearchBoxPlaceholderChange = viewModel::setSearchBoxPlaceholder,
+                onShowScopeBadgeChange = viewModel::setShowSearchBoxScopeBadge,
+                onShowMenuBtnChange = viewModel::setShowSearchBoxMenuBtn,
                 onLaunchOverlayPreview = ::launchOverlayActivity,
                 onPinOverlayShortcut = ::requestPinOverlayShortcut,
                 onOpenDefaultAppsSettings = ::openDefaultAppsSettings,
@@ -261,9 +297,10 @@ class MainActivity : ComponentActivity() {
         DeviceIntegrationManager.syncHourlyIndexSchedule(this, repository.loadHourlyAutoIndexEnabled())
 
         lifecycleScope.launch(Dispatchers.IO) {
-            // 1. Load persistent cached files & contacts immediately (<10ms)
             val cachedFiles = if (hasFiles) DeviceIntegrationManager.getCachedStorageFiles(applicationContext) else emptyList()
             val contacts = if (hasContacts) DeviceIntegrationManager.getCachedOrLoadContacts(applicationContext) else emptyList()
+            val apps = DeviceIntegrationManager.loadInstalledApps(applicationContext)
+            val browsers = DeviceIntegrationManager.listInstalledBrowsers(applicationContext)
             val needsRebuild = hasFiles && (forceRebuild || cachedFiles.isEmpty() || DeviceIntegrationManager.isIndexStale(applicationContext))
 
             viewModel.syncDeviceState(
@@ -271,10 +308,11 @@ class MainActivity : ComponentActivity() {
                 hasFilesPerm = hasFiles,
                 contacts = contacts,
                 files = cachedFiles,
+                apps = apps,
+                browsers = browsers,
                 isIndexing = needsRebuild,
             )
 
-            // 2. If index is stale (>1 hour old), empty, or manual rebuild was requested, rebuild & save in background
             if (needsRebuild) {
                 val freshContacts = if (hasContacts) DeviceIntegrationManager.loadDeviceContacts(applicationContext) else contacts
                 val freshFiles = DeviceIntegrationManager.rebuildAndSaveStorageIndex(applicationContext, currentBookmarks)
@@ -283,6 +321,8 @@ class MainActivity : ComponentActivity() {
                     hasFilesPerm = hasFiles,
                     contacts = freshContacts,
                     files = freshFiles,
+                    apps = apps,
+                    browsers = browsers,
                     isIndexing = false,
                 )
             }
