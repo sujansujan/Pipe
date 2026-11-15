@@ -1,3 +1,4 @@
+\
 package com.sujan.pipe.domain
 
 import com.sujan.pipe.model.BookmarkKind
@@ -7,6 +8,7 @@ import com.sujan.pipe.model.EngineColorRole
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.SearchEngine
+import com.sujan.pipe.model.SearchHistoryEntry
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -14,14 +16,9 @@ import java.nio.charset.StandardCharsets
 
 /**
  * Fast, zero-dependency fuzzy matcher for contacts, bookmarks, folders, and files.
- * Scores exact matches highest, followed by prefix matches, substring matches,
- * word-boundary matches, and ordered character-subsequence matches.
  */
 object FuzzyMatcher {
 
-    /**
-     * Returns a positive score if [query] fuzzy-matches [candidate], or 0 if it does not match.
-     */
     fun score(query: String, candidate: String): Int {
         val q = query.trim().lowercase()
         val c = candidate.trim().lowercase()
@@ -31,16 +28,13 @@ object FuzzyMatcher {
         if (c == q) return 1000
         if (c.startsWith(q)) return 850 - (c.length - q.length).coerceAtMost(100)
 
-        // Word-prefix match (e.g. "prasad" in "Kali Prasad")
         val words = c.split(Regex("[\\s_\\-./]+"))
         if (words.any { it == q }) return 780
         if (words.any { it.startsWith(q) }) return 700
 
-        // Contiguous substring match
         val subIdx = c.indexOf(q)
         if (subIdx >= 0) return 600 - subIdx.coerceAtMost(80)
 
-        // Multi-token check: every token in query must match candidate
         if (q.contains(' ')) {
             val tokens = q.split(Regex("\\s+")).filter { it.isNotEmpty() }
             val tokenScores = tokens.map { scoreSingleTokenSubsequence(it, c) }
@@ -62,7 +56,7 @@ object FuzzyMatcher {
                 consecutive++
                 bonus += consecutive * 15
                 if (cIdx == 0 || !c[cIdx - 1].isLetterOrDigit()) {
-                    bonus += 25 // Word boundary bonus
+                    bonus += 25
                 }
                 qIdx++
             } else {
@@ -75,7 +69,7 @@ object FuzzyMatcher {
         return (150 + bonus + compactness - startPenalty).coerceAtLeast(1)
     }
 
-    fun filterContacts(query: String, contacts: List<ContactItem>, limit: Int = 8): List<ContactItem> {
+    fun filterContacts(query: String, contacts: List<ContactItem>, limit: Int = 10): List<ContactItem> {
         val clean = query.trim()
         if (clean.isEmpty()) return contacts.take(limit)
         return contacts
@@ -90,7 +84,7 @@ object FuzzyMatcher {
             .map { it.first }
     }
 
-    fun filterBookmarks(query: String, bookmarks: List<PipeBookmark>, limit: Int = 8): List<PipeBookmark> {
+    fun filterBookmarks(query: String, bookmarks: List<PipeBookmark>, limit: Int = 10): List<PipeBookmark> {
         val clean = query.trim()
         if (clean.isEmpty()) return bookmarks.take(limit)
         return bookmarks
@@ -110,10 +104,9 @@ object FuzzyMatcher {
             .map { it.first }
     }
 
-    fun filterFiles(query: String, files: List<LocalFileItem>, limit: Int = 12): List<LocalFileItem> {
+    fun filterFiles(query: String, files: List<LocalFileItem>, limit: Int = 10): List<LocalFileItem> {
         val clean = query.trim()
         if (clean.isEmpty()) {
-            // When query is empty (e.g. just `f `), show directories first
             return files.sortedByDescending { it.isDirectory }.take(limit)
         }
         return files
@@ -122,7 +115,6 @@ object FuzzyMatcher {
                 val pathScore = if (clean.contains('/')) score(clean, f.absolutePath) else 0
                 val baseScore = maxOf(nameScore, pathScore)
                 if (baseScore > 0) {
-                    // Boost directories (+120) so folders rank prominently when searching with `f <query>`
                     val dirBonus = if (f.isDirectory) 120 else 0
                     f to (baseScore + dirBonus)
                 } else null
@@ -149,20 +141,14 @@ data class RouteResolution(
         }
 }
 
-/**
- * High-level command mode parsed from the prompt input:
- * - `c <query>` -> Contact search mode
- * - `f <query>` -> Local file/folder search mode
- * - `bm <query>` -> Bookmark search mode
- * - `<bookmark_alias>` or `<folder_alias> <subfilter>` -> Direct bookmark or folder-scoped file search
- * - Standard search engine pipe (`yt lofi`, `g phones`) + ambient fuzzy matches
- */
-enum class PromptIntentMode {
-    GENERAL,
-    CONTACTS_ONLY,
-    FILES_ONLY,
-    BOOKMARKS_ONLY,
-    SCOPED_FOLDER,
+enum class PromptIntentMode(val scopeBadge: String) {
+    ALL("all"),
+    CONTACTS_ONLY("c:contacts"),
+    FILES_ONLY("f:files+dirs"),
+    DIRS_ONLY("d:folders"),
+    BOOKMARKS_ONLY("bm:bookmarks"),
+    SCOPED_FOLDER("dir:scoped"),
+    ENGINE_ONLY("pipe:web"),
 }
 
 data class ParsedPromptCommand(
@@ -170,7 +156,56 @@ data class ParsedPromptCommand(
     val filterQuery: String,
     val exactBookmark: PipeBookmark? = null,
     val scopedFolderBookmark: PipeBookmark? = null,
+    val matchedEngine: SearchEngine? = null,
 )
+
+/**
+ * Unified Raycast-style command palette row item.
+ * Every item has a `usageKey` used to track and sort by "most used" (`usageCount`).
+ */
+sealed interface PaletteItem {
+    val usageKey: String
+    val rankScore: Int
+    val usageCount: Int
+
+    data class EngineAction(
+        val engine: SearchEngine,
+        val query: String,
+        val targetUrl: String,
+        val isHome: Boolean,
+        override val usageKey: String,
+        override val rankScore: Int,
+        override val usageCount: Int,
+    ) : PaletteItem
+
+    data class BookmarkAction(
+        val bookmark: PipeBookmark,
+        override val usageKey: String,
+        override val rankScore: Int,
+        override val usageCount: Int,
+    ) : PaletteItem
+
+    data class ContactAction(
+        val contact: ContactItem,
+        override val usageKey: String,
+        override val rankScore: Int,
+        override val usageCount: Int,
+    ) : PaletteItem
+
+    data class FileAction(
+        val file: LocalFileItem,
+        override val usageKey: String,
+        override val rankScore: Int,
+        override val usageCount: Int,
+    ) : PaletteItem
+
+    data class HistoryAction(
+        val entry: SearchHistoryEntry,
+        override val usageKey: String,
+        override val rankScore: Int,
+        override val usageCount: Int,
+    ) : PaletteItem
+}
 
 data class EngineValidationErrors(
     val nameError: String? = null,
@@ -183,22 +218,31 @@ data class EngineValidationErrors(
 
 object QueryRouter {
 
+    const val MAX_PALETTE_RESULTS = 10
     private val WHITESPACE_REGEX = Regex("\\s+")
 
     /**
-     * Parses special command prefixes (`c `, `f `, `bm `, or a bookmark alias like `dl` / `dl pdf`)
-     * before falling back to search engine routing.
+     * Parses the user's input to determine whether an explicit alias was typed:
+     * - `c` / `c <query>` -> `CONTACTS_ONLY`
+     * - `f` / `f <query>` -> `FILES_ONLY` (searches both folders and files)
+     * - `d` / `dir <query>` -> `DIRS_ONLY` (searches folders only)
+     * - `b` / `bm <query>` -> `BOOKMARKS_ONLY`
+     * - `<bookmark_alias>` / `<bookmark_alias> <subfilter>` -> `SCOPED_FOLDER` or exact bookmark
+     * - `<engine_keyword>` / `<engine_keyword> <query>` -> `ENGINE_ONLY`
+     * - Otherwise (no alias typed) -> `ALL` (shows all categories combined, max 10, ranked by most used!)
      */
     fun parsePromptCommand(
         rawInput: String,
         bookmarks: List<PipeBookmark>,
+        engines: List<SearchEngine> = DefaultEngines.LIST,
     ): ParsedPromptCommand {
         val trimmed = rawInput.trim()
         if (trimmed.isEmpty()) {
-            return ParsedPromptCommand(PromptIntentMode.GENERAL, "")
+            return ParsedPromptCommand(PromptIntentMode.ALL, "")
         }
         val tokens = trimmed.split(WHITESPACE_REGEX, limit = 2)
         val first = tokens[0].lowercase()
+        val hasSpace = rawInput.trimStart().length > first.length
         val remainder = if (tokens.size > 1) tokens[1].trim() else ""
 
         // 1. Contact alias: `c` or `c <name>`
@@ -206,17 +250,22 @@ object QueryRouter {
             return ParsedPromptCommand(PromptIntentMode.CONTACTS_ONLY, remainder)
         }
 
-        // 2. File search alias: `f` or `file`
-        if (first == "f" || first == "d" || first == "dir" || first == "folder" || first == "file" || first == "files") {
+        // 2. File + Folder search alias: `f` or `file` or `files`
+        if (first == "f" || first == "file" || first == "files") {
             return ParsedPromptCommand(PromptIntentMode.FILES_ONLY, remainder)
         }
 
-        // 3. Bookmark search alias: `b` or `bm`
+        // 3. Directory-only alias: `d` or `dir` or `folder`
+        if (first == "d" || first == "dir" || first == "folder" || first == "folders") {
+            return ParsedPromptCommand(PromptIntentMode.DIRS_ONLY, remainder)
+        }
+
+        // 4. Bookmark search alias: `b` or `bm`
         if (first == "b" || first == "bm") {
             return ParsedPromptCommand(PromptIntentMode.BOOKMARKS_ONLY, remainder)
         }
 
-        // 4. Exact bookmark alias match (e.g. `dl`, `docs`, `pic`, or `dl invoice`)
+        // 5. Bookmark alias match (e.g. `dl`, `docs`, `pic`, `dcim`, `sd`, or `dl invoice`)
         val matchedBookmark = bookmarks.firstOrNull {
             it.alias.isNotBlank() && it.alias.equals(first, ignoreCase = true)
         }
@@ -230,23 +279,283 @@ object QueryRouter {
                 )
             } else if (remainder.isEmpty()) {
                 ParsedPromptCommand(
-                    mode = PromptIntentMode.GENERAL,
-                    filterQuery = trimmed,
+                    mode = PromptIntentMode.BOOKMARKS_ONLY,
+                    filterQuery = first,
                     exactBookmark = matchedBookmark,
                 )
             } else {
-                ParsedPromptCommand(PromptIntentMode.GENERAL, trimmed)
+                ParsedPromptCommand(PromptIntentMode.ALL, trimmed)
             }
         }
 
-        return ParsedPromptCommand(PromptIntentMode.GENERAL, trimmed)
+        // 6. Search engine keyword match (e.g. `yt lofi`, `g phones`, or `yt` with space)
+        val matchedEngine = engines.firstOrNull {
+            it.keyword.equals(first, ignoreCase = true)
+        }
+        if (matchedEngine != null && (hasSpace || remainder.isNotEmpty() || trimmed.equals(matchedEngine.keyword, ignoreCase = true))) {
+            return ParsedPromptCommand(
+                mode = PromptIntentMode.ENGINE_ONLY,
+                filterQuery = remainder,
+                matchedEngine = matchedEngine,
+            )
+        }
+
+        return ParsedPromptCommand(PromptIntentMode.ALL, trimmed)
     }
 
     /**
-     * Normalizes a phone number into clean digits for WhatsApp (`https://wa.me/<digits>`).
-     * Automatically prepends Nepal's `977` country code when given a 10-digit local mobile number
-     * starting with `98` or `97`.
+     * Builds the unified Raycast-style command list (strictly capped at [MAX_PALETTE_RESULTS] = 10),
+     * scoped to the active alias if one was typed, or combining all categories when no alias is typed,
+     * and ranked by `usageCount` (most used) + fuzzy match quality.
      */
+    fun buildPaletteResults(
+        rawInput: String,
+        engines: List<SearchEngine>,
+        bookmarks: List<PipeBookmark>,
+        contacts: List<ContactItem>,
+        storageFiles: List<LocalFileItem>,
+        scopedFolderFiles: List<LocalFileItem>,
+        history: List<SearchHistoryEntry>,
+        usageMap: Map<String, Int>,
+    ): List<PaletteItem> {
+        val cmd = parsePromptCommand(rawInput, bookmarks, engines)
+        fun usageOf(key: String): Int = usageMap[key] ?: 0
+        fun usageBonus(key: String): Int = (usageMap[key] ?: 0) * 180
+
+        return when (cmd.mode) {
+            PromptIntentMode.CONTACTS_ONLY -> {
+                val q = cmd.filterQuery.trim()
+                contacts.mapNotNull { c ->
+                    val uKey = "contact:${c.phoneNumber.filter { it.isDigit() }}"
+                    val uCount = usageOf(uKey)
+                    val fScore = if (q.isEmpty()) 100 else maxOf(
+                        FuzzyMatcher.score(q, c.displayName),
+                        FuzzyMatcher.score(q, c.phoneNumber.replace(" ", "").replace("-", "")),
+                    )
+                    if (fScore > 0) {
+                        PaletteItem.ContactAction(c, uKey, fScore + usageBonus(uKey), uCount)
+                    } else null
+                }.sortedWith(compareByDescending<PaletteItem.ContactAction> { it.rankScore }.thenByDescending { it.usageCount })
+                    .take(MAX_PALETTE_RESULTS)
+            }
+
+            PromptIntentMode.FILES_ONLY -> {
+                val q = cmd.filterQuery.trim()
+                storageFiles.mapNotNull { f ->
+                    val uKey = "file:${f.absolutePath}"
+                    val uCount = usageOf(uKey)
+                    val dirBoost = if (f.isDirectory) 120 else 0
+                    val fScore = if (q.isEmpty()) (100 + dirBoost) else {
+                        val s = maxOf(FuzzyMatcher.score(q, f.name), if (q.contains('/')) FuzzyMatcher.score(q, f.absolutePath) else 0)
+                        if (s > 0) s + dirBoost else 0
+                    }
+                    if (fScore > 0) {
+                        PaletteItem.FileAction(f, uKey, fScore + usageBonus(uKey), uCount)
+                    } else null
+                }.sortedWith(compareByDescending<PaletteItem.FileAction> { it.rankScore }.thenByDescending { it.usageCount })
+                    .take(MAX_PALETTE_RESULTS)
+            }
+
+            PromptIntentMode.DIRS_ONLY -> {
+                val q = cmd.filterQuery.trim()
+                storageFiles.asSequence().filter { it.isDirectory }.mapNotNull { f ->
+                    val uKey = "file:${f.absolutePath}"
+                    val uCount = usageOf(uKey)
+                    val fScore = if (q.isEmpty()) 200 else FuzzyMatcher.score(q, f.name)
+                    if (fScore > 0) {
+                        PaletteItem.FileAction(f, uKey, fScore + usageBonus(uKey), uCount)
+                    } else null
+                }.sortedWith(compareByDescending<PaletteItem.FileAction> { it.rankScore }.thenByDescending { it.usageCount })
+                    .take(MAX_PALETTE_RESULTS)
+                    .toList()
+            }
+
+            PromptIntentMode.BOOKMARKS_ONLY -> {
+                val q = cmd.filterQuery.trim()
+                bookmarks.mapNotNull { bm ->
+                    val uKey = "bm:${bm.id}"
+                    val uCount = usageOf(uKey)
+                    val fScore = if (q.isEmpty()) 200 else maxOf(
+                        if (bm.alias.equals(q, ignoreCase = true)) 2000 else FuzzyMatcher.score(q, bm.alias) + 120,
+                        FuzzyMatcher.score(q, bm.title),
+                        FuzzyMatcher.score(q, bm.target.substringAfterLast('/')),
+                    )
+                    if (fScore > 0) {
+                        PaletteItem.BookmarkAction(bm, uKey, fScore + usageBonus(uKey), uCount)
+                    } else null
+                }.sortedWith(compareByDescending<PaletteItem.BookmarkAction> { it.rankScore }.thenByDescending { it.usageCount })
+                    .take(MAX_PALETTE_RESULTS)
+            }
+
+            PromptIntentMode.SCOPED_FOLDER -> {
+                val folderBm = cmd.scopedFolderBookmark
+                val q = cmd.filterQuery.trim()
+                val out = mutableListOf<PaletteItem>()
+                if (folderBm != null && q.isEmpty()) {
+                    val uKey = "bm:${folderBm.id}"
+                    out.add(PaletteItem.BookmarkAction(folderBm, uKey, 5000 + usageBonus(uKey), usageOf(uKey)))
+                }
+                val fileMatches = scopedFolderFiles.mapNotNull { f ->
+                    val uKey = "file:${f.absolutePath}"
+                    val uCount = usageOf(uKey)
+                    val dirBoost = if (f.isDirectory) 120 else 0
+                    val fScore = if (q.isEmpty()) (100 + dirBoost) else {
+                        val s = FuzzyMatcher.score(q, f.name)
+                        if (s > 0) s + dirBoost else 0
+                    }
+                    if (fScore > 0) {
+                        PaletteItem.FileAction(f, uKey, fScore + usageBonus(uKey), uCount)
+                    } else null
+                }.sortedWith(compareByDescending<PaletteItem.FileAction> { it.rankScore }.thenByDescending { it.usageCount })
+
+                out.addAll(fileMatches.take(MAX_PALETTE_RESULTS - out.size))
+                out.take(MAX_PALETTE_RESULTS)
+            }
+
+            PromptIntentMode.ENGINE_ONLY -> {
+                val eng = cmd.matchedEngine ?: engines.firstOrNull { it.isDefault } ?: DefaultEngines.LIST.first()
+                val q = cmd.filterQuery.trim()
+                val uKey = "eng:${eng.id}"
+                val uCount = usageOf(uKey)
+                val targetUrl = if (q.isEmpty()) eng.homeUrl else buildSearchUrl(eng.urlTemplate, q)
+                val primary = PaletteItem.EngineAction(
+                    engine = eng,
+                    query = q,
+                    targetUrl = targetUrl,
+                    isHome = q.isEmpty(),
+                    usageKey = uKey,
+                    rankScore = 10_000 + usageBonus(uKey),
+                    usageCount = uCount,
+                )
+                val relatedHistory = history
+                    .filter { it.engineKeyword.equals(eng.keyword, ignoreCase = true) }
+                    .mapNotNull { h ->
+                        val hKey = "hist:${h.rawInput.lowercase()}"
+                        val hScore = if (q.isEmpty()) 200 else FuzzyMatcher.score(q, h.queryText)
+                        if (hScore > 0) {
+                            PaletteItem.HistoryAction(h, hKey, hScore + usageBonus(hKey), usageOf(hKey))
+                        } else null
+                    }
+                    .sortedByDescending { it.rankScore }
+                    .take(MAX_PALETTE_RESULTS - 1)
+                listOf(primary) + relatedHistory
+            }
+
+            PromptIntentMode.ALL -> {
+                val q = cmd.filterQuery.trim()
+                val pool = mutableListOf<PaletteItem>()
+
+                if (q.isEmpty()) {
+                    // Empty input: show all categories ranked by MOST USED (`usageCount`)!
+                    bookmarks.forEachIndexed { idx, bm ->
+                        val uKey = "bm:${bm.id}"
+                        val uCount = usageOf(uKey)
+                        pool.add(PaletteItem.BookmarkAction(bm, uKey, 90 - idx + usageBonus(uKey), uCount))
+                    }
+                    engines.forEachIndexed { idx, eng ->
+                        val uKey = "eng:${eng.id}"
+                        val uCount = usageOf(uKey)
+                        pool.add(
+                            PaletteItem.EngineAction(
+                                engine = eng,
+                                query = "",
+                                targetUrl = eng.homeUrl,
+                                isHome = true,
+                                usageKey = uKey,
+                                rankScore = (if (eng.isDefault) 95 else 80 - idx) + usageBonus(uKey),
+                                usageCount = uCount,
+                            )
+                        )
+                    }
+                    contacts.forEach { c ->
+                        val uKey = "contact:${c.phoneNumber.filter { it.isDigit() }}"
+                        val uCount = usageOf(uKey)
+                        if (uCount > 0) {
+                            pool.add(PaletteItem.ContactAction(c, uKey, 70 + usageBonus(uKey), uCount))
+                        }
+                    }
+                    storageFiles.forEach { f ->
+                        val uKey = "file:${f.absolutePath}"
+                        val uCount = usageOf(uKey)
+                        if (uCount > 0) {
+                            pool.add(PaletteItem.FileAction(f, uKey, 75 + usageBonus(uKey), uCount))
+                        }
+                    }
+                    history.take(10).forEachIndexed { idx, h ->
+                        val hKey = "hist:${h.rawInput.lowercase()}"
+                        val uCount = usageOf(hKey).coerceAtLeast(1)
+                        pool.add(PaletteItem.HistoryAction(h, hKey, 60 - idx + uCount * 180, uCount))
+                    }
+                } else {
+                    // Non-empty query without alias: fuzzy search ALL categories + include default web search fallback!
+                    bookmarks.forEach { bm ->
+                        val s = maxOf(FuzzyMatcher.score(q, bm.alias), FuzzyMatcher.score(q, bm.title))
+                        if (s > 0) {
+                            val uKey = "bm:${bm.id}"
+                            pool.add(PaletteItem.BookmarkAction(bm, uKey, s + 60 + usageBonus(uKey), usageOf(uKey)))
+                        }
+                    }
+                    contacts.forEach { c ->
+                        val s = maxOf(
+                            FuzzyMatcher.score(q, c.displayName),
+                            FuzzyMatcher.score(q, c.phoneNumber.replace(" ", "").replace("-", "")),
+                        )
+                        if (s > 0) {
+                            val uKey = "contact:${c.phoneNumber.filter { it.isDigit() }}"
+                            pool.add(PaletteItem.ContactAction(c, uKey, s + 40 + usageBonus(uKey), usageOf(uKey)))
+                        }
+                    }
+                    storageFiles.forEach { f ->
+                        val s = FuzzyMatcher.score(q, f.name)
+                        if (s > 0) {
+                            val uKey = "file:${f.absolutePath}"
+                            val dirBoost = if (f.isDirectory) 120 else 0
+                            pool.add(PaletteItem.FileAction(f, uKey, s + dirBoost + usageBonus(uKey), usageOf(uKey)))
+                        }
+                    }
+                    engines.forEach { eng ->
+                        val s = maxOf(FuzzyMatcher.score(q, eng.keyword), FuzzyMatcher.score(q, eng.name))
+                        if (s > 0) {
+                            val uKey = "eng:${eng.id}"
+                            pool.add(
+                                PaletteItem.EngineAction(
+                                    engine = eng,
+                                    query = q,
+                                    targetUrl = buildSearchUrl(eng.urlTemplate, q),
+                                    isHome = false,
+                                    usageKey = uKey,
+                                    rankScore = s + usageBonus(uKey),
+                                    usageCount = usageOf(uKey),
+                                )
+                            )
+                        }
+                    }
+                    // Always include the default fallback web search so pressing Enter can web-search any query
+                    val defEng = engines.firstOrNull { it.isDefault } ?: DefaultEngines.LIST.first()
+                    if (pool.none { it is PaletteItem.EngineAction && it.engine.id == defEng.id }) {
+                        val uKey = "eng:${defEng.id}"
+                        pool.add(
+                            PaletteItem.EngineAction(
+                                engine = defEng,
+                                query = q,
+                                targetUrl = buildSearchUrl(defEng.urlTemplate, q),
+                                isHome = false,
+                                usageKey = uKey,
+                                rankScore = 300 + usageBonus(uKey),
+                                usageCount = usageOf(uKey),
+                            )
+                        )
+                    }
+                }
+
+                pool.sortedWith(
+                    compareByDescending<PaletteItem> { it.usageCount }
+                        .thenByDescending { it.rankScore }
+                ).take(MAX_PALETTE_RESULTS)
+            }
+        }
+    }
+
     fun normalizeWhatsAppPhone(rawPhone: String, defaultCountryCode: String = "977"): String {
         val digits = rawPhone.filter { it.isDigit() }
         if (digits.length == 10 && (digits.startsWith("98") || digits.startsWith("97"))) {
@@ -302,12 +611,6 @@ object QueryRouter {
         }
     }
 
-    /**
-     * Extracts a search query when `pipe` is set as Default Browser and receives a search URL
-     * from a home-screen search bar, assistant, or custom search engine URL (e.g. `google.com/search?q=yt+lofi`,
-     * `duckduckgo.com/?q=gh+compose`, `bing.com/search?q=...`, `pipe://search?q=...`).
-     * Returns null if [rawUri] is a normal website navigation URL (like `https://github.com/sujansujan`).
-     */
     fun extractQueryFromSearchUri(rawUri: String?): String? {
         if (rawUri.isNullOrBlank()) return null
         return try {

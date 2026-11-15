@@ -354,6 +354,36 @@ fun leader(key: String, value: String, cols: Int): String {
     return "$key " + ".".repeat(dots) + " $value"
 }
 
+/**
+ * Draws a full-width ASCII box-drawing horizontal divider line:
+ * `├─ label ─────────────────────────────── rightMeta ─┤`
+ */
+@Composable
+fun AsciiFrameDivider(
+    leftLabel: String,
+    rightLabel: String? = null,
+    borderChar: Char = '─',
+    leftCorner: String = "├─",
+    rightCorner: String = "─┤",
+) {
+    val c = LocalAscii.current
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val cols = rememberCols(AsciiType.small)
+        val leftPart = "$leftCorner $leftLabel "
+        val rightPart = if (rightLabel != null) " $rightLabel $rightCorner" else rightCorner
+        val fillCount = (cols - leftPart.length - rightPart.length).coerceAtLeast(2)
+        val line = leftPart + borderChar.toString().repeat(fillCount) + rightPart
+        AsciiText(
+            text = line,
+            style = AsciiType.small,
+            color = c.dim,
+            softWrap = false,
+            maxLines = 1,
+            modifier = Modifier.clearAndSetSemantics {},
+        )
+    }
+}
+
 fun frame(title: String, lines: List<String>, cols: Int): String {
     val safeCols = cols.coerceAtLeast(20)
     val inner = safeCols - 2

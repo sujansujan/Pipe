@@ -87,9 +87,21 @@ data class PipeUiState(
     val bookmarkForm: BookmarkFormState = BookmarkFormState(),
     val undoBanner: UndoBannerState? = null,
     val launchError: String? = null,
+    val usageCounts: Map<String, Int> = emptyMap(),
     val jsonDialogMode: JsonDialogMode? = null,
     val jsonStatusMessage: String? = null,
 ) {
+    val paletteResults: List< com.sujan.pipe.domain.PaletteItem >
+        get() = QueryRouter.buildPaletteResults(
+            rawInput = searchInput.text,
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = contacts,
+            storageFiles = storageFiles,
+            scopedFolderFiles = scopedFolderFiles,
+            history = history,
+            usageMap = usageCounts,
+        )
     val parsedCommand: ParsedPromptCommand
         get() = QueryRouter.parsePromptCommand(searchInput.text, bookmarks)
 
@@ -152,6 +164,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             engines = repository.loadEngines(),
             bookmarks = repository.loadBookmarks(),
             history = repository.loadHistory(),
+            usageCounts = repository.loadUsageCounts(),
             themeMode = repository.loadThemeMode(),
             paletteChoice = repository.loadPaletteChoice(),
             historyEnabled = repository.isHistoryEnabled(),
@@ -179,6 +192,11 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
 
     fun updateScopedFolderFiles(files: List<LocalFileItem>) {
         _uiState.update { it.copy(scopedFolderFiles = files) }
+    }
+
+    fun recordItemUsage(usageKey: String) {
+        val updated = repository.incrementUsage(usageKey)
+        _uiState.update { it.copy(usageCounts = updated) }
     }
 
     fun navigateTo(view: PipeView) {

@@ -265,11 +265,8 @@ private fun PipePromptScreen(
     onLaunchOverlay: () -> Unit,
 ) {
     val c = LocalAscii.current
-    val clipboard = LocalClipboardManager.current
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
-    val res = state.liveResolution
-    val cmd = state.parsedCommand
 
     LaunchedEffect(Unit) {
         runCatching {
@@ -278,459 +275,514 @@ private fun PipePromptScreen(
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
-        AsciiTopHeader(
-            path = "~/pipe",
-            actions = {
-                AsciiButton("ovl", onLaunchOverlay, spokenLabel = "open overlay mode")
-                AsciiButton("bm (${state.bookmarks.size})", { onNavigate(PipeView.BOOKMARKS) }, spokenLabel = "bookmarks")
-                AsciiButton("pipes", { onNavigate(PipeView.ENGINES) }, spokenLabel = "search engines")
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        // Raycast-style ASCII Command Palette Frame
+        AsciiRaycastPaletteWindow(
+            titlePath = "~/pipe",
+            searchInput = state.searchInput,
+            onSearchInputChange = onSearchInputChange,
+            parsedCommand = state.parsedCommand,
+            results = state.paletteResults,
+            hasContactsPermission = state.hasContactsPermission,
+            hasFilesPermission = state.hasFilesPermission,
+            launchError = state.launchError,
+            focusRequester = focusRequester,
+            headerRightActions = {
+                AsciiButton("ovl", onLaunchOverlay, spokenLabel = "overlay")
+                AsciiButton("bm", { onNavigate(PipeView.BOOKMARKS) }, spokenLabel = "bookmarks")
+                AsciiButton("pipes", { onNavigate(PipeView.ENGINES) }, spokenLabel = "engines")
                 AsciiButton("set", { onNavigate(PipeView.SETTINGS) }, spokenLabel = "settings")
             },
+            onAliasPillClick = { alias ->
+                onAliasPillClick(alias)
+                runCatching { focusRequester.requestFocus() }
+            },
+            onSubmitPrimary = onSubmitPrimaryAction,
+            onExecuteItem = { item ->
+                when (item) {
+                    is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
+                        val nextInput = if (item.query.isNotEmpty()) "${item.engine.keyword} ${item.query}" else item.engine.keyword
+                        onSearchInputChange(TextFieldValue(nextInput, TextRange(nextInput.length)))
+                        onSubmitPrimaryAction()
+                    }
+                    is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> onOpenBookmark(item.bookmark)
+                    is com.sujan.pipe.domain.PaletteItem.FileAction -> onOpenLocalFile(item.file)
+                    is com.sujan.pipe.domain.PaletteItem.ContactAction -> onCallContact(item.contact)
+                    is com.sujan.pipe.domain.PaletteItem.HistoryAction -> onRerunHistory(item.entry)
+                }
+            },
+            onCallContact = onCallContact,
+            onSmsContact = onSmsContact,
+            onWhatsAppContact = onWhatsAppContact,
+            onScopeIntoFolder = { alias ->
+                onAliasPillClick(alias)
+                runCatching { focusRequester.requestFocus() }
+            },
+            onBookmarkFile = onBookmarkLocalFile,
+            onRequestContactsPermission = onRequestContactsPermission,
+            onRequestFilesPermission = onRequestFilesPermission,
+            modifier = Modifier.weight(1f),
         )
-
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            // 1. Unified Command Prompt (`$ yt lofi`, `$ c kali`, `$ dl`, `$ f report`)
-            item {
-                Spacer(Modifier.height(6.dp))
-                AsciiTextField(
-                    label = null,
-                    promptPrefix = "$ ",
-                    value = state.searchInput,
-                    onValueChange = onSearchInputChange,
-                    placeholder = "yt lofi | c kali | dl | f notes",
-                    errorText = state.launchError,
-                    focusRequester = focusRequester,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Text,
-                        imeAction = ImeAction.Search,
-                    ),
-                    keyboardActions = KeyboardActions(onSearch = { onSubmitPrimaryAction() }),
-                    trailingControl = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (state.searchInput.text.isNotEmpty()) {
-                                AsciiButton(
-                                    label = "x",
-                                    onClick = { onSearchInputChange(TextFieldValue("")) },
-                                    spokenLabel = "clear input",
-                                )
-                            }
-                            AsciiButton(
-                                label = "| ->",
-                                onClick = onSubmitPrimaryAction,
-                                primary = true,
-                                spokenLabel = "execute pipe command",
-                            )
-                        }
-                    },
-                )
-
-                // Live pipeline trace line
-                Spacer(Modifier.height(4.dp))
-                val traceText = when {
-                    cmd.exactBookmark != null ->
-                        "+--> [${cmd.exactBookmark.alias}] ${cmd.exactBookmark.kind.badge} :: ${cmd.exactBookmark.target}"
-                    cmd.mode == PromptIntentMode.CONTACTS_ONLY ->
-                        "+--> [c] contacts fuzzy search :: \"${cmd.filterQuery}\""
-                    cmd.mode == PromptIntentMode.FILES_ONLY ->
-                        "+--> [f] storage files fuzzy search :: \"${cmd.filterQuery}\""
-                    cmd.mode == PromptIntentMode.SCOPED_FOLDER ->
-                        "+--> [${cmd.scopedFolderBookmark?.alias}] folder filter :: \"${cmd.filterQuery}\" in ${cmd.scopedFolderBookmark?.target}"
-                    else -> "+--> ${res.pipelinePreview}"
-                }
-                AsciiText(
-                    text = traceText,
-                    style = AsciiType.small,
-                    color = c.accent,
-                    maxLines = 1,
-                )
-            }
-
-            // 2. Quick Mode & Engine Pills (`[|c contacts] [|dl downloads] [|f files] [|g* google] [|yt youtube] ...`)
-            item {
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    verticalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    AsciiPipePill(
-                        keyword = "c",
-                        name = "contacts",
-                        selected = cmd.mode == PromptIntentMode.CONTACTS_ONLY,
-                        accentColor = c.good,
-                        onClick = {
-                            onAliasPillClick("c")
-                            runCatching { focusRequester.requestFocus() }
-                        },
-                    )
-                    AsciiPipePill(
-                        keyword = "dl",
-                        name = "downloads",
-                        selected = cmd.scopedFolderBookmark?.alias == "dl",
-                        accentColor = c.warn,
-                        onClick = {
-                            onAliasPillClick("dl")
-                            runCatching { focusRequester.requestFocus() }
-                        },
-                    )
-                    AsciiPipePill(
-                        keyword = "f",
-                        name = "files",
-                        selected = cmd.mode == PromptIntentMode.FILES_ONLY,
-                        accentColor = c.accent3,
-                        onClick = {
-                            onAliasPillClick("f")
-                            runCatching { focusRequester.requestFocus() }
-                        },
-                    )
-                    state.suggestedEngines.forEach { eng ->
-                        val active = cmd.mode == PromptIntentMode.GENERAL &&
-                            cmd.exactBookmark == null &&
-                            res.matchedByKeyword &&
-                            res.engine.id == eng.id
-                        AsciiPipePill(
-                            keyword = eng.keyword,
-                            name = eng.name.lowercase(),
-                            selected = active,
-                            isDefault = eng.isDefault,
-                            accentColor = c.forRole(eng.colorRole),
-                            onClick = {
-                                onChipClick(eng)
-                                runCatching { focusRequester.requestFocus() }
-                            },
-                        )
-                    }
-                }
-            }
-
-            // 3. Permission prompt banners when Contacts or Files are queried without permission
-            if (!state.hasContactsPermission && (cmd.mode == PromptIntentMode.CONTACTS_ONLY || state.searchInput.text.isNotBlank())) {
-                item {
-                    AsciiBox(title = "contacts permission") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            AsciiText("grant contacts access for `c <name>` search:", style = AsciiType.small, color = c.warn)
-                            AsciiButton("grant contacts", onRequestContactsPermission, primary = true)
-                        }
-                    }
-                }
-            }
-
-            if (!state.hasFilesPermission && (cmd.mode == PromptIntentMode.FILES_ONLY || cmd.mode == PromptIntentMode.SCOPED_FOLDER)) {
-                item {
-                    AsciiBox(title = "all-files access") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            AsciiText("grant storage access to open & search phone files:", style = AsciiType.small, color = c.warn)
-                            AsciiButton("grant files", onRequestFilesPermission, primary = true)
-                        }
-                    }
-                }
-            }
-
-            // 4. Live Contact Fuzzy Search Results (`c kali` or matching contact names)
-            if (state.matchedContacts.isNotEmpty()) {
-                item {
-                    AsciiBox(title = "contacts (${state.matchedContacts.size})") {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            state.matchedContacts.forEach { contact ->
-                                ContactResultRow(
-                                    contact = contact,
-                                    onCall = { onCallContact(contact) },
-                                    onSms = { onSmsContact(contact) },
-                                    onWhatsApp = { onWhatsAppContact(contact) },
-                                    onCopy = { clipboard.setText(AnnotatedString(contact.phoneNumber)) },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 5. Live Bookmarks (Folders, Files, Links)
-            if (state.matchedBookmarks.isNotEmpty()) {
-                item {
-                    AsciiBox(
-                        title = "bookmarks (${state.matchedBookmarks.size})",
-                        rightActionLabel = "manage",
-                        onRightAction = { onNavigate(PipeView.BOOKMARKS) },
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            state.matchedBookmarks.forEach { bm ->
-                                BookmarkResultRow(
-                                    bookmark = bm,
-                                    onOpen = { onOpenBookmark(bm) },
-                                    onScopeInto = if (bm.kind == BookmarkKind.FOLDER) {
-                                        {
-                                            onAliasPillClick(bm.alias)
-                                            runCatching { focusRequester.requestFocus() }
-                                        }
-                                    } else null,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 6. Live Fuzzy-Searched Files & Folders
-            if (state.matchedFiles.isNotEmpty()) {
-                val boxTitle = if (cmd.mode == PromptIntentMode.SCOPED_FOLDER) {
-                    "files in ${cmd.scopedFolderBookmark?.title ?: "folder"} (${state.matchedFiles.size})"
-                } else {
-                    "files & folders (${state.matchedFiles.size})"
-                }
-                item {
-                    AsciiBox(title = boxTitle) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            state.matchedFiles.forEach { fileItem ->
-                                FileResultRow(
-                                    item = fileItem,
-                                    onOpen = { onOpenLocalFile(fileItem) },
-                                    onBookmark = { onBookmarkLocalFile(fileItem) },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 7. Command History
-            item {
-                AsciiBox(
-                    title = "history (${state.history.size})",
-                    rightActionLabel = if (state.history.isNotEmpty()) "clear all" else null,
-                    onRightAction = if (state.history.isNotEmpty()) onClearHistory else null,
-                ) {
-                    if (state.history.isEmpty()) {
-                        AsciiText(
-                            text = "nothing piped yet. try `yt lofi`, `c kali`, or `dl`.",
-                            style = AsciiType.small,
-                            color = c.dim,
-                        )
-                    } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            state.history.forEach { entry ->
-                                HistoryPipeRow(
-                                    entry = entry,
-                                    onRerun = { onRerunHistory(entry) },
-                                    onFill = {
-                                        onFillHistory(entry)
-                                        runCatching { focusRequester.requestFocus() }
-                                    },
-                                    onDelete = { onDeleteHistory(entry) },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            item { Spacer(Modifier.height(8.dp)) }
-        }
     }
 }
 
+/**
+ * Shared Raycast-inspired ASCII Command Palette Window used in both `~/pipe` and `~/pipe/overlay`.
+ * Features character-drawn `┌──┐`, `├──┤`, `└──┘` borders, a unified top-10 result list sorted by
+ * usage frequency (`#N`), strict alias scoping (`c`, `f`, `d`, `bm`, `dl`, `yt`), and a Raycast footer bar.
+ */
 @Composable
-fun ContactResultRow(
-    contact: ContactItem,
-    onCall: () -> Unit,
-    onSms: () -> Unit,
-    onWhatsApp: () -> Unit,
-    onCopy: () -> Unit,
+fun AsciiRaycastPaletteWindow(
+    titlePath: String,
+    searchInput: TextFieldValue,
+    onSearchInputChange: (TextFieldValue) -> Unit,
+    parsedCommand: com.sujan.pipe.domain.ParsedPromptCommand,
+    results: List<com.sujan.pipe.domain.PaletteItem>,
+    hasContactsPermission: Boolean,
+    hasFilesPermission: Boolean,
+    launchError: String?,
+    focusRequester: FocusRequester,
+    headerRightActions: @Composable () -> Unit,
+    onAliasPillClick: (String) -> Unit,
+    onSubmitPrimary: () -> Unit,
+    onExecuteItem: (com.sujan.pipe.domain.PaletteItem) -> Unit,
+    onCallContact: (ContactItem) -> Unit,
+    onSmsContact: (ContactItem) -> Unit,
+    onWhatsAppContact: (ContactItem) -> Unit,
+    onScopeIntoFolder: (String) -> Unit,
+    onBookmarkFile: ((LocalFileItem) -> Unit)? = null,
+    onRequestContactsPermission: (() -> Unit)? = null,
+    onRequestFilesPermission: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
+    val scopeBadge = when (parsedCommand.mode) {
+        PromptIntentMode.SCOPED_FOLDER -> "${parsedCommand.scopedFolderBookmark?.alias ?: "dir"}:folder"
+        PromptIntentMode.ENGINE_ONLY -> "${parsedCommand.matchedEngine?.keyword ?: "web"}:pipe"
+        else -> parsedCommand.mode.scopeBadge
+    }
+
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .border(1.dp, c.border)
-            .padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .background(c.bg)
+            .border(1.dp, c.border),
     ) {
+        // 1. Top ASCII Title Bar: `┌─ ~/pipe ─────────────────── [ovl] [bm] [pipes] [set] ─┐`
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(c.surface)
+                .padding(horizontal = 8.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             AsciiText(
-                text = "@ ${contact.displayName}",
+                text = "+- $titlePath",
                 style = AsciiType.title,
-                color = c.good,
-                maxLines = 1,
-                modifier = Modifier.weight(1f),
+                color = c.accent2,
             )
-            AsciiText(
-                text = contact.phoneNumber,
-                style = AsciiType.small,
-                color = c.fg,
-                maxLines = 1,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                headerRightActions()
+            }
         }
+
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+
+        // 2. Raycast Command Input Bar (`| > type alias or command_         [scope] [x] |`)
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 52.dp)
+                .background(c.bg)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AsciiButton("call", onCall, primary = true, spokenLabel = "call ${contact.displayName}")
-            AsciiButton("sms", onSms, spokenLabel = "text ${contact.displayName}")
-            AsciiButton("wa", onWhatsApp, spokenLabel = "whatsapp ${contact.displayName}")
-            AsciiButton("copy", onCopy, spokenLabel = "copy number for ${contact.displayName}")
-        }
-    }
-}
-
-@Composable
-fun BookmarkResultRow(
-    bookmark: PipeBookmark,
-    onOpen: () -> Unit,
-    onScopeInto: (() -> Unit)? = null,
-) {
-    val c = LocalAscii.current
-    val src = remember { MutableInteractionSource() }
-    val pressed by src.collectIsPressedAsState()
-    val badgeColor = when (bookmark.kind) {
-        BookmarkKind.FOLDER -> c.warn
-        BookmarkKind.FILE -> c.accent3
-        BookmarkKind.LINK -> c.accent2
-    }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 44.dp)
-            .background(if (pressed) c.fg else Color.Transparent)
-            .border(1.dp, c.border)
-            .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onOpen)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (bookmark.alias.isNotBlank()) {
+            AsciiText(
+                text = "> ",
+                style = AsciiType.title,
+                color = c.accent,
+            )
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                if (searchInput.text.isEmpty()) {
                     AsciiText(
-                        text = "[${bookmark.alias}] ",
-                        style = AsciiType.title,
-                        color = if (pressed) c.bg else badgeColor,
+                        text = "type alias (c, f, dl, yt) or search all...",
+                        style = AsciiType.body,
+                        color = c.dim,
+                        maxLines = 1,
                     )
                 }
-                AsciiText(
-                    text = bookmark.title,
-                    style = AsciiType.body,
-                    color = if (pressed) c.bg else c.fg,
-                    maxLines = 1,
-                )
-                AsciiText(
-                    text = " (${bookmark.kind.badge})",
-                    style = AsciiType.small,
-                    color = if (pressed) c.bg else c.dim,
+                androidx.compose.foundation.text.BasicTextField(
+                    value = searchInput,
+                    onValueChange = onSearchInputChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
+                    textStyle = AsciiType.body.copy(color = c.fg),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(c.accent),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Text,
+                        imeAction = ImeAction.Search,
+                    ),
+                    keyboardActions = KeyboardActions(onSearch = { onSubmitPrimary() }),
                 )
             }
+            // Raycast right-hand Scope Tag `[all]` / `[c:contacts]` / `[f:files+dirs]`
             AsciiText(
-                text = bookmark.target,
+                text = "[$scopeBadge]",
                 style = AsciiType.small,
-                color = if (pressed) c.bg else c.dim,
-                maxLines = 1,
+                color = if (parsedCommand.mode == PromptIntentMode.ALL) c.dim else c.accent,
+                modifier = Modifier.padding(horizontal = 4.dp),
             )
-        }
-        if (onScopeInto != null) {
-            AsciiButton("ls", onScopeInto, spokenLabel = "search files inside ${bookmark.title}")
-        }
-        AsciiButton("open", onOpen, primary = true, spokenLabel = "open ${bookmark.title}")
-    }
-}
-
-@Composable
-fun FileResultRow(
-    item: LocalFileItem,
-    onOpen: () -> Unit,
-    onBookmark: () -> Unit,
-) {
-    val c = LocalAscii.current
-    val prefix = if (item.isDirectory) "[dir] " else "[file]"
-    val tint = if (item.isDirectory) c.warn else c.accent3
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 44.dp)
-            .border(1.dp, c.border)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                role = Role.Button,
-                onClick = onOpen,
-            )
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AsciiText(text = "$prefix ", style = AsciiType.small, color = tint)
-                AsciiText(text = item.name, style = AsciiType.body, color = c.fg, maxLines = 1)
+            if (searchInput.text.isNotEmpty()) {
+                AsciiButton(
+                    label = "x",
+                    onClick = { onSearchInputChange(TextFieldValue("")) },
+                    spokenLabel = "clear input",
+                )
             }
-            AsciiText(text = item.absolutePath, style = AsciiType.small, color = c.dim, maxLines = 1)
         }
-        AsciiButton("+bm", onBookmark, spokenLabel = "bookmark ${item.name}")
-        AsciiButton("open", onOpen, primary = true, spokenLabel = "open ${item.name}")
+
+        if (launchError != null) {
+            AsciiText(
+                text = "  $launchError",
+                style = AsciiType.small,
+                color = c.error,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            )
+        }
+
+        // Permission banners if needed for active alias
+        if (!hasContactsPermission && parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY && onRequestContactsPermission != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(c.surface)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("! contacts permission needed for `c` alias", style = AsciiType.small, color = c.warn)
+                AsciiButton("grant", onRequestContactsPermission, primary = true)
+            }
+        }
+        if (!hasFilesPermission && (parsedCommand.mode == PromptIntentMode.FILES_ONLY || parsedCommand.mode == PromptIntentMode.DIRS_ONLY || parsedCommand.mode == PromptIntentMode.SCOPED_FOLDER) && onRequestFilesPermission != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(c.surface)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("! storage access needed to search/open folders", style = AsciiType.small, color = c.warn)
+                AsciiButton("grant", onRequestFilesPermission, primary = true)
+            }
+        }
+
+        // 3. ASCII Mid-Frame Divider (`├─ results (10 max · most used) ─────────────────┤`)
+        com.sujan.pipe.ui.ascii.AsciiFrameDivider(
+            leftLabel = if (parsedCommand.mode == PromptIntentMode.ALL && searchInput.text.isBlank()) {
+                "most used (${results.size}/10)"
+            } else {
+                "$scopeBadge (${results.size}/10)"
+            },
+            rightLabel = "rank: usage",
+        )
+
+        // 4. Unified Raycast Results List (Max 10 rows)
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .fillMaxWidth(),
+        ) {
+            if (results.isEmpty()) {
+                item {
+                    AsciiText(
+                        text = "  | no matching items in [$scopeBadge].",
+                        style = AsciiType.small,
+                        color = c.dim,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+                    )
+                }
+            } else {
+                itemsIndexed(results, key = { idx, item -> "${idx}_${item.usageKey}" }) { index, item ->
+                    val isTop = index == 0
+                    AsciiRaycastRow(
+                        item = item,
+                        isTop = isTop,
+                        onExecute = { onExecuteItem(item) },
+                        onCallContact = onCallContact,
+                        onSmsContact = onSmsContact,
+                        onWhatsAppContact = onWhatsAppContact,
+                        onScopeIntoFolder = onScopeIntoFolder,
+                        onBookmarkFile = onBookmarkFile,
+                    )
+                }
+            }
+        }
+
+        // 5. Raycast Bottom Action Bar / Alias Strip (`└─ [c] [f] [d] [dl] [yt] ─────── [RET ->] ─┘`)
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(c.surface)
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AsciiButton("c:", { onAliasPillClick("c") }, spokenLabel = "contacts alias c")
+                AsciiButton("f:", { onAliasPillClick("f") }, spokenLabel = "files and folders alias f")
+                AsciiButton("d:", { onAliasPillClick("d") }, spokenLabel = "folders alias d")
+                AsciiButton("dl:", { onAliasPillClick("dl") }, spokenLabel = "downloads alias dl")
+                AsciiButton("yt:", { onAliasPillClick("yt") }, spokenLabel = "youtube alias yt")
+            }
+            AsciiButton(
+                label = "RET ->",
+                onClick = {
+                    val firstItem = results.firstOrNull()
+                    if (firstItem != null) onExecuteItem(firstItem) else onSubmitPrimary()
+                },
+                primary = true,
+                spokenLabel = "run top command",
+            )
+        }
     }
 }
 
 @Composable
-private fun HistoryPipeRow(
-    entry: SearchHistoryEntry,
-    onRerun: () -> Unit,
-    onFill: () -> Unit,
-    onDelete: () -> Unit,
+private fun AsciiRaycastRow(
+    item: com.sujan.pipe.domain.PaletteItem,
+    isTop: Boolean,
+    onExecute: () -> Unit,
+    onCallContact: (ContactItem) -> Unit,
+    onSmsContact: (ContactItem) -> Unit,
+    onWhatsAppContact: (ContactItem) -> Unit,
+    onScopeIntoFolder: (String) -> Unit,
+    onBookmarkFile: ((LocalFileItem) -> Unit)?,
 ) {
     val c = LocalAscii.current
     val src = remember { MutableInteractionSource() }
     val pressed by src.collectIsPressedAsState()
+    val rowBg = when {
+        pressed -> c.accent
+        isTop -> c.surface
+        else -> Color.Transparent
+    }
+    val pointer = if (isTop) "|>" else "  "
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 44.dp)
-            .background(if (pressed) c.fg else Color.Transparent)
-            .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onRerun)
-            .padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+    when (item) {
+        is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
+            val contact = item.contact
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .background(rowBg)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = { onCallContact(contact) })
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 AsciiText(
-                    text = "$ ${entry.rawInput} ",
-                    style = AsciiType.body,
-                    color = if (pressed) c.bg else c.fg,
-                    maxLines = 1,
+                    text = "$pointer [@c] ",
+                    style = if (isTop) AsciiType.title else AsciiType.small,
+                    color = if (pressed) c.bg else c.good,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(
+                        text = contact.displayName,
+                        style = if (isTop) AsciiType.title else AsciiType.body,
+                        color = if (pressed) c.bg else c.fg,
+                        maxLines = 1,
+                    )
+                    AsciiText(
+                        text = contact.phoneNumber,
+                        style = AsciiType.small,
+                        color = if (pressed) c.bg else c.dim,
+                        maxLines = 1,
+                    )
+                }
+                if (item.usageCount > 0) {
+                    AsciiText(
+                        text = "#${item.usageCount} ",
+                        style = AsciiType.small,
+                        color = if (pressed) c.bg else c.dim,
+                    )
+                }
+                AsciiButton("call", { onCallContact(contact) }, primary = isTop)
+                AsciiButton("sms", { onSmsContact(contact) })
+                AsciiButton("wa", { onWhatsAppContact(contact) })
+            }
+        }
+
+        is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> {
+            val bm = item.bookmark
+            val badge = when (bm.kind) {
+                BookmarkKind.FOLDER -> "[d/]"
+                BookmarkKind.FILE -> "[f.]"
+                BookmarkKind.LINK -> "[bm]"
+            }
+            val badgeCol = when (bm.kind) {
+                BookmarkKind.FOLDER -> c.warn
+                BookmarkKind.FILE -> c.accent3
+                BookmarkKind.LINK -> c.accent2
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .background(rowBg)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText(
+                    text = "$pointer $badge ",
+                    style = if (isTop) AsciiType.title else AsciiType.small,
+                    color = if (pressed) c.bg else badgeCol,
                 )
                 AsciiText(
-                    text = "| ${entry.engineKeyword}",
-                    style = AsciiType.title,
-                    color = if (pressed) c.bg else c.accent,
+                    text = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title,
+                    style = if (isTop) AsciiType.title else AsciiType.body,
+                    color = if (pressed) c.bg else c.fg,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                if (bm.kind == BookmarkKind.FOLDER && bm.alias.isNotBlank()) {
+                    AsciiButton("ls", { onScopeIntoFolder(bm.alias) })
+                }
+                val meta = if (item.usageCount > 0) "${bm.kind.badge} #${item.usageCount}" else bm.kind.badge
+                AsciiText(
+                    text = " $meta",
+                    style = AsciiType.small,
+                    color = if (pressed) c.bg else c.dim,
                     maxLines = 1,
                 )
             }
-            AsciiText(
-                text = "  -> ${entry.engineName.lowercase()} (${entry.queryText})",
-                style = AsciiType.small,
-                color = if (pressed) c.bg else c.dim,
-                maxLines = 1,
-            )
         }
-        AsciiButton(label = "^", onClick = onFill, spokenLabel = "edit ${entry.rawInput}")
-        AsciiButton(label = "x", onClick = onDelete, spokenLabel = "remove ${entry.rawInput}")
+
+        is com.sujan.pipe.domain.PaletteItem.FileAction -> {
+            val f = item.file
+            val badge = if (f.isDirectory) "[d/]" else "[f.]"
+            val badgeCol = if (f.isDirectory) c.warn else c.accent3
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .background(rowBg)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText(
+                    text = "$pointer $badge ",
+                    style = if (isTop) AsciiType.title else AsciiType.small,
+                    color = if (pressed) c.bg else badgeCol,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(
+                        text = f.name,
+                        style = if (isTop) AsciiType.title else AsciiType.body,
+                        color = if (pressed) c.bg else c.fg,
+                        maxLines = 1,
+                    )
+                    AsciiText(
+                        text = "../${f.parentName}",
+                        style = AsciiType.small,
+                        color = if (pressed) c.bg else c.dim,
+                        maxLines = 1,
+                    )
+                }
+                if (onBookmarkFile != null) {
+                    AsciiButton("+bm", { onBookmarkFile(f) })
+                }
+                val kindTag = if (f.isDirectory) "dir" else "file"
+                val meta = if (item.usageCount > 0) "$kindTag #${item.usageCount}" else kindTag
+                AsciiText(
+                    text = " $meta",
+                    style = AsciiType.small,
+                    color = if (pressed) c.bg else c.dim,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
+            val eng = item.engine
+            val desc = if (item.isHome) "${eng.name} (open home)" else "${eng.name}: "${item.query}""
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .background(rowBg)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText(
+                    text = "$pointer [|${eng.keyword}] ",
+                    style = if (isTop) AsciiType.title else AsciiType.small,
+                    color = if (pressed) c.bg else c.forRole(eng.colorRole),
+                )
+                AsciiText(
+                    text = desc,
+                    style = if (isTop) AsciiType.title else AsciiType.body,
+                    color = if (pressed) c.bg else c.fg,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                val meta = if (item.usageCount > 0) "web #${item.usageCount}" else "web"
+                AsciiText(
+                    text = " $meta",
+                    style = AsciiType.small,
+                    color = if (pressed) c.bg else c.dim,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
+            val h = item.entry
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .background(rowBg)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText(
+                    text = "$pointer [$ ] ",
+                    style = if (isTop) AsciiType.title else AsciiType.small,
+                    color = if (pressed) c.bg else c.accent2,
+                )
+                AsciiText(
+                    text = "${h.rawInput} -> ${h.engineName.lowercase()}",
+                    style = if (isTop) AsciiType.title else AsciiType.body,
+                    color = if (pressed) c.bg else c.fg,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                val meta = if (item.usageCount > 0) "hist #${item.usageCount}" else "hist"
+                AsciiText(
+                    text = " $meta",
+                    style = AsciiType.small,
+                    color = if (pressed) c.bg else c.dim,
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 

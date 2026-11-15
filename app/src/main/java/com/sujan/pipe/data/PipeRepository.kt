@@ -130,6 +130,32 @@ class PipeRepository(context: Context) {
         saveHistory(listOf(entry) + deduped.take(49))
     }
 
+    fun loadUsageCounts(): Map<String, Int> {
+        val raw = prefs.getString("usage_counts_json_v1", null) ?: return emptyMap()
+        return try {
+            val obj = JSONObject(raw)
+            val map = mutableMapOf<String, Int>()
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                map[k] = obj.optInt(k, 0)
+            }
+            map
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    fun incrementUsage(usageKey: String): Map<String, Int> {
+        if (usageKey.isBlank()) return loadUsageCounts()
+        val current = loadUsageCounts().toMutableMap()
+        current[usageKey] = (current[usageKey] ?: 0) + 1
+        val obj = JSONObject()
+        current.forEach { (k, v) -> obj.put(k, v) }
+        prefs.edit().putString("usage_counts_json_v1", obj.toString()).apply()
+        return current
+    }
+
     fun loadThemeMode(): ThemeMode =
         ThemeMode.entries.firstOrNull { it.name == prefs.getString("theme_mode", ThemeMode.System.name) }
             ?: ThemeMode.System

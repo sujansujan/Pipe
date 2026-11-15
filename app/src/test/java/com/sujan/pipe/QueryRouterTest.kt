@@ -158,5 +158,45 @@ class QueryRouterTest {
         assertEquals(2, fileMatches.size)
         assertTrue(fileMatches.first().isDirectory)
         assertEquals("Documents", fileMatches.first().name)
+
+        // Verify strict alias scoping (`f` -> only FileAction items; `c` -> only ContactAction items)
+        val usage = mapOf("file:/storage/emulated/0/Documents" to 5, "bm:bm_dl" to 12)
+        val fOnly = QueryRouter.buildPaletteResults(
+            rawInput = "f doc",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = contacts,
+            storageFiles = sampleItems,
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = usage,
+        )
+        assertTrue(fOnly.all { it is com.sujan.pipe.domain.PaletteItem.FileAction })
+
+        val cOnly = QueryRouter.buildPaletteResults(
+            rawInput = "c kali",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = contacts,
+            storageFiles = sampleItems,
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = usage,
+        )
+        assertTrue(cOnly.all { it is com.sujan.pipe.domain.PaletteItem.ContactAction })
+
+        // Verify empty / no-alias input combines all categories, caps at max 10, and sorts by most used
+        val allMostUsed = QueryRouter.buildPaletteResults(
+            rawInput = "",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = contacts,
+            storageFiles = sampleItems,
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = usage,
+        )
+        assertTrue(allMostUsed.size <= 10)
+        assertEquals("bm:bm_dl", allMostUsed.first().usageKey)
     }
 }

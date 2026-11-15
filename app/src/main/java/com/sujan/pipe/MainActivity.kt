@@ -114,23 +114,43 @@ class MainActivity : ComponentActivity() {
                 onChipClick = viewModel::applyKeywordChip,
                 onAliasPillClick = viewModel::applyPrefixAlias,
                 onSubmitPrimaryAction = {
-                    val cmd = state.parsedCommand
-                    val exactBm = cmd.exactBookmark
-                    when {
-                        exactBm != null -> handleOpenBookmark(exactBm)
-                        cmd.mode == PromptIntentMode.CONTACTS_ONLY && state.matchedContacts.isNotEmpty() ->
-                            DeviceIntegrationManager.dialContact(this, state.matchedContacts.first().phoneNumber)
-                        (cmd.mode == PromptIntentMode.FILES_ONLY || cmd.mode == PromptIntentMode.SCOPED_FOLDER) &&
-                            state.matchedFiles.isNotEmpty() ->
-                            DeviceIntegrationManager.openLocalFileOrFolder(this, state.matchedFiles.first().absolutePath)
-                        else ->
+                    val top = state.paletteResults.firstOrNull()
+                    when (top) {
+                        is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> {
+                            viewModel.recordItemUsage(top.usageKey)
+                            handleOpenBookmark(top.bookmark)
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.FileAction -> {
+                            viewModel.recordItemUsage(top.usageKey)
+                            DeviceIntegrationManager.openLocalFileOrFolder(this, top.file.absolutePath)
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
+                            viewModel.recordItemUsage(top.usageKey)
+                            DeviceIntegrationManager.dialContact(this, top.contact.phoneNumber)
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
+                            viewModel.recordItemUsage(top.usageKey)
+                            viewModel.submitSearch(overrideInput = top.entry.rawInput, onOpenUrl = { url ->
+                                DeviceIntegrationManager.openUrlExcludingSelf(this, url)
+                            })
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
+                            viewModel.recordItemUsage(top.usageKey)
+                            val raw = if (top.query.isNotEmpty()) "${top.engine.keyword} ${top.query}" else top.engine.keyword
+                            viewModel.submitSearch(overrideInput = raw, onOpenUrl = { url ->
+                                DeviceIntegrationManager.openUrlExcludingSelf(this, url)
+                            })
+                        }
+                        null -> {
                             viewModel.submitSearch(onOpenUrl = { url ->
                                 DeviceIntegrationManager.openUrlExcludingSelf(this, url)
                             })
+                        }
                     }
                 },
-                onOpenBookmark = ::handleOpenBookmark,
+                onOpenBookmark = { bm -> viewModel.recordItemUsage("bm:${bm.id}"); handleOpenBookmark(bm) },
                 onOpenLocalFile = { fileItem ->
+                    viewModel.recordItemUsage("file:${fileItem.absolutePath}")
                     if (!DeviceIntegrationManager.openLocalFileOrFolder(this, fileItem.absolutePath)) {
                         viewModel.setJsonStatusMessage("! no app found to open ${fileItem.name}")
                     }
@@ -143,9 +163,10 @@ class MainActivity : ComponentActivity() {
                     )
                     viewModel.navigateTo(PipeView.BOOKMARKS)
                 },
-                onCallContact = { c -> DeviceIntegrationManager.dialContact(this, c.phoneNumber) },
-                onSmsContact = { c -> DeviceIntegrationManager.smsContact(this, c.phoneNumber) },
+                onCallContact = { c -> viewModel.recordItemUsage("contact:${c.phoneNumber.filter { it.isDigit() }}"); DeviceIntegrationManager.dialContact(this, c.phoneNumber) },
+                onSmsContact = { c -> viewModel.recordItemUsage("contact:${c.phoneNumber.filter { it.isDigit() }}"); DeviceIntegrationManager.smsContact(this, c.phoneNumber) },
                 onWhatsAppContact = { c ->
+                    viewModel.recordItemUsage("contact:${c.phoneNumber.filter { it.isDigit() }}")
                     val digits = QueryRouter.normalizeWhatsAppPhone(c.phoneNumber)
                     DeviceIntegrationManager.whatsAppContact(this, digits)
                 },
