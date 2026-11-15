@@ -224,5 +224,44 @@ class QueryRouterTest {
         val cmdApp = QueryRouter.parsePromptCommand("app mix", bookmarks, engines)
         assertEquals(PromptIntentMode.APPS_ONLY, cmdApp.mode)
         assertEquals("mix", cmdApp.filterQuery)
+
+        // Verify v1.9 Contact Monogram badge fallback
+        assertEquals("KP", ContactItem("2", "Kalika Prasad", "9841234567").monogram)
+        assertEquals("SD", ContactItem("1", "Sujan Devkota", "9841000000").monogram)
+
+        // Verify v1.9 Quick Add Contact parser (`add c Ramesh Dai 9841234567`)
+        val parsedContact = QueryRouter.parseQuickAddContact("Ramesh Dai 9841234567")
+        assertNotNull(parsedContact)
+        assertEquals("Ramesh Dai", parsedContact?.first)
+        assertEquals("9841234567", parsedContact?.second)
+
+        // Verify v1.9 Quick Add Bookmark parser with Clipboard auto-fill
+        val parsedBm = QueryRouter.parseQuickAddBookmark("hn Hacker News", "https://news.ycombinator.com")
+        assertNotNull(parsedBm)
+        assertEquals("hn", parsedBm?.first)
+        assertEquals("Hacker News", parsedBm?.second)
+        assertEquals("https://news.ycombinator.com", parsedBm?.third?.first)
+
+        // Verify v1.9 Smart {query} URL template normalization
+        assertEquals(
+            "https://audiobookbay.lu/?s={query}",
+            QueryRouter.normalizePipeUrlTemplate("https://audiobookbay.lu/?s=dune"),
+        )
+
+        // Verify v1.9 `add` and `rm` prompt command modes
+        val cmdAdd = QueryRouter.parsePromptCommand("add c Ramesh Dai 9841234567", bookmarks, engines)
+        assertEquals(PromptIntentMode.ADD_COMMAND, cmdAdd.mode)
+        val addResults = QueryRouter.buildPaletteResults(
+            rawInput = "add c Ramesh Dai 9841234567",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = contacts,
+            storageFiles = sampleItems,
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = usage,
+        )
+        assertEquals(1, addResults.size)
+        assertTrue((addResults.first() as com.sujan.pipe.domain.PaletteItem.QuickAddAction).isReadyToCommit)
     }
 }

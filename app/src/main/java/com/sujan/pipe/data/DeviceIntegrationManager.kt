@@ -176,6 +176,7 @@ object DeviceIntegrationManager {
             ContactsContract.CommonDataKinds.Phone._ID,
             ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME_PRIMARY,
             ContactsContract.CommonDataKinds.Phone.NUMBER,
+            ContactsContract.CommonDataKinds.Phone.PHOTO_THUMBNAIL_URI,
         )
         runCatching {
             context.contentResolver.query(
@@ -188,14 +189,16 @@ object DeviceIntegrationManager {
                 val idCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone._ID)
                 val nameCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME_PRIMARY)
                 val numCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                val photoCol = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.PHOTO_THUMBNAIL_URI)
                 while (cursor.moveToNext()) {
                     val id = cursor.getString(idCol).orEmpty()
                     val name = cursor.getString(nameCol)?.trim().orEmpty()
                     val num = cursor.getString(numCol)?.trim().orEmpty()
+                    val photoUri = if (photoCol >= 0) cursor.getString(photoCol) else null
                     if (name.isNotEmpty() && num.isNotEmpty()) {
                         val dedupKey = "${name.lowercase()}_${num.filter { it.isDigit() }}"
                         if (seen.add(dedupKey)) {
-                            list.add(ContactItem(id = id, displayName = name, phoneNumber = num))
+                            list.add(ContactItem(id = id, displayName = name, phoneNumber = num, photoUri = photoUri))
                         }
                     }
                 }
@@ -461,6 +464,94 @@ object DeviceIntegrationManager {
     /**
      * Loads a downsampled thumbnail bitmap for an image file, caching it in `thumbnailCache`.
      */
+    fun hasWriteContactsPermission(context: Context): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CONTACTS) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Loads and caches a contact's `PHOTO_THUMBNAIL_URI` bitmap.
+     */
+    fun loadContactPhotoBitmap(context: Context, photoUriString: String?): android.graphics.Bitmap? {
+        if (photoUriString.isNullOrBlank()) return null
+        val cacheKey = "contact_photo:$photoUriString"
+        thumbnailCache.get(cacheKey)?.let { return it }
+        return runCatching {
+            val uri = Uri.parse(photoUriString)
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(stream)
+                if (bmp != null) {
+                    thumbnailCache.put(cacheKey, bmp)
+                }
+                bmp
+            }
+        }.getOrNull()
+    }
+
+    /**
+     * Inserts a new contact directly into Android Contacts via `ContentProviderOperation`
+     * when `WRITE_CONTACTS` is granted (zero extra UI screens!), falling back to the system
+     * `ContactsContract.Intents.Insert.ACTION` intent if permission was not granted.
+     */
+    fun insertContactDirect(context: Context, displayName: String, phoneNumber: String): Boolean {
+        val cleanName = displayName.trim()
+        val cleanPhone = phoneNumber.trim()
+        if (cleanName.isEmpty() || cleanPhone.isEmpty()) return false
+
+        if (hasWriteContactsPermission(context)) {
+            val inserted = runCatching {
+                val ops = ArrayList<android.content.ContentProviderOperation>()
+                ops.add(
+                    android.content.ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
+                        .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null)
+                        .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null)
+                        .build()
+                )
+                ops.add(
+                    android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                        .withValue(
+                            ContactsContract.Data.MIMETYPE,
+                            ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE,
+                        )
+                        .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, cleanName)
+                        .build()
+                )
+                ops.add(
+                    android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                        .withValue(
+                            ContactsContract.Data.MIMETYPE,
+                            ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE,
+                        )
+                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, cleanPhone)
+                        .withValue(
+                            ContactsContract.CommonDataKinds.Phone.TYPE,
+                            ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE,
+                        )
+                        .build()
+                )
+                context.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
+                // Refresh cached contacts
+                memoryContactsIndex = null
+                loadDeviceContacts(context)
+                true
+            }.getOrDefault(false)
+            if (inserted) return true
+        }
+
+        // Fallback: open pre-filled system contact insert screen
+        return runCatching {
+            val intent = Intent(ContactsContract.Intents.Insert.ACTION).apply {
+                type = ContactsContract.RawContacts.CONTENT_TYPE
+                putExtra(ContactsContract.Intents.Insert.NAME, cleanName)
+                putExtra(ContactsContract.Intents.Insert.PHONE, cleanPhone)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
+    }
+
     fun loadImageThumbnail(path: String, targetPx: Int = 96): android.graphics.Bitmap? {
         thumbnailCache.get(path)?.let { return it }
         return runCatching {

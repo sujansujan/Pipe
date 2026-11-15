@@ -12,6 +12,7 @@ import com.sujan.pipe.domain.FuzzyMatcher
 import com.sujan.pipe.domain.ParsedPromptCommand
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
+import com.sujan.pipe.domain.QuickAddKind
 import com.sujan.pipe.domain.RouteResolution
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
@@ -508,6 +509,105 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         repository.saveBookmarks(updated)
         _uiState.update { it.copy(bookmarks = updated) }
         postUndo("deleted bookmark ${bm.title}", UndoPayload.DeletedBookmark(bm, idx))
+        recomputePaletteAsync()
+    }
+
+    fun quickSaveBookmark(
+        alias: String,
+        title: String,
+        target: String,
+        kind: BookmarkKind,
+        tags: String = "",
+    ) {
+        val cleanAlias = alias.trim().lowercase().filter { !it.isWhitespace() }
+        val cleanTitle = title.trim().ifEmpty { cleanAlias.ifEmpty { "Bookmark" } }
+        val cleanTarget = target.trim()
+        val cleanTags = tags.trim()
+        if (cleanTarget.isEmpty()) {
+            _uiState.update { it.copy(launchError = "! bookmark url or path is required") }
+            return
+        }
+        val current = _uiState.value.bookmarks
+        val existingIdx = if (cleanAlias.isNotEmpty()) {
+            current.indexOfFirst { it.alias.equals(cleanAlias, ignoreCase = true) }
+        } else -1
+
+        val updated = if (existingIdx >= 0) {
+            current.mapIndexed { idx, bm ->
+                if (idx == existingIdx) {
+                    bm.copy(alias = cleanAlias, title = cleanTitle, target = cleanTarget, kind = kind, tags = cleanTags.ifEmpty { bm.tags })
+                } else bm
+            }
+        } else {
+            current + PipeBookmark(
+                id = "bm_${System.currentTimeMillis()}",
+                alias = cleanAlias,
+                title = cleanTitle,
+                target = cleanTarget,
+                kind = kind,
+                tags = cleanTags,
+            )
+        }
+        repository.saveBookmarks(updated)
+        _uiState.update {
+            it.copy(
+                bookmarks = updated,
+                searchInput = TextFieldValue(""),
+                launchError = null,
+                jsonStatusMessage = "ok: saved bookmark [${cleanAlias.ifEmpty { cleanTitle }}]",
+            )
+        }
+        recomputePaletteAsync()
+    }
+
+    fun quickSavePipe(keyword: String, name: String, rawUrl: String) {
+        val cleanKey = keyword.trim().lowercase().filter { !it.isWhitespace() }
+        val cleanName = name.trim().ifEmpty { cleanKey.uppercase() }
+        val cleanUrl = QueryRouter.normalizePipeUrlTemplate(rawUrl)
+        if (cleanKey.isEmpty() || cleanUrl.isEmpty()) {
+            _uiState.update { it.copy(launchError = "! pipe keyword and url are required") }
+            return
+        }
+        val current = _uiState.value.engines
+        val existingIdx = current.indexOfFirst { it.keyword.equals(cleanKey, ignoreCase = true) }
+        val updated = if (existingIdx >= 0) {
+            current.mapIndexed { idx, eng ->
+                if (idx == existingIdx) eng.copy(name = cleanName, keyword = cleanKey, urlTemplate = cleanUrl) else eng
+            }
+        } else {
+            current + SearchEngine(
+                id = "eng_${cleanKey}_${System.currentTimeMillis()}",
+                name = cleanName,
+                keyword = cleanKey,
+                urlTemplate = cleanUrl,
+                colorRole = EngineColorRole.ACCENT2,
+                isDefault = false,
+            )
+        }
+        repository.saveEngines(updated)
+        _uiState.update {
+            it.copy(
+                engines = repository.loadEngines(),
+                searchInput = TextFieldValue(""),
+                launchError = null,
+                jsonStatusMessage = "ok: saved pipe [|$cleanKey] $cleanName",
+            )
+        }
+        recomputePaletteAsync()
+    }
+
+    fun quickRemoveById(isBookmark: Boolean, targetId: String) {
+        if (isBookmark) {
+            val bm = _uiState.value.bookmarks.firstOrNull { it.id == targetId } ?: return
+            deleteBookmark(bm)
+            _uiState.update { it.copy(searchInput = TextFieldValue(""), launchError = null) }
+            recomputePaletteAsync()
+        } else {
+            val eng = _uiState.value.engines.firstOrNull { it.id == targetId } ?: return
+            deleteEngine(eng)
+            _uiState.update { it.copy(searchInput = TextFieldValue(""), launchError = null) }
+            recomputePaletteAsync()
+        }
     }
 
     fun deleteHistoryItem(entry: SearchHistoryEntry) {

@@ -214,6 +214,12 @@ data class RouteResolution(
         }
 }
 
+enum class QuickAddKind(val tag: String, val label: String) {
+    CONTACT("+c", "Add Contact"),
+    BOOKMARK("+bm", "Add Bookmark"),
+    PIPE("+p", "Add Search Pipe"),
+}
+
 enum class PromptIntentMode(val scopeBadge: String) {
     ALL("all"),
     CONTACTS_ONLY("c:contacts"),
@@ -223,6 +229,8 @@ enum class PromptIntentMode(val scopeBadge: String) {
     APPS_ONLY("app:launcher"),
     SCOPED_FOLDER("dir:scoped"),
     ENGINE_ONLY("pipe:web"),
+    ADD_COMMAND("+add"),
+    RM_COMMAND("-rm"),
 }
 
 data class ParsedPromptCommand(
@@ -273,6 +281,30 @@ sealed interface PaletteItem {
         override val usageKey: String,
         override val rankScore: Int,
         override val usageCount: Int,
+    ) : PaletteItem
+
+    data class QuickAddAction(
+        val kind: QuickAddKind,
+        val title: String,
+        val subtitle: String,
+        val isReadyToCommit: Boolean,
+        val arg1: String = "",
+        val arg2: String = "",
+        val arg3: String = "",
+        val bookmarkKind: BookmarkKind = BookmarkKind.LINK,
+        override val usageKey: String = "add:${kind.name}",
+        override val rankScore: Int = 9000,
+        override val usageCount: Int = 0,
+    ) : PaletteItem
+
+    data class QuickRemoveAction(
+        val isBookmark: Boolean,
+        val targetId: String,
+        val aliasOrKeyword: String,
+        val displayTitle: String,
+        override val usageKey: String = "rm:$targetId",
+        override val rankScore: Int = 9000,
+        override val usageCount: Int = 0,
     ) : PaletteItem
 
     data class FileAction(
@@ -327,6 +359,14 @@ object QueryRouter {
         val first = tokens[0].lowercase()
         val hasSpace = rawInput.trimStart().length > first.length
         val remainder = if (tokens.size > 1) tokens[1].trim() else ""
+
+        // 0. Quick Add (`add ...` or `+ ...`) and Quick Remove (`rm ...`) commands
+        if (first == "add" || first == "+") {
+            return ParsedPromptCommand(PromptIntentMode.ADD_COMMAND, remainder)
+        }
+        if (first == "rm" || first == "del" || first == "remove") {
+            return ParsedPromptCommand(PromptIntentMode.RM_COMMAND, remainder)
+        }
 
         // 1. Contact alias: `c <name>` with optional action chaining (`c kali wa`, `c kali sms`, `c kali call`)
         if (first == "c" || first == "call" || first == "contact") {
@@ -424,12 +464,165 @@ object QueryRouter {
         history: List<SearchHistoryEntry>,
         usageMap: Map<String, Int>,
         installedApps: List<InstalledAppItem> = emptyList(),
+        clipboardText: String = "",
     ): List<PaletteItem> {
         val cmd = parsePromptCommand(rawInput, bookmarks, engines)
         fun usageOf(key: String): Int = usageMap[key] ?: 0
         fun usageBonus(key: String): Int = (usageMap[key] ?: 0) * 180
 
         return when (cmd.mode) {
+            PromptIntentMode.ADD_COMMAND -> {
+                val sub = cmd.filterQuery.trim()
+                val subTokens = sub.split(WHITESPACE_REGEX, limit = 2)
+                val subType = subTokens.firstOrNull()?.lowercase().orEmpty()
+                val subArgs = if (subTokens.size > 1) subTokens[1].trim() else ""
+
+                when (subType) {
+                    "c", "contact", "call" -> {
+                        val parsed = parseQuickAddContact(subArgs)
+                        if (parsed != null) {
+                            listOf(
+                                PaletteItem.QuickAddAction(
+                                    kind = QuickAddKind.CONTACT,
+                                    title = "Save Contact: \"${parsed.first}\"",
+                                    subtitle = "phone: ${parsed.second} (tap or press RET to save)",
+                                    isReadyToCommit = true,
+                                    arg1 = parsed.first,
+                                    arg2 = parsed.second,
+                                )
+                            )
+                        } else {
+                            listOf(
+                                PaletteItem.QuickAddAction(
+                                    kind = QuickAddKind.CONTACT,
+                                    title = "Add Contact (tap to open form)",
+                                    subtitle = "or type: add c <Name> <Phone>",
+                                    isReadyToCommit = false,
+                                    arg1 = subArgs,
+                                )
+                            )
+                        }
+                    }
+                    "bm", "b", "bookmark" -> {
+                        val parsed = parseQuickAddBookmark(subArgs, clipboardText)
+                        if (parsed != null) {
+                            listOf(
+                                PaletteItem.QuickAddAction(
+                                    kind = QuickAddKind.BOOKMARK,
+                                    title = "Save Bookmark [${parsed.first}]: \"${parsed.second}\"",
+                                    subtitle = "${parsed.third.second.badge} -> ${parsed.third.first}",
+                                    isReadyToCommit = true,
+                                    arg1 = parsed.first,
+                                    arg2 = parsed.second,
+                                    arg3 = parsed.third.first,
+                                    bookmarkKind = parsed.third.second,
+                                )
+                            )
+                        } else {
+                            listOf(
+                                PaletteItem.QuickAddAction(
+                                    kind = QuickAddKind.BOOKMARK,
+                                    title = "Add Bookmark (tap to open form)",
+                                    subtitle = "or type: add bm <alias> <Title> [url/path]",
+                                    isReadyToCommit = false,
+                                    arg1 = subArgs,
+                                    arg3 = clipboardText,
+                                )
+                            )
+                        }
+                    }
+                    "p", "pipe", "eng", "engine" -> {
+                        val parsed = parseQuickAddPipe(subArgs, clipboardText)
+                        if (parsed != null) {
+                            listOf(
+                                PaletteItem.QuickAddAction(
+                                    kind = QuickAddKind.PIPE,
+                                    title = "Save Search Pipe [|${parsed.first}]: \"${parsed.second}\"",
+                                    subtitle = "template: ${parsed.third}",
+                                    isReadyToCommit = true,
+                                    arg1 = parsed.first,
+                                    arg2 = parsed.second,
+                                    arg3 = parsed.third,
+                                )
+                            )
+                        } else {
+                            listOf(
+                                PaletteItem.QuickAddAction(
+                                    kind = QuickAddKind.PIPE,
+                                    title = "Add Search Pipe (tap to open form)",
+                                    subtitle = "or type: add pipe <kw> <Name> <url>",
+                                    isReadyToCommit = false,
+                                    arg1 = subArgs,
+                                    arg3 = clipboardText,
+                                )
+                            )
+                        }
+                    }
+                    else -> {
+                        listOf(
+                            PaletteItem.QuickAddAction(
+                                kind = QuickAddKind.CONTACT,
+                                title = "Add New Contact",
+                                subtitle = "tap for form  |  add c <Name> <Phone>",
+                                isReadyToCommit = false,
+                            ),
+                            PaletteItem.QuickAddAction(
+                                kind = QuickAddKind.BOOKMARK,
+                                title = "Add New Bookmark (Link / Folder / File)",
+                                subtitle = "tap for form  |  add bm <alias> <Title> [url/path]",
+                                isReadyToCommit = false,
+                                arg3 = clipboardText,
+                            ),
+                            PaletteItem.QuickAddAction(
+                                kind = QuickAddKind.PIPE,
+                                title = "Add New Search Pipe Engine",
+                                subtitle = "tap for form  |  add pipe <kw> <Name> <url>",
+                                isReadyToCommit = false,
+                                arg3 = clipboardText,
+                            ),
+                        )
+                    }
+                }
+            }
+
+            PromptIntentMode.RM_COMMAND -> {
+                val sub = cmd.filterQuery.trim().lowercase()
+                val tokens = sub.split(WHITESPACE_REGEX)
+                val targetToken = when {
+                    tokens.size >= 2 && tokens[0] in setOf("bm", "b", "p", "pipe") -> tokens[1]
+                    tokens.isNotEmpty() -> tokens[0]
+                    else -> ""
+                }
+                val out = mutableListOf<PaletteItem>()
+                bookmarks.filter {
+                    targetToken.isEmpty() || it.alias.lowercase().contains(targetToken) || it.title.lowercase().contains(targetToken)
+                }.forEach { bm ->
+                    out.add(
+                        PaletteItem.QuickRemoveAction(
+                            isBookmark = true,
+                            targetId = bm.id,
+                            aliasOrKeyword = bm.alias,
+                            displayTitle = "Remove Bookmark [${bm.alias}] ${bm.title}",
+                        )
+                    )
+                }
+                if (engines.size > 1) {
+                    engines.filter {
+                        targetToken.isEmpty() || it.keyword.lowercase().contains(targetToken) || it.name.lowercase().contains(targetToken)
+                    }.forEach { eng ->
+                        out.add(
+                            PaletteItem.QuickRemoveAction(
+                                isBookmark = false,
+                                targetId = eng.id,
+                                aliasOrKeyword = eng.keyword,
+                                displayTitle = "Remove Search Pipe [|${eng.keyword}] ${eng.name}",
+                            )
+                        )
+                    }
+                }
+                out.take(MAX_PALETTE_RESULTS)
+            }
+
             PromptIntentMode.CONTACTS_ONLY -> {
                 val q = cmd.filterQuery.trim().lowercase()
                 contacts.mapNotNull { c ->
@@ -700,6 +893,97 @@ object QueryRouter {
                 ).take(MAX_PALETTE_RESULTS)
             }
         }
+    }
+
+    /**
+     * Converts a sample search URL (e.g. `https://site.com/search?q=hello`) into a `{query}` template
+     * (`https://site.com/search?q={query}`) if `{query}` is not already present.
+     */
+    fun normalizePipeUrlTemplate(rawUrl: String): String {
+        val trimmed = rawUrl.trim()
+        if (trimmed.isEmpty()) return ""
+        val withScheme = if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+            "https://$trimmed"
+        } else {
+            trimmed
+        }
+        if (withScheme.contains("{query}")) return withScheme
+        val paramRegex = Regex("([?&](?:q|query|search_query|search|s|k|p)=)([^&#]+)", RegexOption.IGNORE_CASE)
+        if (paramRegex.containsMatchIn(withScheme)) {
+            return paramRegex.replaceFirst(withScheme, "$1{query}")
+        }
+        return if (withScheme.contains("?")) "$withScheme&q={query}" else "$withScheme?q={query}"
+    }
+
+    /**
+     * Parses `add c <Name> <Phone>` into `(name, phone)`.
+     */
+    fun parseQuickAddContact(rawArgs: String): Pair<String, String>? {
+        val trimmed = rawArgs.trim()
+        if (trimmed.isEmpty()) return null
+        val tokens = trimmed.split(WHITESPACE_REGEX)
+        if (tokens.size < 2) return null
+        val last = tokens.last()
+        val digits = last.filter { it.isDigit() }
+        if (digits.length < 3) return null
+        val name = tokens.dropLast(1).joinToString(" ").trim()
+        if (name.isEmpty()) return null
+        return name to last
+    }
+
+    /**
+     * Parses `add bm <alias> <Title> [target]` (falling back to [clipboardText] if target is omitted).
+     */
+    fun parseQuickAddBookmark(rawArgs: String, clipboardText: String = ""): Triple<String, String, Pair<String, BookmarkKind>>? {
+        val trimmed = rawArgs.trim()
+        if (trimmed.isEmpty()) return null
+        val tokens = trimmed.split(WHITESPACE_REGEX)
+        val alias = tokens[0].lowercase()
+        val lastToken = if (tokens.size >= 2) tokens.last() else ""
+        val lastLooksLikeTarget = lastToken.startsWith("http://") ||
+            lastToken.startsWith("https://") ||
+            lastToken.startsWith("/storage/") ||
+            lastToken.startsWith("/sdcard/")
+
+        val target = when {
+            lastLooksLikeTarget -> lastToken
+            clipboardText.trim().let { it.startsWith("http://") || it.startsWith("https://") || it.startsWith("/") } ->
+                clipboardText.trim()
+            else -> ""
+        }
+        if (target.isEmpty()) return null
+
+        val titleTokens = if (lastLooksLikeTarget) tokens.drop(1).dropLast(1) else tokens.drop(1)
+        val title = titleTokens.joinToString(" ").trim().ifEmpty { alias }
+        val kind = when {
+            target.startsWith("http://") || target.startsWith("https://") -> BookmarkKind.LINK
+            target.substringAfterLast('/').contains('.') -> BookmarkKind.FILE
+            else -> BookmarkKind.FOLDER
+        }
+        return Triple(alias, title, target to kind)
+    }
+
+    /**
+     * Parses `add pipe <keyword> <Name> [url]` (falling back to [clipboardText] if url is omitted).
+     */
+    fun parseQuickAddPipe(rawArgs: String, clipboardText: String = ""): Triple<String, String, String>? {
+        val trimmed = rawArgs.trim()
+        if (trimmed.isEmpty()) return null
+        val tokens = trimmed.split(WHITESPACE_REGEX)
+        val keyword = tokens[0].lowercase()
+        val lastToken = if (tokens.size >= 2) tokens.last() else ""
+        val lastLooksLikeUrl = lastToken.startsWith("http://") || lastToken.startsWith("https://") || lastToken.contains('.')
+
+        val rawUrl = when {
+            lastLooksLikeUrl && tokens.size >= 2 -> lastToken
+            clipboardText.trim().let { it.startsWith("http://") || it.startsWith("https://") } -> clipboardText.trim()
+            else -> ""
+        }
+        if (rawUrl.isEmpty()) return null
+        val urlTemplate = normalizePipeUrlTemplate(rawUrl)
+        val nameTokens = if (lastLooksLikeUrl && tokens.size >= 3) tokens.drop(1).dropLast(1) else tokens.drop(1)
+        val name = nameTokens.joinToString(" ").trim().ifEmpty { keyword.uppercase() }
+        return Triple(keyword, name, urlTemplate)
     }
 
     fun normalizeWhatsAppPhone(rawPhone: String, defaultCountryCode: String = "977"): String {

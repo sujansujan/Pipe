@@ -70,7 +70,7 @@ class MainActivity : ComponentActivity() {
             }
 
             val contactsPermLauncher = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.RequestPermission(),
+                contract = ActivityResultContracts.RequestMultiplePermissions(),
             ) {
                 refreshDeviceDataAsync()
             }
@@ -141,6 +141,28 @@ class MainActivity : ComponentActivity() {
                             viewModel.recordItemUsage(top.usageKey)
                             DeviceIntegrationManager.launchInstalledApp(this, top.app.packageName)
                         }
+                        is com.sujan.pipe.domain.PaletteItem.QuickAddAction -> {
+                            if (top.isReadyToCommit) {
+                                when (top.kind) {
+                                    com.sujan.pipe.domain.QuickAddKind.CONTACT -> {
+                                        if (DeviceIntegrationManager.insertContactDirect(this, top.arg1, top.arg2)) {
+                                            viewModel.setSearchTextFromExternal("")
+                                            viewModel.setJsonStatusMessage("ok: saved contact ${top.arg1}")
+                                            refreshDeviceDataAsync()
+                                        }
+                                    }
+                                    com.sujan.pipe.domain.QuickAddKind.BOOKMARK -> {
+                                        viewModel.quickSaveBookmark(top.arg1, top.arg2, top.arg3, top.bookmarkKind)
+                                    }
+                                    com.sujan.pipe.domain.QuickAddKind.PIPE -> {
+                                        viewModel.quickSavePipe(top.arg1, top.arg2, top.arg3)
+                                    }
+                                }
+                            }
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.QuickRemoveAction -> {
+                            viewModel.quickRemoveById(top.isBookmark, top.targetId)
+                        }
                         is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
                             viewModel.recordItemUsage(top.usageKey)
                             viewModel.submitSearch(overrideInput = top.entry.rawInput, onOpenUrl = { url ->
@@ -192,8 +214,30 @@ class MainActivity : ComponentActivity() {
                     val digits = QueryRouter.normalizeWhatsAppPhone(c.phoneNumber)
                     DeviceIntegrationManager.whatsAppContact(this, digits)
                 },
+                onQuickSaveContact = { name, phone ->
+                    if (DeviceIntegrationManager.insertContactDirect(this, name, phone)) {
+                        viewModel.setSearchTextFromExternal("")
+                        viewModel.setJsonStatusMessage("ok: saved contact $name ($phone)")
+                        refreshDeviceDataAsync()
+                    }
+                },
+                onQuickSaveBookmark = { alias, title, target, kind, tags ->
+                    viewModel.quickSaveBookmark(alias, title, target, kind, tags)
+                    refreshDeviceDataAsync()
+                },
+                onQuickSavePipe = { kw, name, url ->
+                    viewModel.quickSavePipe(kw, name, url)
+                },
+                onQuickRemoveItem = { isBm, id ->
+                    viewModel.quickRemoveById(isBm, id)
+                },
                 onRequestContactsPermission = {
-                    contactsPermLauncher.launch(Manifest.permission.READ_CONTACTS)
+                    contactsPermLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.READ_CONTACTS,
+                            Manifest.permission.WRITE_CONTACTS,
+                        )
+                    )
                 },
                 onRequestFilesPermission = {
                     requestStoragePermission(legacyFilesPermLauncher::launch)

@@ -56,9 +56,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.platform.LocalContext
 import com.sujan.pipe.data.ExternalTextMode
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
+import com.sujan.pipe.domain.QuickAddKind
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.EngineColorRole
@@ -101,6 +103,10 @@ fun PipeApp(
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
+    onQuickSaveContact: (String, String) -> Unit = { _, _ -> },
+    onQuickSaveBookmark: (String, String, String, BookmarkKind, String) -> Unit = { _, _, _, _, _ -> },
+    onQuickSavePipe: (String, String, String) -> Unit = { _, _, _ -> },
+    onQuickRemoveItem: (Boolean, String) -> Unit = { _, _ -> },
     onRequestContactsPermission: () -> Unit,
     onRequestFilesPermission: () -> Unit,
     onRerunHistory: (SearchHistoryEntry) -> Unit,
@@ -192,6 +198,10 @@ fun PipeApp(
                         onCallContact = onCallContact,
                         onSmsContact = onSmsContact,
                         onWhatsAppContact = onWhatsAppContact,
+                        onQuickSaveContact = onQuickSaveContact,
+                        onQuickSaveBookmark = onQuickSaveBookmark,
+                        onQuickSavePipe = onQuickSavePipe,
+                        onQuickRemoveItem = onQuickRemoveItem,
                         onRequestContactsPermission = onRequestContactsPermission,
                         onRequestFilesPermission = onRequestFilesPermission,
                         onRerunHistory = onRerunHistory,
@@ -322,6 +332,10 @@ private fun PipePromptScreen(
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
+    onQuickSaveContact: (String, String) -> Unit,
+    onQuickSaveBookmark: (String, String, String, BookmarkKind, String) -> Unit,
+    onQuickSavePipe: (String, String, String) -> Unit,
+    onQuickRemoveItem: (Boolean, String) -> Unit,
     onRequestContactsPermission: () -> Unit,
     onRequestFilesPermission: () -> Unit,
     onRerunHistory: (SearchHistoryEntry) -> Unit,
@@ -333,6 +347,7 @@ private fun PipePromptScreen(
     val c = LocalAscii.current
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    var inlineQuickAdd by remember { mutableStateOf<com.sujan.pipe.domain.PaletteItem.QuickAddAction?>(null) }
 
     LaunchedEffect(Unit) {
         runCatching {
@@ -355,12 +370,27 @@ private fun PipePromptScreen(
             results = state.paletteResults,
             hasContactsPermission = state.hasContactsPermission,
             hasFilesPermission = state.hasFilesPermission,
-            launchError = state.launchError,
+            launchError = state.launchError ?: state.jsonStatusMessage,
             promptPrefix = state.searchBoxPrefix,
             placeholderText = state.searchBoxPlaceholder,
             showScopeBadge = state.showSearchBoxScopeBadge,
             focusRequester = focusRequester,
+            inlineQuickAdd = inlineQuickAdd,
+            onDismissInlineQuickAdd = { inlineQuickAdd = null },
+            onQuickSaveContact = { name, phone ->
+                inlineQuickAdd = null
+                onQuickSaveContact(name, phone)
+            },
+            onQuickSaveBookmark = { alias, title, target, kind, tags ->
+                inlineQuickAdd = null
+                onQuickSaveBookmark(alias, title, target, kind, tags)
+            },
+            onQuickSavePipe = { kw, name, url ->
+                inlineQuickAdd = null
+                onQuickSavePipe(kw, name, url)
+            },
             headerRightActions = {
+                AsciiButton("+add", { onAliasPillClick("add") }, spokenLabel = "quick add")
                 AsciiButton("ovl", onLaunchOverlay, spokenLabel = "overlay")
                 AsciiButton("bm", { onNavigate(PipeView.BOOKMARKS) }, spokenLabel = "bookmarks")
                 AsciiButton("pipes", { onNavigate(PipeView.ENGINES) }, spokenLabel = "engines")
@@ -388,6 +418,20 @@ private fun PipePromptScreen(
                         }
                     }
                     is com.sujan.pipe.domain.PaletteItem.AppAction -> onLaunchInstalledApp(item.app)
+                    is com.sujan.pipe.domain.PaletteItem.QuickAddAction -> {
+                        if (item.isReadyToCommit) {
+                            when (item.kind) {
+                                QuickAddKind.CONTACT -> onQuickSaveContact(item.arg1, item.arg2)
+                                QuickAddKind.BOOKMARK -> onQuickSaveBookmark(item.arg1, item.arg2, item.arg3, item.bookmarkKind, "")
+                                QuickAddKind.PIPE -> onQuickSavePipe(item.arg1, item.arg2, item.arg3)
+                            }
+                        } else {
+                            inlineQuickAdd = item
+                        }
+                    }
+                    is com.sujan.pipe.domain.PaletteItem.QuickRemoveAction -> {
+                        onQuickRemoveItem(item.isBookmark, item.targetId)
+                    }
                     is com.sujan.pipe.domain.PaletteItem.HistoryAction -> onRerunHistory(item.entry)
                 }
             },
@@ -398,7 +442,19 @@ private fun PipePromptScreen(
                 onAliasPillClick(alias)
                 runCatching { focusRequester.requestFocus() }
             },
-            onBookmarkFile = onBookmarkLocalFile,
+            onBookmarkFile = { f ->
+                val suggestedAlias = f.name.lowercase().filter { it.isLetterOrDigit() }.take(6)
+                inlineQuickAdd = com.sujan.pipe.domain.PaletteItem.QuickAddAction(
+                    kind = QuickAddKind.BOOKMARK,
+                    title = "Add Bookmark for ${f.name}",
+                    subtitle = f.absolutePath,
+                    isReadyToCommit = false,
+                    arg1 = suggestedAlias,
+                    arg2 = f.name,
+                    arg3 = f.absolutePath,
+                    bookmarkKind = if (f.isDirectory) BookmarkKind.FOLDER else BookmarkKind.FILE,
+                )
+            },
             onShareFile = onShareLocalFile,
             onPreviewImage = { onPreviewImageFile(it) },
             onRequestContactsPermission = onRequestContactsPermission,
@@ -427,6 +483,11 @@ fun AsciiRaycastPaletteWindow(
     promptPrefix: String = "> ",
     placeholderText: String = "pipe (c, f, d, app, dl, yt)...",
     showScopeBadge: Boolean = true,
+    inlineQuickAdd: com.sujan.pipe.domain.PaletteItem.QuickAddAction? = null,
+    onDismissInlineQuickAdd: () -> Unit = {},
+    onQuickSaveContact: (String, String) -> Unit = { _, _ -> },
+    onQuickSaveBookmark: (String, String, String, BookmarkKind, String) -> Unit = { _, _, _, _, _ -> },
+    onQuickSavePipe: (String, String, String) -> Unit = { _, _, _ -> },
     headerRightActions: @Composable () -> Unit,
     onAliasPillClick: (String) -> Unit,
     onSubmitPrimary: () -> Unit,
@@ -574,6 +635,17 @@ fun AsciiRaycastPaletteWindow(
             }
         }
 
+        if (inlineQuickAdd != null) {
+            QuickAddInlineCard(
+                initialAction = inlineQuickAdd,
+                onSaveContact = onQuickSaveContact,
+                onSaveBookmark = onQuickSaveBookmark,
+                onSavePipe = onQuickSavePipe,
+                onCancel = onDismissInlineQuickAdd,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            )
+        }
+
         // 3. ASCII Mid-Frame Divider (`├─ results (10 max · most used) ─────────────────┤`)
         com.sujan.pipe.ui.ascii.AsciiFrameDivider(
             leftLabel = if (parsedCommand.mode == PromptIntentMode.ALL && searchInput.text.isBlank()) {
@@ -632,8 +704,8 @@ fun AsciiRaycastPaletteWindow(
                 AsciiButton("c:", { onAliasPillClick("c") }, spokenLabel = "contacts alias c")
                 AsciiButton("f:", { onAliasPillClick("f") }, spokenLabel = "files and folders alias f")
                 AsciiButton("app:", { onAliasPillClick("app") }, spokenLabel = "apps alias app")
+                AsciiButton("+add", { onAliasPillClick("add") }, spokenLabel = "quick add alias add")
                 AsciiButton("dl:", { onAliasPillClick("dl") }, spokenLabel = "downloads alias dl")
-                AsciiButton("yt:", { onAliasPillClick("yt") }, spokenLabel = "youtube alias yt")
             }
             AsciiButton(
                 label = "RET ->",
@@ -644,6 +716,337 @@ fun AsciiRaycastPaletteWindow(
                 primary = true,
                 spokenLabel = "run top command",
             )
+        }
+    }
+}
+
+@Composable
+fun AsciiContactAvatar(
+    contact: ContactItem,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAscii.current
+    val context = LocalContext.current
+    var bitmap by remember(contact.photoUri) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(contact.photoUri) {
+        bitmap = if (!contact.photoUri.isNullOrBlank()) {
+            withContext(Dispatchers.IO) {
+                com.sujan.pipe.data.DeviceIntegrationManager.loadContactPhotoBitmap(context, contact.photoUri)
+            }
+        } else {
+            null
+        }
+    }
+    val bmp = bitmap
+    Box(
+        modifier = modifier
+            .padding(end = 6.dp)
+            .size(34.dp)
+            .background(c.surface)
+            .border(1.dp, c.good),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (bmp != null) {
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = contact.displayName,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            AsciiText(
+                text = contact.monogram,
+                style = AsciiType.small,
+                color = c.good,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun QuickAddInlineCard(
+    initialAction: com.sujan.pipe.domain.PaletteItem.QuickAddAction,
+    onSaveContact: (String, String) -> Unit,
+    onSaveBookmark: (String, String, String, BookmarkKind, String) -> Unit,
+    onSavePipe: (String, String, String) -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAscii.current
+    val clipboard = LocalClipboardManager.current
+    val clipText = remember { clipboard.getText()?.text?.trim().orEmpty() }
+
+    var activeKind by remember(initialAction) { mutableStateOf(initialAction.kind) }
+
+    // Contact fields
+    var contactName by remember(initialAction) {
+        mutableStateOf(TextFieldValue(initialAction.arg1, TextRange(initialAction.arg1.length)))
+    }
+    var contactPhone by remember(initialAction) {
+        mutableStateOf(TextFieldValue(initialAction.arg2, TextRange(initialAction.arg2.length)))
+    }
+
+    // Bookmark fields
+    val initialBmTarget = initialAction.arg3.ifEmpty {
+        if (clipText.startsWith("http://") || clipText.startsWith("https://") || clipText.startsWith("/")) clipText else "https://"
+    }
+    var bmKind by remember(initialAction) {
+        mutableStateOf(
+            if (initialAction.arg3.startsWith("/")) initialAction.bookmarkKind
+            else if (initialBmTarget.startsWith("/")) BookmarkKind.FOLDER
+            else BookmarkKind.LINK
+        )
+    }
+    var bmAlias by remember(initialAction) {
+        mutableStateOf(TextFieldValue(initialAction.arg1, TextRange(initialAction.arg1.length)))
+    }
+    var bmTitle by remember(initialAction) {
+        mutableStateOf(TextFieldValue(initialAction.arg2, TextRange(initialAction.arg2.length)))
+    }
+    var bmTarget by remember(initialAction) {
+        mutableStateOf(TextFieldValue(initialBmTarget, TextRange(initialBmTarget.length)))
+    }
+    var bmTags by remember(initialAction) {
+        mutableStateOf(TextFieldValue(""))
+    }
+
+    // Pipe fields
+    val initialPipeUrl = initialAction.arg3.ifEmpty {
+        if (clipText.startsWith("http://") || clipText.startsWith("https://")) {
+            QueryRouter.normalizePipeUrlTemplate(clipText)
+        } else {
+            "https://example.com/search?q={query}"
+        }
+    }
+    var pipeKeyword by remember(initialAction) {
+        mutableStateOf(TextFieldValue(initialAction.arg1, TextRange(initialAction.arg1.length)))
+    }
+    var pipeName by remember(initialAction) {
+        mutableStateOf(TextFieldValue(initialAction.arg2, TextRange(initialAction.arg2.length)))
+    }
+    var pipeUrl by remember(initialAction) {
+        mutableStateOf(TextFieldValue(initialPipeUrl, TextRange(initialPipeUrl.length)))
+    }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(c.surface)
+            .border(1.dp, c.accent)
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AsciiText(
+                text = "+- quick add (${activeKind.label.lowercase()})",
+                style = AsciiType.title,
+                color = c.accent,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                QuickAddKind.entries.forEach { k ->
+                    AsciiButton(
+                        label = k.tag,
+                        onClick = {
+                            activeKind = k
+                            errorMsg = null
+                        },
+                        primary = activeKind == k,
+                    )
+                }
+                AsciiButton("x", onCancel)
+            }
+        }
+
+        when (activeKind) {
+            QuickAddKind.CONTACT -> {
+                AsciiTextField(
+                    label = "contact name",
+                    promptPrefix = "@ ",
+                    value = contactName,
+                    onValueChange = { contactName = it; errorMsg = null },
+                    placeholder = "Ramesh Dai",
+                )
+                AsciiTextField(
+                    label = "phone number",
+                    promptPrefix = "# ",
+                    value = contactPhone,
+                    onValueChange = { contactPhone = it; errorMsg = null },
+                    placeholder = "9841234567",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
+                )
+                if (errorMsg != null) {
+                    AsciiText(errorMsg!!, style = AsciiType.small, color = c.error)
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AsciiButton("cancel", onCancel)
+                    AsciiButton(
+                        label = "+ save contact",
+                        primary = true,
+                        onClick = {
+                            val n = contactName.text.trim()
+                            val p = contactPhone.text.trim()
+                            if (n.isEmpty() || p.isEmpty()) {
+                                errorMsg = "! both name and phone number are required"
+                            } else {
+                                onSaveContact(n, p)
+                            }
+                        },
+                    )
+                }
+            }
+
+            QuickAddKind.BOOKMARK -> {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    BookmarkKind.entries.forEach { k ->
+                        AsciiRadio(
+                            selected = bmKind == k,
+                            onClick = { bmKind = k },
+                            label = k.name.lowercase(),
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Box(Modifier.weight(0.38f)) {
+                        AsciiTextField(
+                            label = "alias",
+                            promptPrefix = "| ",
+                            value = bmAlias,
+                            onValueChange = { bmAlias = it; errorMsg = null },
+                            placeholder = "hn",
+                        )
+                    }
+                    Box(Modifier.weight(0.62f)) {
+                        AsciiTextField(
+                            label = "title",
+                            promptPrefix = "> ",
+                            value = bmTitle,
+                            onValueChange = { bmTitle = it; errorMsg = null },
+                            placeholder = "Hacker News",
+                        )
+                    }
+                }
+                AsciiTextField(
+                    label = if (bmKind == BookmarkKind.LINK) "url (https://...)" else "path (/storage/emulated/0/...)",
+                    promptPrefix = "> ",
+                    value = bmTarget,
+                    onValueChange = { bmTarget = it; errorMsg = null },
+                    placeholder = if (bmKind == BookmarkKind.LINK) "https://news.ycombinator.com" else "/storage/emulated/0/Download",
+                )
+                AsciiTextField(
+                    label = "tags (optional, e.g. #work #news)",
+                    promptPrefix = "# ",
+                    value = bmTags,
+                    onValueChange = { bmTags = it },
+                    placeholder = "#quick",
+                )
+                if (errorMsg != null) {
+                    AsciiText(errorMsg!!, style = AsciiType.small, color = c.error)
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (clipText.isNotEmpty()) {
+                        AsciiButton("paste clip", {
+                            bmTarget = TextFieldValue(clipText, TextRange(clipText.length))
+                            bmKind = if (clipText.startsWith("/")) BookmarkKind.FOLDER else BookmarkKind.LINK
+                        })
+                    }
+                    AsciiButton("cancel", onCancel)
+                    AsciiButton(
+                        label = "+ save bm",
+                        primary = true,
+                        onClick = {
+                            val a = bmAlias.text.trim().lowercase()
+                            val t = bmTitle.text.trim().ifEmpty { a }
+                            val u = bmTarget.text.trim()
+                            if (t.isEmpty() || u.isEmpty()) {
+                                errorMsg = "! title and target url/path are required"
+                            } else {
+                                onSaveBookmark(a, t, u, bmKind, bmTags.text.trim())
+                            }
+                        },
+                    )
+                }
+            }
+
+            QuickAddKind.PIPE -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Box(Modifier.weight(0.35f)) {
+                        AsciiTextField(
+                            label = "keyword",
+                            promptPrefix = "| ",
+                            value = pipeKeyword,
+                            onValueChange = { pipeKeyword = it; errorMsg = null },
+                            placeholder = "ab",
+                        )
+                    }
+                    Box(Modifier.weight(0.65f)) {
+                        AsciiTextField(
+                            label = "engine name",
+                            promptPrefix = "> ",
+                            value = pipeName,
+                            onValueChange = { pipeName = it; errorMsg = null },
+                            placeholder = "AudiobookBay",
+                        )
+                    }
+                }
+                AsciiTextField(
+                    label = "search url or {query} template (auto-converts ?q=sample)",
+                    promptPrefix = "> ",
+                    value = pipeUrl,
+                    onValueChange = { pipeUrl = it; errorMsg = null },
+                    placeholder = "https://example.com/search?q={query}",
+                )
+                if (errorMsg != null) {
+                    AsciiText(errorMsg!!, style = AsciiType.small, color = c.error)
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (clipText.startsWith("http")) {
+                        AsciiButton("paste clip", {
+                            val norm = QueryRouter.normalizePipeUrlTemplate(clipText)
+                            pipeUrl = TextFieldValue(norm, TextRange(norm.length))
+                        })
+                    }
+                    AsciiButton("cancel", onCancel)
+                    AsciiButton(
+                        label = "+ save pipe",
+                        primary = true,
+                        onClick = {
+                            val k = pipeKeyword.text.trim().lowercase()
+                            val n = pipeName.text.trim().ifEmpty { k.uppercase() }
+                            val u = QueryRouter.normalizePipeUrlTemplate(pipeUrl.text)
+                            if (k.isEmpty() || u.isEmpty()) {
+                                errorMsg = "! keyword and search url are required"
+                            } else {
+                                onSavePipe(k, n, u)
+                            }
+                        },
+                    )
+                }
+            }
         }
     }
 }
@@ -778,10 +1181,11 @@ private fun AsciiRaycastRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 AsciiText(
-                    text = "$pointer [@c] ",
+                    text = "$pointer ",
                     style = if (isTop) AsciiType.title else AsciiType.small,
                     color = if (pressed) c.bg else c.good,
                 )
+                AsciiContactAvatar(contact = contact)
                 Column(modifier = Modifier.weight(1f)) {
                     AsciiText(
                         text = contact.displayName,
@@ -979,6 +1383,74 @@ private fun AsciiRaycastRow(
                     color = if (pressed) c.bg else c.dim,
                     maxLines = 1,
                 )
+            }
+        }
+
+        is com.sujan.pipe.domain.PaletteItem.QuickAddAction -> {
+            val badgeCol = when (item.kind) {
+                QuickAddKind.CONTACT -> c.good
+                QuickAddKind.BOOKMARK -> c.accent2
+                QuickAddKind.PIPE -> c.accent
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .background(rowBg)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText(
+                    text = "$pointer [${item.kind.tag}] ",
+                    style = if (isTop) AsciiType.title else AsciiType.small,
+                    color = if (pressed) c.bg else badgeCol,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(
+                        text = item.title,
+                        style = if (isTop) AsciiType.title else AsciiType.body,
+                        color = if (pressed) c.bg else c.fg,
+                        maxLines = 1,
+                    )
+                    AsciiText(
+                        text = item.subtitle,
+                        style = AsciiType.small,
+                        color = if (pressed) c.bg else c.dim,
+                        maxLines = 1,
+                    )
+                }
+                AsciiButton(
+                    label = if (item.isReadyToCommit) "save" else "form",
+                    onClick = onExecute,
+                    primary = item.isReadyToCommit,
+                )
+            }
+        }
+
+        is com.sujan.pipe.domain.PaletteItem.QuickRemoveAction -> {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .background(rowBg)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText(
+                    text = "$pointer [-rm] ",
+                    style = if (isTop) AsciiType.title else AsciiType.small,
+                    color = if (pressed) c.bg else c.error,
+                )
+                AsciiText(
+                    text = item.displayTitle,
+                    style = if (isTop) AsciiType.title else AsciiType.body,
+                    color = if (pressed) c.bg else c.fg,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                AsciiButton("del", onExecute, primary = isTop)
             }
         }
 

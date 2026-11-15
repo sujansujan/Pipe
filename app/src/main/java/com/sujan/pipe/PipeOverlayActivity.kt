@@ -56,16 +56,20 @@ import com.sujan.pipe.data.PipeRepository
 import com.sujan.pipe.domain.PaletteItem
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
+import com.sujan.pipe.domain.QuickAddKind
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.ContactQuickAction
+import com.sujan.pipe.model.EngineColorRole
 import com.sujan.pipe.model.InstalledAppItem
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
+import com.sujan.pipe.ui.AsciiContactAvatar
 import com.sujan.pipe.ui.AsciiImagePreviewDialog
 import com.sujan.pipe.ui.AsciiThumbnailBadge
+import com.sujan.pipe.ui.QuickAddInlineCard
 import com.sujan.pipe.ui.ascii.AsciiButton
 import com.sujan.pipe.ui.ascii.AsciiText
 import com.sujan.pipe.ui.ascii.AsciiType
@@ -187,6 +191,15 @@ class PipeOverlayActivity : ComponentActivity() {
                         val digits = QueryRouter.normalizeWhatsAppPhone(contact.phoneNumber)
                         if (DeviceIntegrationManager.whatsAppContact(this, digits)) finish()
                     },
+                    onSaveNewContact = { name, phone ->
+                        DeviceIntegrationManager.insertContactDirect(this, name, phone)
+                    },
+                    onSaveBookmarksList = { updated ->
+                        repository.saveBookmarks(updated)
+                    },
+                    onSaveEnginesList = { updated ->
+                        repository.saveEngines(updated)
+                    },
                     onOpenFullApp = { currentText ->
                         startActivity(
                             Intent(this, MainActivity::class.java).apply {
@@ -239,18 +252,26 @@ private fun SleekRaycastOverlay(
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
+    onSaveNewContact: (String, String) -> Boolean,
+    onSaveBookmarksList: (List<PipeBookmark>) -> Unit,
+    onSaveEnginesList: (List<SearchEngine>) -> Unit,
     onOpenFullApp: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val c = LocalAscii.current
+    val clipboard = LocalClipboardManager.current
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
     var input by remember(initialQuery) {
         mutableStateOf(TextFieldValue(initialQuery, TextRange(initialQuery.length)))
     }
+    var activeEngines by remember { mutableStateOf(engines) }
+    var activeBookmarks by remember { mutableStateOf(bookmarks) }
     var usageMap by remember { mutableStateOf(initialUsage) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
+    var statusMsg by remember { mutableStateOf<String?>(null) }
+    var inlineQuickAdd by remember { mutableStateOf<PaletteItem.QuickAddAction?>(null) }
     var contacts by remember { mutableStateOf<List<ContactItem>>(emptyList()) }
     var installedApps by remember { mutableStateOf(initialCachedApps) }
     var storageFiles by remember { mutableStateOf(initialCachedFiles) }
@@ -259,38 +280,42 @@ private fun SleekRaycastOverlay(
     var expandedFolderChildren by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
     var previewImageFile by remember { mutableStateOf<LocalFileItem?>(null) }
 
-    val parsedCommand = remember(input.text, bookmarks, engines) {
-        QueryRouter.parsePromptCommand(input.text, bookmarks, engines)
+    val clipText = remember(input.text) { clipboard.getText()?.text?.trim().orEmpty() }
+
+    val parsedCommand = remember(input.text, activeBookmarks, activeEngines) {
+        QueryRouter.parsePromptCommand(input.text, activeBookmarks, activeEngines)
     }
 
     var results by remember {
         mutableStateOf(
             QueryRouter.buildPaletteResults(
                 rawInput = initialQuery,
-                engines = engines,
-                bookmarks = bookmarks,
+                engines = activeEngines,
+                bookmarks = activeBookmarks,
                 contacts = emptyList(),
                 storageFiles = initialCachedFiles,
                 scopedFolderFiles = emptyList(),
                 history = history,
                 usageMap = initialUsage,
                 installedApps = initialCachedApps,
+                clipboardText = clipText,
             )
         )
     }
 
-    LaunchedEffect(input.text, engines, bookmarks, contacts, installedApps, storageFiles, scopedFiles, history, usageMap) {
+    LaunchedEffect(input.text, activeEngines, activeBookmarks, contacts, installedApps, storageFiles, scopedFiles, history, usageMap, clipText) {
         val computed = withContext(Dispatchers.Default) {
             QueryRouter.buildPaletteResults(
                 rawInput = input.text,
-                engines = engines,
-                bookmarks = bookmarks,
+                engines = activeEngines,
+                bookmarks = activeBookmarks,
                 contacts = contacts,
                 storageFiles = storageFiles,
                 scopedFolderFiles = scopedFiles,
                 history = history,
                 usageMap = usageMap,
                 installedApps = installedApps,
+                clipboardText = clipText,
             )
         }
         results = computed
@@ -324,6 +349,77 @@ private fun SleekRaycastOverlay(
         }
     }
 
+    val commitNewContact: (String, String) -> Unit = { name, phone ->
+        val ok = onSaveNewContact(name, phone)
+        if (ok) {
+            val newContact = ContactItem(
+                id = "local_${System.currentTimeMillis()}",
+                displayName = name.trim(),
+                phoneNumber = phone.trim(),
+            )
+            contacts = (contacts + newContact).sortedBy { it.nameLower }
+            inlineQuickAdd = null
+            input = TextFieldValue("")
+            statusMsg = "ok: saved contact ${name.trim()} (${phone.trim()})"
+        } else {
+            errorMsg = "! could not save contact"
+        }
+    }
+
+    val commitNewBookmark: (String, String, String, BookmarkKind, String) -> Unit = { alias, title, target, kind, tags ->
+        val cleanAlias = alias.trim().lowercase().filter { !it.isWhitespace() }
+        val cleanTitle = title.trim().ifEmpty { cleanAlias.ifEmpty { "Bookmark" } }
+        val cleanTarget = target.trim()
+        val existingIdx = if (cleanAlias.isNotEmpty()) {
+            activeBookmarks.indexOfFirst { it.alias.equals(cleanAlias, ignoreCase = true) }
+        } else -1
+        val updated = if (existingIdx >= 0) {
+            activeBookmarks.mapIndexed { idx, bm ->
+                if (idx == existingIdx) bm.copy(alias = cleanAlias, title = cleanTitle, target = cleanTarget, kind = kind, tags = tags.ifEmpty { bm.tags }) else bm
+            }
+        } else {
+            activeBookmarks + PipeBookmark(
+                id = "bm_${System.currentTimeMillis()}",
+                alias = cleanAlias,
+                title = cleanTitle,
+                target = cleanTarget,
+                kind = kind,
+                tags = tags,
+            )
+        }
+        activeBookmarks = updated
+        onSaveBookmarksList(updated)
+        inlineQuickAdd = null
+        input = TextFieldValue("")
+        statusMsg = "ok: saved bookmark [${cleanAlias.ifEmpty { cleanTitle }}]"
+    }
+
+    val commitNewPipe: (String, String, String) -> Unit = { keyword, name, rawUrl ->
+        val cleanKey = keyword.trim().lowercase().filter { !it.isWhitespace() }
+        val cleanName = name.trim().ifEmpty { cleanKey.uppercase() }
+        val cleanUrl = QueryRouter.normalizePipeUrlTemplate(rawUrl)
+        val existingIdx = activeEngines.indexOfFirst { it.keyword.equals(cleanKey, ignoreCase = true) }
+        val updated = if (existingIdx >= 0) {
+            activeEngines.mapIndexed { idx, eng ->
+                if (idx == existingIdx) eng.copy(name = cleanName, keyword = cleanKey, urlTemplate = cleanUrl) else eng
+            }
+        } else {
+            activeEngines + SearchEngine(
+                id = "eng_${cleanKey}_${System.currentTimeMillis()}",
+                name = cleanName,
+                keyword = cleanKey,
+                urlTemplate = cleanUrl,
+                colorRole = EngineColorRole.ACCENT2,
+                isDefault = false,
+            )
+        }
+        activeEngines = updated
+        onSaveEnginesList(updated)
+        inlineQuickAdd = null
+        input = TextFieldValue("")
+        statusMsg = "ok: saved pipe [|$cleanKey] $cleanName"
+    }
+
     val executeItem: (PaletteItem) -> Unit = { item ->
         usageMap = onRecordUsage(item.usageKey)
         when (item) {
@@ -347,6 +443,32 @@ private fun SleekRaycastOverlay(
                 }
             }
             is PaletteItem.AppAction -> onLaunchApp(item.app.packageName)
+            is PaletteItem.QuickAddAction -> {
+                if (item.isReadyToCommit) {
+                    when (item.kind) {
+                        QuickAddKind.CONTACT -> commitNewContact(item.arg1, item.arg2)
+                        QuickAddKind.BOOKMARK -> commitNewBookmark(item.arg1, item.arg2, item.arg3, item.bookmarkKind, "")
+                        QuickAddKind.PIPE -> commitNewPipe(item.arg1, item.arg2, item.arg3)
+                    }
+                } else {
+                    inlineQuickAdd = item
+                }
+            }
+            is PaletteItem.QuickRemoveAction -> {
+                if (item.isBookmark) {
+                    val updated = activeBookmarks.filterNot { it.id == item.targetId }
+                    activeBookmarks = updated
+                    onSaveBookmarksList(updated)
+                    input = TextFieldValue("")
+                    statusMsg = "ok: removed bookmark [${item.aliasOrKeyword}]"
+                } else if (activeEngines.size > 1) {
+                    val updated = activeEngines.filterNot { it.id == item.targetId }
+                    activeEngines = updated
+                    onSaveEnginesList(updated)
+                    input = TextFieldValue("")
+                    statusMsg = "ok: removed pipe [|${item.aliasOrKeyword}]"
+                }
+            }
             is PaletteItem.HistoryAction -> {
                 if (!onDispatchUrl(item.entry.rawInput, item.entry.resolvedUrl)) errorMsg = "! no browser found"
             }
@@ -480,8 +602,27 @@ private fun SleekRaycastOverlay(
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
+            if (statusMsg != null) {
+                AsciiText(
+                    text = statusMsg!!,
+                    style = AsciiType.small,
+                    color = c.good,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
 
-            if (shouldShowList && results.isNotEmpty()) {
+            if (inlineQuickAdd != null) {
+                Spacer(Modifier.height(4.dp))
+                QuickAddInlineCard(
+                    initialAction = inlineQuickAdd!!,
+                    onSaveContact = commitNewContact,
+                    onSaveBookmark = commitNewBookmark,
+                    onSavePipe = commitNewPipe,
+                    onCancel = { inlineQuickAdd = null },
+                )
+            }
+
+            if (inlineQuickAdd == null && shouldShowList && results.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
                 Box(
                     modifier = Modifier
@@ -513,6 +654,19 @@ private fun SleekRaycastOverlay(
                             },
                             onShareFile = { f -> onShareFile(f.absolutePath) },
                             onPreviewImage = { f -> previewImageFile = f },
+                            onBookmarkFile = { f ->
+                                val suggestedAlias = f.name.lowercase().filter { it.isLetterOrDigit() }.take(6)
+                                inlineQuickAdd = PaletteItem.QuickAddAction(
+                                    kind = QuickAddKind.BOOKMARK,
+                                    title = "Add Bookmark for ${f.name}",
+                                    subtitle = f.absolutePath,
+                                    isReadyToCommit = false,
+                                    arg1 = suggestedAlias,
+                                    arg2 = f.name,
+                                    arg3 = f.absolutePath,
+                                    bookmarkKind = if (f.isDirectory) BookmarkKind.FOLDER else BookmarkKind.FILE,
+                                )
+                            },
                             onCallContact = onCallContact,
                             onSmsContact = onSmsContact,
                             onWhatsAppContact = onWhatsAppContact,
@@ -553,6 +707,7 @@ private fun SleekOverlayRow(
     onOpenChildFile: (LocalFileItem) -> Unit,
     onShareFile: (LocalFileItem) -> Unit,
     onPreviewImage: (LocalFileItem) -> Unit,
+    onBookmarkFile: (LocalFileItem) -> Unit,
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
@@ -583,7 +738,8 @@ private fun SleekOverlayRow(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText("$ptr [@] ", style = AsciiType.small, color = if (pressed) c.bg else c.good)
+                AsciiText("$ptr ", style = AsciiType.small, color = if (pressed) c.bg else c.good)
+                AsciiContactAvatar(contact = contact)
                 Column(modifier = Modifier.weight(1f)) {
                     AsciiText(contact.displayName, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
                     AsciiText(contact.phoneNumber, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
@@ -640,6 +796,7 @@ private fun SleekOverlayRow(
                         AsciiButton("shr", { onShareFile(f) })
                     }
                     AsciiButton("cp", { clipboard.setText(AnnotatedString(f.absolutePath)) })
+                    AsciiButton("+bm", { onBookmarkFile(f) })
                     if (f.isDirectory) {
                         AsciiButton(
                             label = if (isExpanded) "-" else "+",
@@ -807,6 +964,52 @@ private fun SleekOverlayRow(
                 AsciiText("$ptr [|${eng.keyword}] ", style = AsciiType.small, color = if (pressed) c.bg else c.forRole(eng.colorRole))
                 AsciiText(desc, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
                 AsciiText("web", style = AsciiType.small, color = if (pressed) c.bg else c.dim)
+            }
+        }
+
+        is PaletteItem.QuickAddAction -> {
+            val badgeCol = when (item.kind) {
+                QuickAddKind.CONTACT -> c.good
+                QuickAddKind.BOOKMARK -> c.accent2
+                QuickAddKind.PIPE -> c.accent
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr [${item.kind.tag}] ", style = AsciiType.small, color = if (pressed) c.bg else badgeCol)
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(item.title, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
+                    AsciiText(item.subtitle, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                }
+                AsciiButton(
+                    label = if (item.isReadyToCommit) "save" else "form",
+                    onClick = onExecute,
+                    primary = item.isReadyToCommit,
+                )
+            }
+        }
+
+        is PaletteItem.QuickRemoveAction -> {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr [-rm] ", style = AsciiType.small, color = if (pressed) c.bg else c.error)
+                AsciiText(item.displayTitle, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
+                AsciiButton("del", onExecute, primary = isTop)
             }
         }
 
