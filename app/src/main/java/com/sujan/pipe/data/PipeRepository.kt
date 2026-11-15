@@ -171,6 +171,21 @@ class PipeRepository(context: Context) {
     fun isHistoryEnabled(): Boolean = prefs.getBoolean("history_enabled", true)
     fun setHistoryEnabled(enabled: Boolean) = prefs.edit().putBoolean("history_enabled", enabled).apply()
 
+    fun loadHourlyAutoIndexEnabled(): Boolean = prefs.getBoolean("hourly_auto_index_v1", true)
+    fun saveHourlyAutoIndexEnabled(enabled: Boolean) = prefs.edit().putBoolean("hourly_auto_index_v1", enabled).apply()
+
+    fun loadLastIndexedTimestampMs(): Long = prefs.getLong("last_indexed_ms_v1", 0L)
+    fun loadIndexedFileCount(): Int = prefs.getInt("indexed_file_count_v1", 0)
+    fun loadIndexedFolderCount(): Int = prefs.getInt("indexed_folder_count_v1", 0)
+
+    fun saveLastIndexedMetadata(timestampMs: Long, fileCount: Int, folderCount: Int) {
+        prefs.edit()
+            .putLong("last_indexed_ms_v1", timestampMs)
+            .putInt("indexed_file_count_v1", fileCount)
+            .putInt("indexed_folder_count_v1", folderCount)
+            .apply()
+    }
+
     fun loadOverlayOpacity(): Float = prefs.getFloat("overlay_opacity_v1", 0.82f).coerceIn(0.15f, 1.0f)
     fun saveOverlayOpacity(alpha: Float) = prefs.edit().putFloat("overlay_opacity_v1", alpha.coerceIn(0.15f, 1.0f)).apply()
 

@@ -228,6 +228,12 @@ class MainActivity : ComponentActivity() {
                 onOverlayBottomChange = viewModel::setOverlayBottomAnchored,
                 onOverlayForceDarkChange = viewModel::setOverlayForceDark,
                 onOverlayIdleChange = viewModel::setOverlayShowIdleSuggestions,
+                onSelectSettingsSection = viewModel::selectSettingsSection,
+                onHourlyAutoIndexChange = { enabled ->
+                    viewModel.setHourlyAutoIndexEnabled(enabled)
+                    DeviceIntegrationManager.syncHourlyIndexSchedule(this, enabled)
+                },
+                onRebuildIndexNow = { refreshDeviceDataAsync(forceRebuild = true) },
                 onLaunchOverlayPreview = ::launchOverlayActivity,
                 onPinOverlayShortcut = ::requestPinOverlayShortcut,
                 onOpenDefaultAppsSettings = ::openDefaultAppsSettings,
@@ -248,19 +254,38 @@ class MainActivity : ComponentActivity() {
         handleIncomingIntent(intent)
     }
 
-    private fun refreshDeviceDataAsync() {
+    private fun refreshDeviceDataAsync(forceRebuild: Boolean = false) {
         val hasContacts = DeviceIntegrationManager.hasContactsPermission(this)
         val hasFiles = DeviceIntegrationManager.hasAllFilesPermission(this)
         val currentBookmarks = viewModel.uiState.value.bookmarks
+        DeviceIntegrationManager.syncHourlyIndexSchedule(this, repository.loadHourlyAutoIndexEnabled())
+
         lifecycleScope.launch(Dispatchers.IO) {
-            val contacts = if (hasContacts) DeviceIntegrationManager.loadDeviceContacts(applicationContext) else emptyList()
-            val files = if (hasFiles) DeviceIntegrationManager.scanStorageFiles(applicationContext, currentBookmarks) else emptyList()
+            // 1. Load persistent cached files & contacts immediately (<10ms)
+            val cachedFiles = if (hasFiles) DeviceIntegrationManager.getCachedStorageFiles(applicationContext) else emptyList()
+            val contacts = if (hasContacts) DeviceIntegrationManager.getCachedOrLoadContacts(applicationContext) else emptyList()
+            val needsRebuild = hasFiles && (forceRebuild || cachedFiles.isEmpty() || DeviceIntegrationManager.isIndexStale(applicationContext))
+
             viewModel.syncDeviceState(
                 hasContactsPerm = hasContacts,
                 hasFilesPerm = hasFiles,
                 contacts = contacts,
-                files = files,
+                files = cachedFiles,
+                isIndexing = needsRebuild,
             )
+
+            // 2. If index is stale (>1 hour old), empty, or manual rebuild was requested, rebuild & save in background
+            if (needsRebuild) {
+                val freshContacts = if (hasContacts) DeviceIntegrationManager.loadDeviceContacts(applicationContext) else contacts
+                val freshFiles = DeviceIntegrationManager.rebuildAndSaveStorageIndex(applicationContext, currentBookmarks)
+                viewModel.syncDeviceState(
+                    hasContactsPerm = hasContacts,
+                    hasFilesPerm = hasFiles,
+                    contacts = freshContacts,
+                    files = freshFiles,
+                    isIndexing = false,
+                )
+            }
         }
     }
 

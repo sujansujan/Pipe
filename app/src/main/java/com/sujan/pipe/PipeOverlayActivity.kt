@@ -121,14 +121,24 @@ class PipeOverlayActivity : ComponentActivity() {
                     cornerRadiusDp = cornerRadiusDp,
                     bottomAnchored = bottomAnchored,
                     showIdleSuggestions = showIdleSuggestions,
+                    initialCachedFiles = DeviceIntegrationManager.getCachedStorageFiles(applicationContext),
                     loadContacts = {
                         withContext(Dispatchers.IO) {
-                            DeviceIntegrationManager.loadDeviceContacts(applicationContext)
+                            DeviceIntegrationManager.getCachedOrLoadContacts(applicationContext)
                         }
                     },
                     loadFiles = { scopedPath ->
                         withContext(Dispatchers.IO) {
-                            DeviceIntegrationManager.scanStorageFiles(applicationContext, bookmarks, scopedPath)
+                            if (scopedPath != null) {
+                                DeviceIntegrationManager.scanStorageFiles(applicationContext, bookmarks, scopedPath)
+                            } else {
+                                val cached = DeviceIntegrationManager.getCachedStorageFiles(applicationContext)
+                                if (cached.isEmpty() || DeviceIntegrationManager.isIndexStale(applicationContext)) {
+                                    DeviceIntegrationManager.rebuildAndSaveStorageIndex(applicationContext, bookmarks)
+                                } else {
+                                    cached
+                                }
+                            }
                         }
                     },
                     onRecordUsage = { key -> repository.incrementUsage(key) },
@@ -193,6 +203,7 @@ private fun SleekRaycastOverlay(
     cornerRadiusDp: Int,
     bottomAnchored: Boolean,
     showIdleSuggestions: Boolean,
+    initialCachedFiles: List<LocalFileItem> = emptyList(),
     loadContacts: suspend () -> List<ContactItem>,
     loadFiles: suspend (String?) -> List<LocalFileItem>,
     onRecordUsage: (String) -> Map<String, Int>,
@@ -214,7 +225,7 @@ private fun SleekRaycastOverlay(
     var usageMap by remember { mutableStateOf(initialUsage) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var contacts by remember { mutableStateOf<List<ContactItem>>(emptyList()) }
-    var storageFiles by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
+    var storageFiles by remember { mutableStateOf(initialCachedFiles) }
     var scopedFiles by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
     var expandedFolderPath by remember { mutableStateOf<String?>(null) }
     var expandedFolderChildren by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }

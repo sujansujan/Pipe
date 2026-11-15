@@ -34,6 +34,14 @@ import kotlinx.coroutines.launch
 
 enum class PipeView { PROMPT, BOOKMARKS, ENGINES, SETTINGS }
 
+enum class SettingsSection(val index: Int, val label: String, val title: String) {
+    OVERLAY(1, "ovl", "overlay appearance & ubitouch"),
+    INDEX(2, "idx", "storage index & permissions"),
+    THEME(3, "thm", "theme & color palette"),
+    ROUTING(4, "rte", "default browser & routing"),
+    BACKUP(5, "bak", "json backup & about"),
+}
+
 sealed interface UndoPayload {
     data class DeletedEngine(val engine: SearchEngine, val index: Int) : UndoPayload
     data class ResetEngines(val previousEngines: List<SearchEngine>) : UndoPayload
@@ -89,6 +97,12 @@ data class PipeUiState(
     val overlayBottomAnchored: Boolean = false,
     val overlayForceDark: Boolean = true,
     val overlayShowIdleSuggestions: Boolean = false,
+    val settingsSection: SettingsSection = SettingsSection.OVERLAY,
+    val hourlyAutoIndexEnabled: Boolean = true,
+    val lastIndexedTimestampMs: Long = 0L,
+    val indexedFileCount: Int = 0,
+    val indexedFolderCount: Int = 0,
+    val isIndexingInProgress: Boolean = false,
     val engineForm: EngineFormState = EngineFormState(),
     val bookmarkForm: BookmarkFormState = BookmarkFormState(),
     val undoBanner: UndoBannerState? = null,
@@ -181,6 +195,10 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             overlayBottomAnchored = repository.loadOverlayBottomAnchored(),
             overlayForceDark = repository.loadOverlayForceDark(),
             overlayShowIdleSuggestions = repository.loadOverlayShowIdleSuggestions(),
+            hourlyAutoIndexEnabled = repository.loadHourlyAutoIndexEnabled(),
+            lastIndexedTimestampMs = repository.loadLastIndexedTimestampMs(),
+            indexedFileCount = repository.loadIndexedFileCount(),
+            indexedFolderCount = repository.loadIndexedFolderCount(),
         )
     )
     val uiState: StateFlow<PipeUiState> = _uiState.asStateFlow()
@@ -191,6 +209,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         hasFilesPerm: Boolean,
         contacts: List<ContactItem>,
         files: List<LocalFileItem>,
+        isIndexing: Boolean = false,
     ) {
         _uiState.update {
             it.copy(
@@ -198,8 +217,25 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 hasFilesPermission = hasFilesPerm,
                 contacts = contacts,
                 storageFiles = files,
+                isIndexingInProgress = isIndexing,
+                lastIndexedTimestampMs = repository.loadLastIndexedTimestampMs(),
+                indexedFileCount = repository.loadIndexedFileCount().takeIf { c -> c > 0 } ?: files.count { f -> !f.isDirectory },
+                indexedFolderCount = repository.loadIndexedFolderCount().takeIf { c -> c > 0 } ?: files.count { f -> f.isDirectory },
             )
         }
+    }
+
+    fun selectSettingsSection(section: SettingsSection) {
+        _uiState.update { it.copy(settingsSection = section, jsonStatusMessage = null) }
+    }
+
+    fun setHourlyAutoIndexEnabled(enabled: Boolean) {
+        repository.saveHourlyAutoIndexEnabled(enabled)
+        _uiState.update { it.copy(hourlyAutoIndexEnabled = enabled) }
+    }
+
+    fun setIndexingInProgress(inProgress: Boolean) {
+        _uiState.update { it.copy(isIndexingInProgress = inProgress) }
     }
 
     fun updateScopedFolderFiles(files: List<LocalFileItem>) {

@@ -138,6 +138,9 @@ fun PipeApp(
     onOverlayBottomChange: (Boolean) -> Unit = {},
     onOverlayForceDarkChange: (Boolean) -> Unit = {},
     onOverlayIdleChange: (Boolean) -> Unit = {},
+    onSelectSettingsSection: (SettingsSection) -> Unit = {},
+    onHourlyAutoIndexChange: (Boolean) -> Unit = {},
+    onRebuildIndexNow: () -> Unit = {},
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
@@ -233,6 +236,9 @@ fun PipeApp(
                         onOverlayBottomChange = onOverlayBottomChange,
                         onOverlayForceDarkChange = onOverlayForceDarkChange,
                         onOverlayIdleChange = onOverlayIdleChange,
+                        onSelectSettingsSection = onSelectSettingsSection,
+                        onHourlyAutoIndexChange = onHourlyAutoIndexChange,
+                        onRebuildIndexNow = onRebuildIndexNow,
                         onLaunchOverlayPreview = onLaunchOverlayPreview,
                         onPinOverlayShortcut = onPinOverlayShortcut,
                         onOpenDefaultAppsSettings = onOpenDefaultAppsSettings,
@@ -1148,6 +1154,9 @@ private fun PipeSettingsScreen(
     onOverlayBottomChange: (Boolean) -> Unit,
     onOverlayForceDarkChange: (Boolean) -> Unit,
     onOverlayIdleChange: (Boolean) -> Unit,
+    onSelectSettingsSection: (SettingsSection) -> Unit,
+    onHourlyAutoIndexChange: (Boolean) -> Unit,
+    onRebuildIndexNow: () -> Unit,
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
@@ -1156,193 +1165,325 @@ private fun PipeSettingsScreen(
 ) {
     val c = LocalAscii.current
     val clipboard = LocalClipboardManager.current
+    val section = state.settingsSection
 
     Column(Modifier.fillMaxSize()) {
         AsciiTopHeader(
-            path = "~/pipe/set",
+            path = "~/pipe/set/${section.label}",
             actions = {
                 AsciiButton(label = "< back", onClick = onBack, spokenLabel = "back to search prompt")
             },
         )
+
+        // Separated Functional Sub-Tab Bar (`[1 ovl] [2 idx] [3 thm] [4 rte] [5 bak]`)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(c.surface)
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SettingsSection.entries.forEach { tab ->
+                val isSelected = section == tab
+                val src = remember { MutableInteractionSource() }
+                val pressed by src.collectIsPressedAsState()
+                val inverted = isSelected || pressed
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 42.dp)
+                        .background(if (inverted) c.accent else Color.Transparent)
+                        .clickable(
+                            interactionSource = src,
+                            indication = null,
+                            role = Role.Tab,
+                            onClick = { onSelectSettingsSection(tab) },
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    AsciiText(
+                        text = "[${tab.index} ${tab.label}]",
+                        style = if (isSelected) AsciiType.title else AsciiType.small,
+                        color = if (inverted) c.bg else c.fg,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
 
         Column(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = 12.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // 1. Permissions & Default Browser Setup
-            AsciiBox(title = "default browser, contacts & storage access") {
-                AsciiText(
-                    text = "pipe is registered as a Browser so Android lets you select it under Default Apps -> Browser app (and Default Assist app).",
-                    style = AsciiType.small,
-                    color = c.fg,
-                )
-                Spacer(Modifier.height(6.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    AsciiButton("set default browser / assist", onOpenDefaultAppsSettings, primary = true)
-                    AsciiButton(
-                        label = if (state.hasContactsPermission) "contacts: ok" else "grant contacts",
-                        onClick = onRequestContactsPermission,
-                    )
-                    AsciiButton(
-                        label = if (state.hasFilesPermission) "files: ok" else "grant all-files",
-                        onClick = onRequestFilesPermission,
-                    )
-                }
-            }
-
-            // 2. Raycast Overlay Design, Transparency, Soft Edges & Position
-            AsciiBox(title = "raycast overlay appearance & ubitouch") {
-                val pct = (state.overlayOpacity * 100).toInt()
-                val dimPct = (state.overlayDimAmount * 100).toInt()
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AsciiText("card opacity: $pct%", style = AsciiType.body, color = c.fg)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        AsciiButton("-10%", { onOverlayOpacityChange(state.overlayOpacity - 0.10f) })
-                        AsciiButton("+10%", { onOverlayOpacityChange(state.overlayOpacity + 0.10f) })
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AsciiText("background dim: $dimPct%", style = AsciiType.body, color = c.fg)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        AsciiButton("-10%", { onOverlayDimChange(state.overlayDimAmount - 0.10f) })
-                        AsciiButton("+10%", { onOverlayDimChange(state.overlayDimAmount + 0.10f) })
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-                AsciiText("soft corner radius:", style = AsciiType.small, color = c.dim)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(0 to "0dp", 10 to "10dp", 16 to "16dp", 24 to "24dp").forEach { (dpVal, label) ->
-                        AsciiRadio(
-                            selected = state.overlayCornerRadiusDp == dpVal,
-                            onClick = { onOverlayCornerChange(dpVal) },
-                            label = label,
-                        )
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-                AsciiText("overlay position:", style = AsciiType.small, color = c.dim)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AsciiRadio(!state.overlayBottomAnchored, { onOverlayBottomChange(false) }, "top")
-                    AsciiRadio(state.overlayBottomAnchored, { onOverlayBottomChange(true) }, "bottom (above keyboard)")
-                }
-                AsciiCheckbox(
-                    checked = state.overlayForceDark,
-                    onChange = onOverlayForceDarkChange,
-                    label = "force dark glass theme in overlay",
-                )
-                AsciiCheckbox(
-                    checked = state.overlayShowIdleSuggestions,
-                    onChange = onOverlayIdleChange,
-                    label = "show top most-used items before typing",
-                )
-                Spacer(Modifier.height(6.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    AsciiButton("test overlay now", onLaunchOverlayPreview, primary = true)
-                    AsciiButton("+ pin ubitouch shortcut", onPinOverlayShortcut)
-                }
-            }
-
-            // 3. Theme & Palette
-            AsciiBox(title = "theme & palette") {
-                AsciiText("mode (follows system by default):", style = AsciiType.small, color = c.dim)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AsciiRadio(state.themeMode == ThemeMode.System, { onThemeModeChange(ThemeMode.System) }, "system")
-                    AsciiRadio(state.themeMode == ThemeMode.Light, { onThemeModeChange(ThemeMode.Light) }, "light")
-                    AsciiRadio(state.themeMode == ThemeMode.Dark, { onThemeModeChange(ThemeMode.Dark) }, "dark")
-                }
-                Spacer(Modifier.height(6.dp))
-                AsciiText("palette:", style = AsciiType.small, color = c.dim)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PaletteChoice.entries.forEach { choice ->
-                        AsciiRadio(
-                            selected = state.paletteChoice == choice,
-                            onClick = { onPaletteChoiceChange(choice) },
-                            label = choice.palette.name,
-                        )
-                    }
-                }
-            }
-
-            // 4. Share & Process Text Behavior
-            AsciiBox(title = "pipeline behavior") {
-                AsciiCheckbox(
-                    checked = state.historyEnabled,
-                    onChange = onHistoryEnabledChange,
-                    label = "record local command history",
-                )
-                Spacer(Modifier.height(6.dp))
-                AsciiText("share sheet & text selection (process text):", style = AsciiType.small, color = c.dim)
-                AsciiRadio(
-                    selected = state.externalTextMode == ExternalTextMode.OPEN_OVERLAY,
-                    onClick = { onExternalTextModeChange(ExternalTextMode.OPEN_OVERLAY) },
-                    label = "open floating ~/pipe/overlay with text pre-filled",
-                )
-                AsciiRadio(
-                    selected = state.externalTextMode == ExternalTextMode.OPEN_PROMPT,
-                    onClick = { onExternalTextModeChange(ExternalTextMode.OPEN_PROMPT) },
-                    label = "open full ~/pipe prompt with text pre-filled",
-                )
-                AsciiRadio(
-                    selected = state.externalTextMode == ExternalTextMode.DIRECT_PIPE,
-                    onClick = { onExternalTextModeChange(ExternalTextMode.DIRECT_PIPE) },
-                    label = "pipe immediately to matched / default engine",
-                )
-            }
-
-            // 5. JSON Backup & Reset
-            AsciiBox(title = "json import / export & reset") {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    AsciiButton("export json file", onExportJsonToFile)
-                    AsciiButton("import json file", onImportJsonFromFile)
-                    AsciiButton("copy json", onOpenJsonExportDialog)
-                    AsciiButton("paste json", onOpenJsonImportDialog)
-                    AsciiButton("reset defaults", onResetDefaults)
-                }
-                if (state.jsonStatusMessage != null) {
-                    AsciiText(
-                        text = state.jsonStatusMessage,
-                        style = AsciiType.small,
-                        color = if (state.jsonStatusMessage.startsWith("!")) c.error else c.good,
-                    )
-                }
-            }
-
-            // 6. About
-            AsciiBox(title = "about") {
-                BoxWithConstraints(Modifier.fillMaxWidth()) {
-                    val cols = rememberCols(AsciiType.small)
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (cols >= 28) {
-                            AsciiText(
-                                text = frame(
-                                    title = "pipe v1.2",
-                                    lines = listOf(
-                                        "pipe queries, contacts, files & bookmarks.",
-                                        "aliases : c <contact>, dl <file>, f <file>",
-                                        "browser : loop-safe default search router",
-                                    ),
-                                    cols = cols,
-                                ),
-                                style = AsciiType.small,
-                                color = c.accent,
-                                softWrap = false,
-                            )
-                        } else {
-                            AsciiText("pipe v1.2", style = AsciiType.title, color = c.accent)
+            when (section) {
+                // TAB 1: OVERLAY APPEARANCE & UBIKITOUCH
+                SettingsSection.OVERLAY -> {
+                    AsciiBox(title = "raycast overlay appearance") {
+                        val pct = (state.overlayOpacity * 100).toInt()
+                        val dimPct = (state.overlayDimAmount * 100).toInt()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AsciiText("card opacity: $pct%", style = AsciiType.body, color = c.fg)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                AsciiButton("-10%", { onOverlayOpacityChange(state.overlayOpacity - 0.10f) })
+                                AsciiButton("+10%", { onOverlayOpacityChange(state.overlayOpacity + 0.10f) })
+                            }
                         }
-                        AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AsciiText("background dim: $dimPct%", style = AsciiType.body, color = c.fg)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                AsciiButton("-10%", { onOverlayDimChange(state.overlayDimAmount - 0.10f) })
+                                AsciiButton("+10%", { onOverlayDimChange(state.overlayDimAmount + 0.10f) })
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        AsciiText("soft corner radius:", style = AsciiType.small, color = c.dim)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(0 to "0dp", 10 to "10dp", 16 to "16dp", 24 to "24dp").forEach { (dpVal, label) ->
+                                AsciiRadio(
+                                    selected = state.overlayCornerRadiusDp == dpVal,
+                                    onClick = { onOverlayCornerChange(dpVal) },
+                                    label = label,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        AsciiText("overlay position:", style = AsciiType.small, color = c.dim)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            AsciiRadio(!state.overlayBottomAnchored, { onOverlayBottomChange(false) }, "top")
+                            AsciiRadio(state.overlayBottomAnchored, { onOverlayBottomChange(true) }, "bottom (above keyboard)")
+                        }
+                        AsciiCheckbox(
+                            checked = state.overlayForceDark,
+                            onChange = onOverlayForceDarkChange,
+                            label = "force dark glass theme in overlay",
+                        )
+                        AsciiCheckbox(
+                            checked = state.overlayShowIdleSuggestions,
+                            onChange = onOverlayIdleChange,
+                            label = "show top most-used items before typing",
+                        )
+                    }
+
+                    AsciiBox(title = "ubitouch & shortcut binding") {
+                        AsciiText(
+                            text = "bind in UbikiTouch via Shortcuts -> `pipe overlay` or Activities -> `PipeOverlayActivity`:",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            AsciiButton("test overlay now", onLaunchOverlayPreview, primary = true)
+                            AsciiButton("+ pin ubitouch shortcut", onPinOverlayShortcut)
+                        }
+                        if (state.jsonStatusMessage != null) {
+                            Spacer(Modifier.height(4.dp))
+                            AsciiText(state.jsonStatusMessage, style = AsciiType.small, color = c.good)
+                        }
+                    }
+                }
+
+                // TAB 2: PERSISTENT STORAGE INDEX & PERMISSIONS
+                SettingsSection.INDEX -> {
+                    AsciiBox(title = "persistent local file & folder index") {
+                        val ageText = if (state.lastIndexedTimestampMs <= 0L) {
+                            "never indexed"
+                        } else {
+                            val mins = ((System.currentTimeMillis() - state.lastIndexedTimestampMs) / 60_000L).coerceAtLeast(0L)
+                            if (mins == 0L) "just now" else "${mins}m ago"
+                        }
+                        AsciiText(
+                            text = "folders indexed : ${state.indexedFolderCount}",
+                            style = AsciiType.body,
+                            color = c.warn,
+                        )
+                        AsciiText(
+                            text = "files indexed   : ${state.indexedFileCount}",
+                            style = AsciiType.body,
+                            color = c.accent3,
+                        )
+                        AsciiText(
+                            text = "contacts cached : ${state.contacts.size}",
+                            style = AsciiType.body,
+                            color = c.good,
+                        )
+                        AsciiText(
+                            text = "last sync       : ${if (state.isIndexingInProgress) "indexing now..." else ageText}",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        AsciiCheckbox(
+                            checked = state.hourlyAutoIndexEnabled,
+                            onChange = onHourlyAutoIndexChange,
+                            label = "auto-index storage every 1 hour in background",
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        AsciiButton(
+                            label = if (state.isIndexingInProgress) "indexing storage..." else "re-index storage & contacts now",
+                            onClick = onRebuildIndexNow,
+                            enabled = !state.isIndexingInProgress,
+                            primary = true,
+                        )
+                    }
+
+                    AsciiBox(title = "device permissions") {
+                        AsciiText(
+                            text = "grant All-Files Access (`MANAGE_EXTERNAL_STORAGE`) and Contacts (`READ_CONTACTS`) for instant search:",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            AsciiButton(
+                                label = if (state.hasFilesPermission) "all-files: granted [ok]" else "! grant all-files access",
+                                onClick = onRequestFilesPermission,
+                                primary = !state.hasFilesPermission,
+                            )
+                            AsciiButton(
+                                label = if (state.hasContactsPermission) "contacts: granted [ok]" else "! grant contacts access",
+                                onClick = onRequestContactsPermission,
+                                primary = !state.hasContactsPermission,
+                            )
+                        }
+                    }
+                }
+
+                // TAB 3: THEME & PALETTE
+                SettingsSection.THEME -> {
+                    AsciiBox(title = "theme mode") {
+                        AsciiText("mode (follows system by default):", style = AsciiType.small, color = c.dim)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            AsciiRadio(state.themeMode == ThemeMode.System, { onThemeModeChange(ThemeMode.System) }, "system")
+                            AsciiRadio(state.themeMode == ThemeMode.Light, { onThemeModeChange(ThemeMode.Light) }, "light")
+                            AsciiRadio(state.themeMode == ThemeMode.Dark, { onThemeModeChange(ThemeMode.Dark) }, "dark")
+                        }
+                    }
+
+                    AsciiBox(title = "terminal color palette") {
+                        AsciiText("select active dark/light color scheme:", style = AsciiType.small, color = c.dim)
+                        Column {
+                            PaletteChoice.entries.forEach { choice ->
+                                AsciiRadio(
+                                    selected = state.paletteChoice == choice,
+                                    onClick = { onPaletteChoiceChange(choice) },
+                                    label = choice.palette.name,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // TAB 4: DEFAULT BROWSER & ROUTING
+                SettingsSection.ROUTING -> {
+                    AsciiBox(title = "default browser & system search") {
+                        AsciiText(
+                            text = "pipe is registered as a Browser so Android lets you select it under Default Apps -> Browser app (and Default Assist app).",
+                            style = AsciiType.small,
+                            color = c.fg,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        AsciiButton("open default apps settings", onOpenDefaultAppsSettings, primary = true)
+                        Spacer(Modifier.height(6.dp))
+                        AsciiText("custom browser search urls:", style = AsciiType.small, color = c.dim)
+                        AsciiText("  pipe://search?q=%s", style = AsciiType.small, color = c.accent)
+                        AsciiText("  https://pipe.local/search?q=%s", style = AsciiType.small, color = c.accent2)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            AsciiButton("copy pipe://", {
+                                clipboard.setText(AnnotatedString("pipe://search?q=%s"))
+                                onSetJsonStatus("ok: copied pipe://search?q=%s")
+                            })
+                            AsciiButton("copy https://", {
+                                clipboard.setText(AnnotatedString("https://pipe.local/search?q=%s"))
+                                onSetJsonStatus("ok: copied https://pipe.local/search?q=%s")
+                            })
+                        }
+                    }
+
+                    AsciiBox(title = "share sheet & process text") {
+                        AsciiCheckbox(
+                            checked = state.historyEnabled,
+                            onChange = onHistoryEnabledChange,
+                            label = "record local command history",
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        AsciiText("when sharing or selecting text:", style = AsciiType.small, color = c.dim)
+                        AsciiRadio(
+                            selected = state.externalTextMode == ExternalTextMode.OPEN_OVERLAY,
+                            onClick = { onExternalTextModeChange(ExternalTextMode.OPEN_OVERLAY) },
+                            label = "open floating ~/pipe/overlay with text pre-filled",
+                        )
+                        AsciiRadio(
+                            selected = state.externalTextMode == ExternalTextMode.OPEN_PROMPT,
+                            onClick = { onExternalTextModeChange(ExternalTextMode.OPEN_PROMPT) },
+                            label = "open full ~/pipe prompt with text pre-filled",
+                        )
+                        AsciiRadio(
+                            selected = state.externalTextMode == ExternalTextMode.DIRECT_PIPE,
+                            onClick = { onExternalTextModeChange(ExternalTextMode.DIRECT_PIPE) },
+                            label = "pipe immediately to matched / default engine",
+                        )
+                    }
+                }
+
+                // TAB 5: BACKUP, RESET & ABOUT
+                SettingsSection.BACKUP -> {
+                    AsciiBox(title = "json import / export & reset") {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            AsciiButton("export json file", onExportJsonToFile)
+                            AsciiButton("import json file", onImportJsonFromFile)
+                            AsciiButton("copy json", onOpenJsonExportDialog)
+                            AsciiButton("paste json", onOpenJsonImportDialog)
+                            AsciiButton("reset default engines", onResetDefaults)
+                        }
+                        if (state.jsonStatusMessage != null) {
+                            Spacer(Modifier.height(4.dp))
+                            AsciiText(
+                                text = state.jsonStatusMessage,
+                                style = AsciiType.small,
+                                color = if (state.jsonStatusMessage.startsWith("!")) c.error else c.good,
+                            )
+                        }
+                    }
+
+                    AsciiBox(title = "about") {
+                        BoxWithConstraints(Modifier.fillMaxWidth()) {
+                            val cols = rememberCols(AsciiType.small)
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                if (cols >= 28) {
+                                    AsciiText(
+                                        text = frame(
+                                            title = "pipe v1.6 (release)",
+                                            lines = listOf(
+                                                "pipe queries, contacts, files & bookmarks.",
+                                                "index   : persistent cache + 1h auto-sync",
+                                                "overlay : raycast glass + soft corners",
+                                            ),
+                                            cols = cols,
+                                        ),
+                                        style = AsciiType.small,
+                                        color = c.accent,
+                                        softWrap = false,
+                                    )
+                                } else {
+                                    AsciiText("pipe v1.6 (release)", style = AsciiType.title, color = c.accent)
+                                }
+                                AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
+                            }
+                        }
                     }
                 }
             }
@@ -1385,3 +1526,4 @@ private fun PipeSettingsScreen(
         }
     }
 }
+

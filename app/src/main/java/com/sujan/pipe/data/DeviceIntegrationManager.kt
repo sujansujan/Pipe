@@ -35,6 +35,106 @@ import java.util.ArrayDeque
  */
 object DeviceIntegrationManager {
 
+    private const val FILE_INDEX_CACHE_NAME = "pipe_file_index_v1.tsv"
+    private const val WORK_HOURLY_INDEX_NAME = "pipe_hourly_file_index_work"
+    private const val ONE_HOUR_MS = 60 * 60 * 1000L
+
+    @Volatile
+    private var memoryFileIndex: List<LocalFileItem>? = null
+
+    @Volatile
+    private var memoryContactsIndex: List<ContactItem>? = null
+
+    /**
+     * Returns the in-memory or on-disk cached file/folder index immediately (<10ms)
+     * so `PipeOverlayActivity` and `MainActivity` have zero cold-start delay.
+     */
+    fun getCachedStorageFiles(context: Context): List<LocalFileItem> {
+        memoryFileIndex?.let { if (it.isNotEmpty()) return it }
+        val cacheFile = File(context.filesDir, FILE_INDEX_CACHE_NAME)
+        if (!cacheFile.exists()) return emptyList()
+        val loaded = runCatching {
+            cacheFile.useLines { lines ->
+                lines.mapNotNull { line ->
+                    val parts = line.split('\t')
+                    if (parts.size >= 5) {
+                        LocalFileItem(
+                            name = parts[0],
+                            absolutePath = parts[1],
+                            isDirectory = parts[2] == "1",
+                            parentName = parts[3],
+                            sizeBytes = parts[4].toLongOrNull() ?: 0L,
+                        )
+                    } else null
+                }.toList()
+            }
+        }.getOrDefault(emptyList())
+        if (loaded.isNotEmpty()) {
+            memoryFileIndex = loaded
+        }
+        return loaded
+    }
+
+    /**
+     * Performs a full storage scan and persists the result to both RAM (`memoryFileIndex`)
+     * and disk (`pipe_file_index_v1.tsv`), recording the index timestamp in `PipeRepository`.
+     */
+    fun rebuildAndSaveStorageIndex(
+        context: Context,
+        bookmarks: List<PipeBookmark>,
+    ): List<LocalFileItem> {
+        val fresh = scanStorageFiles(context, bookmarks, scopedFolderPath = null)
+        memoryFileIndex = fresh
+        runCatching {
+            val tmpFile = File(context.filesDir, "$FILE_INDEX_CACHE_NAME.tmp")
+            val finalFile = File(context.filesDir, FILE_INDEX_CACHE_NAME)
+            tmpFile.bufferedWriter(Charsets.UTF_8).use { writer ->
+                for (item in fresh) {
+                    val safeName = item.name.replace('\t', ' ').replace('\n', ' ')
+                    val safePath = item.absolutePath.replace('\t', ' ').replace('\n', ' ')
+                    val safeParent = item.parentName.replace('\t', ' ').replace('\n', ' ')
+                    val dirFlag = if (item.isDirectory) "1" else "0"
+                    writer.write("$safeName\t$safePath\t$dirFlag\t$safeParent\t${item.sizeBytes}\n")
+                }
+            }
+            tmpFile.renameTo(finalFile)
+            PipeRepository(context).saveLastIndexedMetadata(
+                timestampMs = System.currentTimeMillis(),
+                fileCount = fresh.count { !it.isDirectory },
+                folderCount = fresh.count { it.isDirectory },
+            )
+        }
+        return fresh
+    }
+
+    fun isIndexStale(context: Context): Boolean {
+        val repo = PipeRepository(context)
+        val lastMs = repo.loadLastIndexedTimestampMs()
+        if (lastMs <= 0L) return true
+        val cacheFile = File(context.filesDir, FILE_INDEX_CACHE_NAME)
+        if (!cacheFile.exists()) return true
+        return (System.currentTimeMillis() - lastMs) >= ONE_HOUR_MS
+    }
+
+    /**
+     * Schedules or cancels the automatic 1-hour periodic background storage indexer via WorkManager.
+     */
+    fun syncHourlyIndexSchedule(context: Context, enabled: Boolean) {
+        val wm = runCatching { androidx.work.WorkManager.getInstance(context.applicationContext) }.getOrNull() ?: return
+        if (enabled) {
+            val request = androidx.work.PeriodicWorkRequestBuilder<HourlyFileIndexWorker>(
+                1, java.util.concurrent.TimeUnit.HOURS,
+            ).build()
+            wm.enqueueUniquePeriodicWork(
+                WORK_HOURLY_INDEX_NAME,
+                androidx.work.ExistingPeriodicWorkPolicy.KEEP,
+                request,
+            )
+        } else {
+            wm.cancelUniqueWork(WORK_HOURLY_INDEX_NAME)
+        }
+    }
+
     private val DIRECT_FILE_URI_MANAGERS = listOf(
         "com.mixplorer.silver",
         "com.mixplorer",
@@ -96,7 +196,15 @@ object DeviceIntegrationManager {
                 }
             }
         }
+        if (list.isNotEmpty()) {
+            memoryContactsIndex = list
+        }
         return list
+    }
+
+    fun getCachedOrLoadContacts(context: Context): List<ContactItem> {
+        memoryContactsIndex?.let { if (it.isNotEmpty()) return it }
+        return loadDeviceContacts(context)
     }
 
     /**
@@ -464,5 +572,28 @@ object DeviceIntegrationManager {
             context.startActivity(intent)
             true
         }.getOrDefault(false)
+    }
+}
+
+/**
+ * Background `CoroutineWorker` invoked automatically every 1 hour by Android `WorkManager`
+ * to refresh the persistent local file & folder index (`pipe_file_index_v1.tsv`).
+ */
+class HourlyFileIndexWorker(
+    appContext: Context,
+    params: androidx.work.WorkerParameters,
+) : androidx.work.CoroutineWorker(appContext, params) {
+
+    override suspend fun doWork(): Result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        if (!DeviceIntegrationManager.hasAllFilesPermission(applicationContext)) {
+            return@withContext Result.success()
+        }
+        val repo = PipeRepository(applicationContext)
+        if (!repo.loadHourlyAutoIndexEnabled()) {
+            return@withContext Result.success()
+        }
+        val bookmarks = repo.loadBookmarks()
+        DeviceIntegrationManager.rebuildAndSaveStorageIndex(applicationContext, bookmarks)
+        Result.success()
     }
 }
