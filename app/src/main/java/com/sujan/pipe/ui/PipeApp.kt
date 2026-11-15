@@ -720,7 +720,7 @@ private fun AsciiRaycastRow(
 
         is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
             val eng = item.engine
-            val desc = if (item.isHome) "${eng.name} (open home)" else "${eng.name}: "${item.query}""
+            val desc = if (item.isHome) "${eng.name} (open home)" else "${eng.name}: \"${item.query}\""
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
