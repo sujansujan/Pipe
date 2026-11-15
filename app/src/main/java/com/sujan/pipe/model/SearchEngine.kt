@@ -93,7 +93,7 @@ data class ContactItem(
     val nameLower: String = displayName.trim().lowercase()
     val cleanPhone: String = phoneNumber.filter { it.isDigit() }
     val monogram: String = run {
-        val parts = displayName.trim().split(Regex("\s+")).filter { it.isNotEmpty() }
+        val parts = displayName.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
         when {
             parts.size >= 2 -> "${parts.first().first().uppercaseChar()}${parts.last().first().uppercaseChar()}"
             parts.size == 1 && parts[0].length >= 2 -> parts[0].take(2).uppercase()
