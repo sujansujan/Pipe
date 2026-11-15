@@ -8,7 +8,9 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.StrictMode
 import android.provider.ContactsContract
+import android.provider.DocumentsContract
 import android.webkit.MimeTypeMap
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -16,22 +18,34 @@ import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
 import java.io.File
+import java.util.ArrayDeque
 
 /**
  * Handles device-level integrations:
  * 1. Loop-safe Browser & Deep-Link dispatching when `pipe` is set as Android's Default Browser.
  * 2. Reading device Contacts (`READ_CONTACTS`) and launching Call, SMS, or WhatsApp (`wa.me`).
- * 3. Scanning device files/folders (`MANAGE_EXTERNAL_STORAGE`) and opening files or folders in
- *    installed file managers (e.g. MiXplorer, DocumentsUI) or media/document viewers.
+ * 3. Two-Phase Storage Indexer:
+ *    - Phase 1 indexes ALL directories across `/storage/emulated/0` (breadth-first up to depth 5)
+ *      so folders are never starved by large file counts (e.g. 2,300+ files in `Download`).
+ *    - Phase 2 indexes files with a balanced per-root quota.
+ * 4. Directory Opener:
+ *    - Never passes a `FileProvider` `content://` URI for directories (which causes `EISDIR` in MiXplorer).
+ *    - Uses `file://` (`Uri.fromFile`) with relaxed `StrictMode.VmPolicy` for MiXplorer / third-party
+ *      file managers, falling back to `DocumentsContract` (`com.android.externalstorage.documents`) for DocumentsUI.
  */
 object DeviceIntegrationManager {
 
-    private val KNOWN_FILE_MANAGER_PACKAGES = listOf(
+    private val DIRECT_FILE_URI_MANAGERS = listOf(
         "com.mixplorer.silver",
         "com.mixplorer",
-        "me.zhanghai.android.files",
+        "com.mixplorer.beta",
         "pl.solidexplorer2",
         "com.lonelycatgames.Xplore",
+        "me.zhanghai.android.files",
+        "bin.mt.plus",
+    )
+
+    private val DOCUMENTS_UI_PACKAGES = listOf(
         "com.google.android.documentsui",
         "com.android.documentsui",
     )
@@ -49,9 +63,6 @@ object DeviceIntegrationManager {
         }
     }
 
-    /**
-     * Queries device contacts (name + phone number), deduplicating identical name+number pairs.
-     */
     fun loadDeviceContacts(context: Context): List<ContactItem> {
         if (!hasContactsPermission(context)) return emptyList()
         val list = mutableListOf<ContactItem>()
@@ -89,8 +100,10 @@ object DeviceIntegrationManager {
     }
 
     /**
-     * Scans standard storage directories plus any bookmarked folders up to 2 levels deep
-     * so fuzzy file/folder search works instantaneously as the user types.
+     * Scans device storage using a Two-Phase Breadth-First strategy:
+     * - Phase 1 collects ALL folders up to depth 5 across internal storage first, guaranteeing
+     *   that every folder on the phone is searchable via `f <query>` even when `Download` has thousands of files.
+     * - Phase 2 collects files with a per-directory cap so no single folder monopolizes the index.
      */
     fun scanStorageFiles(
         context: Context,
@@ -102,67 +115,157 @@ object DeviceIntegrationManager {
         val seenPaths = HashSet<String>()
 
         if (scopedFolderPath != null) {
-            val dir = File(scopedFolderPath)
-            collectDirectoryEntries(dir, maxDepth = 2, currentDepth = 0, seenPaths = seenPaths, out = results, maxItems = 400)
+            val baseDir = File(scopedFolderPath)
+            if (baseDir.exists() && baseDir.isDirectory) {
+                indexDirectoriesBreadthFirst(listOf(baseDir), maxDepth = 3, maxDirs = 500, seenPaths = seenPaths, out = results)
+                indexFilesBalanced(listOf(baseDir), maxDepth = 2, maxFilesPerRoot = 600, maxTotalItems = 1200, seenPaths = seenPaths, out = results)
+            }
             return results
         }
 
         val root = Environment.getExternalStorageDirectory()
-        val rootsToScan = linkedSetOf<File>()
+        val priorityRoots = linkedSetOf<File>()
+        if (root.exists() && root.isDirectory) priorityRoots.add(root)
         bookmarks.forEach { bm ->
             val f = File(bm.target)
-            if (f.exists() && f.isDirectory) rootsToScan.add(f)
+            if (f.exists() && f.isDirectory) priorityRoots.add(f)
         }
         listOf("Download", "Documents", "Pictures", "DCIM", "Music", "Movies").forEach { sub ->
             val f = File(root, sub)
-            if (f.exists() && f.isDirectory) rootsToScan.add(f)
+            if (f.exists() && f.isDirectory) priorityRoots.add(f)
         }
-        if (root.exists()) rootsToScan.add(root)
 
-        for (dir in rootsToScan) {
-            val depth = if (dir == root) 1 else 2
-            collectDirectoryEntries(dir, maxDepth = depth, currentDepth = 0, seenPaths = seenPaths, out = results, maxItems = 800)
-        }
+        // Phase 1: Index ALL folders across storage (breadth-first up to depth 5)
+        indexDirectoriesBreadthFirst(
+            roots = priorityRoots.toList(),
+            maxDepth = 5,
+            maxDirs = 1500,
+            seenPaths = seenPaths,
+            out = results,
+        )
+
+        // Phase 2: Index files evenly across top-level folders
+        val fileRoots = priorityRoots.filter { it != root } + listOfNotNull(root.takeIf { it.exists() })
+        indexFilesBalanced(
+            roots = fileRoots,
+            maxDepth = 2,
+            maxFilesPerRoot = 350,
+            maxTotalItems = 3500,
+            seenPaths = seenPaths,
+            out = results,
+        )
+
         return results
     }
 
-    private fun collectDirectoryEntries(
-        dir: File,
+    private fun indexDirectoriesBreadthFirst(
+        roots: List<File>,
         maxDepth: Int,
-        currentDepth: Int,
+        maxDirs: Int,
         seenPaths: HashSet<String>,
         out: MutableList<LocalFileItem>,
-        maxItems: Int,
     ) {
-        if (out.size >= maxItems || currentDepth > maxDepth || !dir.exists() || !dir.canRead()) return
-        val children = dir.listFiles() ?: return
-        for (child in children) {
-            if (out.size >= maxItems) break
-            val name = child.name
-            if (name.startsWith(".")) continue
-            if (currentDepth == 0 && name.equals("Android", ignoreCase = true)) continue
-            val abs = child.absolutePath
-            if (seenPaths.add(abs)) {
-                out.add(
-                    LocalFileItem(
-                        name = name,
-                        absolutePath = abs,
-                        isDirectory = child.isDirectory,
-                        parentName = dir.name.ifEmpty { "storage" },
+        val queue = ArrayDeque<Pair<File, Int>>()
+        for (r in roots) {
+            if (r.exists() && r.isDirectory) {
+                // Also add the root folder itself (e.g. Download, Documents, DCIM) if it has a parent
+                val abs = r.absolutePath
+                if (r.parentFile != null && r.name.isNotEmpty() && r.name != "0" && seenPaths.add(abs)) {
+                    out.add(
+                        LocalFileItem(
+                            name = r.name,
+                            absolutePath = abs,
+                            isDirectory = true,
+                            parentName = r.parentFile?.name?.takeIf { it != "0" } ?: "storage",
+                        )
                     )
-                )
+                }
+                queue.add(r to 0)
             }
-            if (child.isDirectory && currentDepth + 1 <= maxDepth) {
-                collectDirectoryEntries(child, maxDepth, currentDepth + 1, seenPaths, out, maxItems)
+        }
+
+        var dirCount = 0
+        while (queue.isNotEmpty() && dirCount < maxDirs) {
+            val (dir, depth) = queue.removeFirst()
+            if (depth >= maxDepth || !dir.canRead()) continue
+            val children = dir.listFiles() ?: continue
+            for (child in children) {
+                if (!child.isDirectory) continue
+                val name = child.name
+                if (name.startsWith(".")) continue
+                // Skip noisy app-private cache trees under /storage/emulated/0/Android/data & obb
+                if (depth <= 1 && (name.equals("data", ignoreCase = true) || name.equals("obb", ignoreCase = true)) &&
+                    dir.name.equals("Android", ignoreCase = true)
+                ) {
+                    continue
+                }
+                val abs = child.absolutePath
+                if (seenPaths.add(abs)) {
+                    out.add(
+                        LocalFileItem(
+                            name = name,
+                            absolutePath = abs,
+                            isDirectory = true,
+                            parentName = dir.name.takeIf { it.isNotEmpty() && it != "0" } ?: "storage",
+                        )
+                    )
+                    dirCount++
+                    if (dirCount >= maxDirs) break
+                }
+                queue.add(child to (depth + 1))
             }
         }
     }
 
-    /**
-     * Opens [url] while avoiding self-looping when `com.sujan.pipe` is set as Default Browser:
-     * 1. First checks if a native domain app (e.g. YouTube, GitHub, Reddit, Maps) handles [url].
-     * 2. Otherwise routes to an installed browser package that is NOT `context.packageName`.
-     */
+    private fun indexFilesBalanced(
+        roots: List<File>,
+        maxDepth: Int,
+        maxFilesPerRoot: Int,
+        maxTotalItems: Int,
+        seenPaths: HashSet<String>,
+        out: MutableList<LocalFileItem>,
+    ) {
+        for (root in roots) {
+            if (out.size >= maxTotalItems) break
+            var countForThisRoot = 0
+            val queue = ArrayDeque<Pair<File, Int>>()
+            queue.add(root to 0)
+
+            while (queue.isNotEmpty() && countForThisRoot < maxFilesPerRoot && out.size < maxTotalItems) {
+                val (dir, depth) = queue.removeFirst()
+                if (!dir.canRead()) continue
+                val children = dir.listFiles() ?: continue
+                for (child in children) {
+                    val name = child.name
+                    if (name.startsWith(".")) continue
+                    if (child.isDirectory) {
+                        if (depth == 0 && root.name == "0" && name in setOf("Download", "Documents", "Pictures", "DCIM", "Music", "Movies", "Android")) {
+                            // Handled by dedicated roots
+                            continue
+                        }
+                        if (depth + 1 <= maxDepth) {
+                            queue.add(child to (depth + 1))
+                        }
+                    } else {
+                        val abs = child.absolutePath
+                        if (seenPaths.add(abs)) {
+                            out.add(
+                                LocalFileItem(
+                                    name = name,
+                                    absolutePath = abs,
+                                    isDirectory = false,
+                                    parentName = dir.name.takeIf { it.isNotEmpty() && it != "0" } ?: "storage",
+                                )
+                            )
+                            countForThisRoot++
+                            if (countForThisRoot >= maxFilesPerRoot || out.size >= maxTotalItems) break
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fun openUrlExcludingSelf(context: Context, url: String): Boolean {
         val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return false
         val baseIntent = Intent(Intent.ACTION_VIEW, uri).apply {
@@ -173,7 +276,6 @@ object DeviceIntegrationManager {
         val pm = context.packageManager
         val selfPkg = context.packageName
 
-        // Query all activities capable of handling this URL
         val handlers = runCatching {
             pm.queryIntentActivities(baseIntent, PackageManager.MATCH_ALL)
                 .map { it.activityInfo.packageName }
@@ -182,7 +284,6 @@ object DeviceIntegrationManager {
         }.getOrDefault(emptyList())
 
         if (handlers.isNotEmpty()) {
-            // Query generic http://example.com browsers so we can distinguish domain-specific native apps
             val probeIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")).apply {
                 addCategory(Intent.CATEGORY_BROWSABLE)
             }
@@ -192,7 +293,6 @@ object DeviceIntegrationManager {
                     .toSet()
             }.getOrDefault(emptySet())
 
-            // Prefer a dedicated native app (e.g. YouTube, GitHub, Maps) if one matches the URL!
             val nativeAppPkg = handlers.firstOrNull { it !in browserPkgs }
             val targetPkg = nativeAppPkg ?: handlers.first()
 
@@ -252,69 +352,111 @@ object DeviceIntegrationManager {
     }
 
     /**
-     * Opens a local file or folder on the device using `FileProvider` and installed file managers
-     * (prioritizing MiXplorer Silver / Material Files / Solid Explorer / DocumentsUI for directories).
+     * Opens a local file or directory on the device:
+     * - For DIRECTORIES: NEVER uses `FileProvider` (which causes `read failed: EISDIR` in MiXplorer).
+     *   Instead, relaxes `StrictMode.VmPolicy` and passes a real `file://` URI (`Uri.fromFile(file)`)
+     *   with `"resource/folder"` to MiXplorer / third-party file managers, or a `DocumentsContract`
+     *   `com.android.externalstorage.documents` directory URI to Android's DocumentsUI.
+     * - For FILES: Uses `FileProvider` `content://` URI with the file's MIME type.
      */
     fun openLocalFileOrFolder(context: Context, path: String): Boolean {
         val file = File(path)
         if (!file.exists()) return false
+
+        if (file.isDirectory) {
+            return openDirectory(context, file)
+        }
+
         val authority = "${context.packageName}.fileprovider"
         val contentUri = runCatching {
             FileProvider.getUriForFile(context, authority, file)
         }.getOrElse { Uri.fromFile(file) }
 
-        if (file.isDirectory) {
-            val pm = context.packageManager
-            val mimeCandidates = listOf(
-                "resource/folder",
-                "vnd.android.document/directory",
-                "*/*",
-            )
-            // 1. Try known file managers (MiXplorer, Material Files, Solid Explorer, DocumentsUI)
-            for (pkg in KNOWN_FILE_MANAGER_PACKAGES) {
-                for (mime in mimeCandidates) {
-                    val ok = runCatching {
-                        val intent = Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(contentUri, mime)
-                            setPackage(pkg)
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        if (intent.resolveActivity(pm) != null) {
-                            context.startActivity(intent)
-                            true
-                        } else {
-                            false
-                        }
-                    }.getOrDefault(false)
-                    if (ok) return true
+        val ext = file.extension.lowercase()
+        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
+        return runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(contentUri, mime)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
-            }
-            // 2. Generic folder intent fallback
-            for (mime in listOf("resource/folder", "vnd.android.document/directory")) {
-                val ok = runCatching {
-                    context.startActivity(
-                        Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(contentUri, mime)
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                    )
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun openDirectory(context: Context, dir: File): Boolean {
+        // Relax StrictMode VmPolicy so passing `file:///storage/emulated/0/...` to MiXplorer works directly
+        runCatching {
+            StrictMode.setVmPolicy(StrictMode.VmPolicy.Builder().build())
+        }
+
+        val directFileUri = Uri.fromFile(dir)
+        val folderMimes = listOf(
+            "resource/folder",
+            "vnd.android.cursor.dir/file",
+            "vnd.android.document/directory",
+        )
+
+        // 1. Try known file managers (MiXplorer Silver, MiXplorer, Solid Explorer, X-plore, Material Files) with real `file://` URI
+        for (pkg in DIRECT_FILE_URI_MANAGERS) {
+            for (mime in folderMimes) {
+                val launched = runCatching {
+                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(directFileUri, mime)
+                        setPackage(pkg)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
                     true
                 }.getOrDefault(false)
-                if (ok) return true
+                if (launched) return true
             }
-            return false
-        } else {
-            val ext = file.extension.lowercase()
-            val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
-            return runCatching {
-                context.startActivity(
-                    Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(contentUri, mime)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                )
+        }
+
+        // 2. Try any installed app that resolves `file://` + `"resource/folder"`
+        for (mime in folderMimes) {
+            val launched = runCatching {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(directFileUri, mime)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
                 true
             }.getOrDefault(false)
+            if (launched) return true
         }
+
+        // 3. Build official Android ExternalStorageProvider DocumentsContract URI (`primary:Download`, etc.)
+        val externalRoot = Environment.getExternalStorageDirectory().absolutePath
+        val relPath = if (dir.absolutePath.startsWith(externalRoot)) {
+            dir.absolutePath.removePrefix(externalRoot).trimStart('/')
+        } else {
+            ""
+        }
+        val docId = if (relPath.isEmpty()) "primary:" else "primary:$relPath"
+        val docUri = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", docId)
+
+        for (pkg in DOCUMENTS_UI_PACKAGES) {
+            val launched = runCatching {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                    setPackage(pkg)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(intent)
+                true
+            }.getOrDefault(false)
+            if (launched) return true
+        }
+
+        return runCatching {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
     }
 }

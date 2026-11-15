@@ -147,5 +147,16 @@ class QueryRouterTest {
         assertEquals(PromptIntentMode.SCOPED_FOLDER, cmdDl.mode)
         assertEquals("invoice", cmdDl.filterQuery)
         assertEquals("/storage/emulated/0/Download", cmdDl.scopedFolderBookmark?.target)
+
+        val cmdFiles = QueryRouter.parsePromptCommand("f doc", bookmarks)
+        assertEquals(PromptIntentMode.FILES_ONLY, cmdFiles.mode)
+        val sampleItems = listOf(
+            com.sujan.pipe.model.LocalFileItem("doc_notes.txt", "/storage/emulated/0/Download/doc_notes.txt", isDirectory = false, parentName = "Download"),
+            com.sujan.pipe.model.LocalFileItem("Documents", "/storage/emulated/0/Documents", isDirectory = true, parentName = "storage"),
+        )
+        val fileMatches = FuzzyMatcher.filterFiles("doc", sampleItems)
+        assertEquals(2, fileMatches.size)
+        assertTrue(fileMatches.first().isDirectory)
+        assertEquals("Documents", fileMatches.first().name)
     }
 }

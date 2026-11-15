@@ -112,11 +112,20 @@ object FuzzyMatcher {
 
     fun filterFiles(query: String, files: List<LocalFileItem>, limit: Int = 12): List<LocalFileItem> {
         val clean = query.trim()
-        if (clean.isEmpty()) return files.take(limit)
+        if (clean.isEmpty()) {
+            // When query is empty (e.g. just `f `), show directories first
+            return files.sortedByDescending { it.isDirectory }.take(limit)
+        }
         return files
             .mapNotNull { f ->
-                val s = score(clean, f.name)
-                if (s > 0) f to (s + if (f.isDirectory) 20 else 0) else null
+                val nameScore = score(clean, f.name)
+                val pathScore = if (clean.contains('/')) score(clean, f.absolutePath) else 0
+                val baseScore = maxOf(nameScore, pathScore)
+                if (baseScore > 0) {
+                    // Boost directories (+120) so folders rank prominently when searching with `f <query>`
+                    val dirBonus = if (f.isDirectory) 120 else 0
+                    f to (baseScore + dirBonus)
+                } else null
             }
             .sortedByDescending { it.second }
             .take(limit)
@@ -198,7 +207,7 @@ object QueryRouter {
         }
 
         // 2. File search alias: `f` or `file`
-        if (first == "f" || first == "file" || first == "files") {
+        if (first == "f" || first == "d" || first == "dir" || first == "folder" || first == "file" || first == "files") {
             return ParsedPromptCommand(PromptIntentMode.FILES_ONLY, remainder)
         }
 
