@@ -1,4 +1,3 @@
-\
 package com.sujan.pipe.domain
 
 import com.sujan.pipe.model.BookmarkKind

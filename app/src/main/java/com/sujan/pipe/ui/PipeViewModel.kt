@@ -115,13 +115,13 @@ data class PipeUiState(
         get() {
             val cmd = parsedCommand
             return when (cmd.mode) {
-                PromptIntentMode.CONTACTS_ONLY, PromptIntentMode.FILES_ONLY -> emptyList()
-                PromptIntentMode.BOOKMARKS_ONLY -> FuzzyMatcher.filterBookmarks(cmd.filterQuery, bookmarks, limit = 12)
+                PromptIntentMode.BOOKMARKS_ONLY -> FuzzyMatcher.filterBookmarks(cmd.filterQuery, bookmarks, limit = 10)
                 PromptIntentMode.SCOPED_FOLDER -> listOfNotNull(cmd.scopedFolderBookmark)
-                PromptIntentMode.GENERAL -> {
+                PromptIntentMode.ALL -> {
                     if (searchInput.text.isBlank()) bookmarks.take(6)
                     else FuzzyMatcher.filterBookmarks(searchInput.text.trim(), bookmarks, limit = 5)
                 }
+                else -> emptyList()
             }
         }
 
@@ -130,7 +130,7 @@ data class PipeUiState(
             val cmd = parsedCommand
             return when (cmd.mode) {
                 PromptIntentMode.CONTACTS_ONLY -> FuzzyMatcher.filterContacts(cmd.filterQuery, contacts, limit = 10)
-                PromptIntentMode.GENERAL -> {
+                PromptIntentMode.ALL -> {
                     val q = searchInput.text.trim()
                     if (q.length < 2) emptyList() else FuzzyMatcher.filterContacts(q, contacts, limit = 4)
                 }
@@ -148,7 +148,7 @@ data class PipeUiState(
                 PromptIntentMode.FILES_ONLY -> {
                     FuzzyMatcher.filterFiles(cmd.filterQuery, storageFiles, limit = 12)
                 }
-                PromptIntentMode.GENERAL -> {
+                PromptIntentMode.ALL -> {
                     val q = searchInput.text.trim()
                     if (q.length < 2) emptyList() else FuzzyMatcher.filterFiles(q, storageFiles, limit = 6)
                 }
