@@ -71,10 +71,14 @@ data class ContactItem(
     val id: String,
     val displayName: String,
     val phoneNumber: String,
-)
+) {
+    val nameLower: String = displayName.trim().lowercase()
+    val cleanPhone: String = phoneNumber.filter { it.isDigit() }
+}
 
 /**
  * Local file or directory discovered on device storage.
+ * Pre-computes lowercase strings once at index load time so keystroke search allocates zero strings.
  */
 data class LocalFileItem(
     val name: String,
@@ -83,6 +87,10 @@ data class LocalFileItem(
     val parentName: String,
     val sizeBytes: Long = 0L,
 ) {
+    val nameLower: String = name.trim().lowercase()
+    val parentLower: String = parentName.trim().lowercase()
+    val pathLower: String = absolutePath.trim().lowercase()
+
     val formattedSize: String
         get() {
             if (isDirectory) return "dir"

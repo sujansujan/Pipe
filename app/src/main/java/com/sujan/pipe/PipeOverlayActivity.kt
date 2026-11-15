@@ -121,7 +121,7 @@ class PipeOverlayActivity : ComponentActivity() {
                     cornerRadiusDp = cornerRadiusDp,
                     bottomAnchored = bottomAnchored,
                     showIdleSuggestions = showIdleSuggestions,
-                    initialCachedFiles = DeviceIntegrationManager.getCachedStorageFiles(applicationContext),
+                    initialCachedFiles = DeviceIntegrationManager.peekMemoryStorageFiles(),
                     loadContacts = {
                         withContext(Dispatchers.IO) {
                             DeviceIntegrationManager.getCachedOrLoadContacts(applicationContext)
@@ -234,17 +234,35 @@ private fun SleekRaycastOverlay(
         QueryRouter.parsePromptCommand(input.text, bookmarks, engines)
     }
 
-    val results = remember(input.text, engines, bookmarks, contacts, storageFiles, scopedFiles, history, usageMap) {
-        QueryRouter.buildPaletteResults(
-            rawInput = input.text,
-            engines = engines,
-            bookmarks = bookmarks,
-            contacts = contacts,
-            storageFiles = storageFiles,
-            scopedFolderFiles = scopedFiles,
-            history = history,
-            usageMap = usageMap,
+    var results by remember {
+        mutableStateOf(
+            QueryRouter.buildPaletteResults(
+                rawInput = initialQuery,
+                engines = engines,
+                bookmarks = bookmarks,
+                contacts = emptyList(),
+                storageFiles = initialCachedFiles,
+                scopedFolderFiles = emptyList(),
+                history = history,
+                usageMap = initialUsage,
+            )
         )
+    }
+
+    LaunchedEffect(input.text, engines, bookmarks, contacts, storageFiles, scopedFiles, history, usageMap) {
+        val computed = withContext(Dispatchers.Default) {
+            QueryRouter.buildPaletteResults(
+                rawInput = input.text,
+                engines = engines,
+                bookmarks = bookmarks,
+                contacts = contacts,
+                storageFiles = storageFiles,
+                scopedFolderFiles = scopedFiles,
+                history = history,
+                usageMap = usageMap,
+            )
+        }
+        results = computed
     }
 
     LaunchedEffect(Unit) {

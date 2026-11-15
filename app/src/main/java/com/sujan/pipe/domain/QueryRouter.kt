@@ -18,63 +18,121 @@ import java.nio.charset.StandardCharsets
  */
 object FuzzyMatcher {
 
-    fun score(query: String, candidate: String): Int {
-        val q = query.trim().lowercase()
-        val c = candidate.trim().lowercase()
+    /**
+     * Zero-allocation fuzzy scorer operating on pre-lowercased [q] and [c].
+     * Uses fast character-Boundary checks instead of `Regex.split` or `String.lowercase`.
+     */
+    fun scorePreLowered(q: String, c: String): Int {
         if (q.isEmpty()) return 1
         if (c.isEmpty()) return 0
 
         if (c == q) return 1000
         if (c.startsWith(q)) return 850 - (c.length - q.length).coerceAtMost(100)
 
-        val words = c.split(Regex("[\\s_\\-./]+"))
-        if (words.any { it == q }) return 780
-        if (words.any { it.startsWith(q) }) return 700
+        // Fast early exit if single-token query's first character isn't even present in candidate
+        val hasSpace = q.indexOf(' ') >= 0
+        if (!hasSpace && c.indexOf(q[0]) < 0) return 0
 
+        // Word-boundary prefix check without allocating Regex or List<String>
+        val wordMatch = checkWordBoundaryMatch(q, c)
+        if (wordMatch > 0) return wordMatch
+
+        // Contiguous substring match
         val subIdx = c.indexOf(q)
         if (subIdx >= 0) return 600 - subIdx.coerceAtMost(80)
 
-        if (q.contains(' ')) {
-            val tokens = q.split(Regex("\\s+")).filter { it.isNotEmpty() }
-            val tokenScores = tokens.map { scoreSingleTokenSubsequence(it, c) }
-            return if (tokenScores.all { it > 0 }) tokenScores.sum() / tokens.size else 0
+        // Multi-word token check without Regex allocation
+        if (hasSpace) {
+            return scoreMultiWordTokens(q, c)
         }
 
         return scoreSingleTokenSubsequence(q, c)
     }
 
+    fun score(query: String, candidate: String): Int {
+        val q = query.trim().lowercase()
+        val c = candidate.trim().lowercase()
+        return scorePreLowered(q, c)
+    }
+
+    private fun isWordSep(ch: Char): Boolean =
+        ch == ' ' || ch == '_' || ch == '-' || ch == '.' || ch == '/'
+
+    private fun checkWordBoundaryMatch(q: String, c: String): Int {
+        val qLen = q.length
+        val cLen = c.length
+        if (qLen > cLen) return 0
+        var i = 0
+        while (i <= cLen - qLen) {
+            if (i == 0 || isWordSep(c[i - 1])) {
+                if (c.regionMatches(i, q, 0, qLen, ignoreCase = false)) {
+                    val endIdx = i + qLen
+                    return if (endIdx == cLen || isWordSep(c[endIdx])) 780 else 700
+                }
+            }
+            i++
+        }
+        return 0
+    }
+
+    private fun scoreMultiWordTokens(q: String, c: String): Int {
+        var total = 0
+        var count = 0
+        var start = 0
+        val len = q.length
+        while (start < len) {
+            while (start < len && q[start] == ' ') start++
+            if (start >= len) break
+            var end = start
+            while (end < len && q[end] != ' ') end++
+            val token = q.substring(start, end)
+            val s = scoreSingleTokenSubsequence(token, c)
+            if (s <= 0) return 0
+            total += s
+            count++
+            start = end
+        }
+        return if (count > 0) total / count else 0
+    }
+
     private fun scoreSingleTokenSubsequence(q: String, c: String): Int {
+        val qLen = q.length
+        val cLen = c.length
+        if (qLen > cLen) return 0
+        val firstPos = c.indexOf(q[0])
+        if (firstPos < 0) return 0
+        if (cLen - firstPos < qLen) return 0
+
         var qIdx = 0
         var consecutive = 0
         var bonus = 0
-        var firstMatchIdx = -1
 
-        for (cIdx in c.indices) {
-            if (qIdx < q.length && c[cIdx] == q[qIdx]) {
-                if (firstMatchIdx < 0) firstMatchIdx = cIdx
+        for (cIdx in firstPos until cLen) {
+            if (qIdx < qLen && c[cIdx] == q[qIdx]) {
                 consecutive++
                 bonus += consecutive * 15
-                if (cIdx == 0 || !c[cIdx - 1].isLetterOrDigit()) {
+                if (cIdx == 0 || isWordSep(c[cIdx - 1])) {
                     bonus += 25
                 }
                 qIdx++
+                if (qIdx == qLen) break
             } else {
                 consecutive = 0
             }
         }
-        if (qIdx < q.length) return 0
-        val compactness = (200 - (c.length - q.length).coerceAtMost(150)).coerceAtLeast(10)
-        val startPenalty = firstMatchIdx.coerceAtMost(50)
+        if (qIdx < qLen) return 0
+        val compactness = (200 - (cLen - qLen).coerceAtMost(150)).coerceAtLeast(10)
+        val startPenalty = firstPos.coerceAtMost(50)
         return (150 + bonus + compactness - startPenalty).coerceAtLeast(1)
     }
 
     fun filterContacts(query: String, contacts: List<ContactItem>, limit: Int = 10): List<ContactItem> {
-        val clean = query.trim()
+        val clean = query.trim().lowercase()
         if (clean.isEmpty()) return contacts.take(limit)
         return contacts
             .mapNotNull { item ->
-                val nameScore = score(clean, item.displayName)
-                val phoneScore = score(clean, item.phoneNumber.replace(" ", "").replace("-", ""))
+                val nameScore = scorePreLowered(clean, item.nameLower)
+                val phoneScore = if (clean[0].isDigit()) scorePreLowered(clean, item.cleanPhone) else 0
                 val best = maxOf(nameScore, phoneScore)
                 if (best > 0) item to best else null
             }
@@ -84,17 +142,17 @@ object FuzzyMatcher {
     }
 
     fun filterBookmarks(query: String, bookmarks: List<PipeBookmark>, limit: Int = 10): List<PipeBookmark> {
-        val clean = query.trim()
+        val clean = query.trim().lowercase()
         if (clean.isEmpty()) return bookmarks.take(limit)
         return bookmarks
             .mapNotNull { bm ->
                 val aliasScore = if (bm.alias.equals(clean, ignoreCase = true)) {
                     2000
                 } else {
-                    score(clean, bm.alias) + 120
+                    scorePreLowered(clean, bm.alias.lowercase()) + 120
                 }
-                val titleScore = score(clean, bm.title)
-                val pathScore = score(clean, bm.target.substringAfterLast('/'))
+                val titleScore = scorePreLowered(clean, bm.title.lowercase())
+                val pathScore = scorePreLowered(clean, bm.target.substringAfterLast('/').lowercase())
                 val best = maxOf(aliasScore, titleScore, pathScore)
                 if (best > 0) bm to best else null
             }
@@ -104,32 +162,31 @@ object FuzzyMatcher {
     }
 
     /**
-     * Scores a file or folder against [query] by checking:
-     * 1. Exact/prefix/subsequence match against [LocalFileItem.name] (e.g. `sasu ama.jpg`).
-     * 2. Match against [LocalFileItem.parentName] (so searching `nagarikata` matches both
-     *    the `Nagarikata` folder AND every file inside `.../Nagarikata/`!).
+     * Zero-allocation file/folder scorer using pre-lowercased fields (`nameLower`, `parentLower`, `pathLower`).
      */
-    fun scoreFileItem(query: String, item: LocalFileItem): Int {
-        val clean = query.trim()
-        if (clean.isEmpty()) return if (item.isDirectory) 220 else 100
-        val nameScore = score(clean, item.name)
-        val parentScore = score(clean, item.parentName)
+    fun scoreFileItemPreLowered(cleanLowerQuery: String, item: LocalFileItem): Int {
+        if (cleanLowerQuery.isEmpty()) return if (item.isDirectory) 220 else 100
+        val nameScore = scorePreLowered(cleanLowerQuery, item.nameLower)
+        val parentScore = scorePreLowered(cleanLowerQuery, item.parentLower)
         val effectiveParentScore = if (parentScore >= 550) (parentScore - 80).coerceAtLeast(150) else 0
-        val pathScore = if (clean.contains('/')) score(clean, item.absolutePath) else 0
+        val pathScore = if (cleanLowerQuery.indexOf('/') >= 0) scorePreLowered(cleanLowerQuery, item.pathLower) else 0
         val best = maxOf(nameScore, effectiveParentScore, pathScore)
         if (best <= 0) return 0
         val dirBonus = if (item.isDirectory && nameScore > 0) 110 else 0
         return best + dirBonus
     }
 
+    fun scoreFileItem(query: String, item: LocalFileItem): Int =
+        scoreFileItemPreLowered(query.trim().lowercase(), item)
+
     fun filterFiles(query: String, files: List<LocalFileItem>, limit: Int = 10): List<LocalFileItem> {
-        val clean = query.trim()
+        val clean = query.trim().lowercase()
         if (clean.isEmpty()) {
             return files.sortedByDescending { it.isDirectory }.take(limit)
         }
         return files
             .mapNotNull { f ->
-                val s = scoreFileItem(clean, f)
+                val s = scoreFileItemPreLowered(clean, f)
                 if (s > 0) f to s else null
             }
             .sortedByDescending { it.second }
@@ -357,7 +414,7 @@ object QueryRouter {
                 storageFiles.mapNotNull { f ->
                     val uKey = "file:${f.absolutePath}"
                     val uCount = usageOf(uKey)
-                    val fScore = FuzzyMatcher.scoreFileItem(q, f)
+                    val fScore = FuzzyMatcher.scoreFileItemPreLowered(q.lowercase(), f)
                     if (fScore > 0) {
                         PaletteItem.FileAction(f, uKey, fScore + usageBonus(uKey), uCount)
                     } else null
@@ -370,7 +427,7 @@ object QueryRouter {
                 storageFiles.asSequence().filter { it.isDirectory }.mapNotNull { f ->
                     val uKey = "file:${f.absolutePath}"
                     val uCount = usageOf(uKey)
-                    val fScore = if (q.isEmpty()) 200 else FuzzyMatcher.score(q, f.name)
+                    val fScore = if (q.isEmpty()) 200 else FuzzyMatcher.scorePreLowered(q.lowercase(), f.nameLower)
                     if (fScore > 0) {
                         PaletteItem.FileAction(f, uKey, fScore + usageBonus(uKey), uCount)
                     } else null
@@ -409,7 +466,7 @@ object QueryRouter {
                     val uCount = usageOf(uKey)
                     val dirBoost = if (f.isDirectory) 120 else 0
                     val fScore = if (q.isEmpty()) (100 + dirBoost) else {
-                        val s = FuzzyMatcher.score(q, f.name)
+                        val s = FuzzyMatcher.scorePreLowered(q.lowercase(), f.nameLower)
                         if (s > 0) s + dirBoost else 0
                     }
                     if (fScore > 0) {
@@ -515,7 +572,7 @@ object QueryRouter {
                         }
                     }
                     storageFiles.forEach { f ->
-                        val s = FuzzyMatcher.scoreFileItem(q, f)
+                        val s = FuzzyMatcher.scoreFileItemPreLowered(q.lowercase(), f)
                         if (s > 0) {
                             val uKey = "file:${f.absolutePath}"
                             pool.add(PaletteItem.FileAction(f, uKey, s + usageBonus(uKey), usageOf(uKey)))

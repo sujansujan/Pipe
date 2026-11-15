@@ -49,6 +49,11 @@ object DeviceIntegrationManager {
      * Returns the in-memory or on-disk cached file/folder index immediately (<10ms)
      * so `PipeOverlayActivity` and `MainActivity` have zero cold-start delay.
      */
+    /**
+     * Returns the in-memory file index in 0ms without touching disk (safe for synchronous UI init).
+     */
+    fun peekMemoryStorageFiles(): List<LocalFileItem> = memoryFileIndex ?: emptyList()
+
     fun getCachedStorageFiles(context: Context): List<LocalFileItem> {
         memoryFileIndex?.let { if (it.isNotEmpty()) return it }
         val cacheFile = File(context.filesDir, FILE_INDEX_CACHE_NAME)

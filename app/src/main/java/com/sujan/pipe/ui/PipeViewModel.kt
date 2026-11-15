@@ -111,17 +111,7 @@ data class PipeUiState(
     val jsonDialogMode: JsonDialogMode? = null,
     val jsonStatusMessage: String? = null,
 ) {
-    val paletteResults: List< com.sujan.pipe.domain.PaletteItem >
-        get() = QueryRouter.buildPaletteResults(
-            rawInput = searchInput.text,
-            engines = engines,
-            bookmarks = bookmarks,
-            contacts = contacts,
-            storageFiles = storageFiles,
-            scopedFolderFiles = scopedFolderFiles,
-            history = history,
-            usageMap = usageCounts,
-        )
+    val paletteResults: List<com.sujan.pipe.domain.PaletteItem> = emptyList(),
     val parsedCommand: ParsedPromptCommand
         get() = QueryRouter.parsePromptCommand(searchInput.text, bookmarks)
 
@@ -203,6 +193,29 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     )
     val uiState: StateFlow<PipeUiState> = _uiState.asStateFlow()
     private var undoJob: Job? = null
+    private var searchJob: Job? = null
+
+    init {
+        recomputePaletteAsync()
+    }
+
+    private fun recomputePaletteAsync() {
+        searchJob?.cancel()
+        val snap = _uiState.value
+        searchJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            val computed = QueryRouter.buildPaletteResults(
+                rawInput = snap.searchInput.text,
+                engines = snap.engines,
+                bookmarks = snap.bookmarks,
+                contacts = snap.contacts,
+                storageFiles = snap.storageFiles,
+                scopedFolderFiles = snap.scopedFolderFiles,
+                history = snap.history,
+                usageMap = snap.usageCounts,
+            )
+            _uiState.update { it.copy(paletteResults = computed) }
+        }
+    }
 
     fun syncDeviceState(
         hasContactsPerm: Boolean,
@@ -223,6 +236,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 indexedFolderCount = repository.loadIndexedFolderCount().takeIf { c -> c > 0 } ?: files.count { f -> f.isDirectory },
             )
         }
+        recomputePaletteAsync()
     }
 
     fun selectSettingsSection(section: SettingsSection) {
@@ -240,11 +254,13 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
 
     fun updateScopedFolderFiles(files: List<LocalFileItem>) {
         _uiState.update { it.copy(scopedFolderFiles = files) }
+        recomputePaletteAsync()
     }
 
     fun recordItemUsage(usageKey: String) {
         val updated = repository.incrementUsage(usageKey)
         _uiState.update { it.copy(usageCounts = updated) }
+        recomputePaletteAsync()
     }
 
     fun navigateTo(view: PipeView) {
@@ -253,6 +269,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
 
     fun updateSearchInput(newValue: TextFieldValue) {
         _uiState.update { it.copy(searchInput = newValue, launchError = null) }
+        recomputePaletteAsync()
     }
 
     fun setSearchTextFromExternal(text: String) {
@@ -263,6 +280,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 launchError = null,
             )
         }
+        recomputePaletteAsync()
     }
 
     fun applyKeywordChip(engine: SearchEngine) {
@@ -295,6 +313,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 launchError = null,
             )
         }
+        recomputePaletteAsync()
     }
 
     fun submitSearch(overrideInput: String? = null, onOpenUrl: (String) -> Boolean) {
