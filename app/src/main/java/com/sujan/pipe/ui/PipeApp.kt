@@ -980,6 +980,34 @@ fun AsciiContactAvatar(
     }
 }
 
+/**
+ * Step 5 Live Preview Line (`s gh compose -> github.com/search?q=compose`) rendered inside Quick Add & Library dialogs.
+ */
+@Composable
+fun AsciiLivePreviewLine(
+    previewText: String,
+    isValid: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAscii.current
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 38.dp)
+            .background(c.bg)
+            .border(1.dp, if (isValid) c.accent else c.border)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AsciiText(
+            text = previewText,
+            style = AsciiType.small,
+            color = if (isValid) c.accent else c.dim,
+            maxLines = 1,
+        )
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun QuickAddInlineCard(
@@ -991,8 +1019,6 @@ fun QuickAddInlineCard(
     modifier: Modifier = Modifier,
     existingBookmarks: List<PipeBookmark> = emptyList(),
     existingEngines: List<SearchEngine> = emptyList(),
-    onEditBookmark: ((PipeBookmark) -> Unit)? = null,
-    onEditEngine: ((SearchEngine) -> Unit)? = null,
     onDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
     onDeleteEngine: ((SearchEngine) -> Unit)? = null,
 ) {
@@ -1058,7 +1084,6 @@ fun QuickAddInlineCard(
     var pipeUrl by remember(initialAction) {
         mutableStateOf(TextFieldValue(initialPipeUrl, TextRange(initialPipeUrl.length)))
     }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = modifier
@@ -1081,7 +1106,6 @@ fun QuickAddInlineCard(
                         onClick = {
                             activeKind = k
                             editingId = null
-                            errorMsg = null
                         },
                         primary = activeKind == k,
                     )
@@ -1117,6 +1141,22 @@ fun QuickAddInlineCard(
 
         when (activeKind) {
             QuickAddKind.CONTACT -> {
+                val cleanName = contactName.text.trim()
+                val cleanPhone = contactPhone.text.trim()
+                val phoneDigits = cleanPhone.filter { it.isDigit() }
+                val nameError = if (cleanPhone.isNotEmpty() && cleanName.isEmpty()) "! name is required" else null
+                val phoneError = when {
+                    cleanPhone.isNotEmpty() && phoneDigits.length < 3 -> "! phone needs at least 3 digits"
+                    cleanName.isNotEmpty() && cleanPhone.isEmpty() -> "! phone number is required"
+                    else -> null
+                }
+                val isContactValid = cleanName.isNotEmpty() && phoneDigits.length >= 3
+                val previewContactLine = if (isContactValid) {
+                    "c $cleanName -> tel:$cleanPhone (wa: ${QueryRouter.normalizeWhatsAppPhone(cleanPhone)})"
+                } else {
+                    "c Kalika Prasad -> tel:9841234567"
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1126,8 +1166,9 @@ fun QuickAddInlineCard(
                             label = "name",
                             promptPrefix = "@ ",
                             value = contactName,
-                            onValueChange = { contactName = it; errorMsg = null },
-                            placeholder = "Ramesh Dai",
+                            onValueChange = { contactName = it },
+                            placeholder = "Kalika Prasad",
+                            errorText = nameError,
                         )
                     }
                     Box(Modifier.weight(0.48f)) {
@@ -1135,77 +1176,117 @@ fun QuickAddInlineCard(
                             label = "phone",
                             promptPrefix = "# ",
                             value = contactPhone,
-                            onValueChange = { contactPhone = it; errorMsg = null },
+                            onValueChange = { contactPhone = it },
                             placeholder = "9841234567",
+                            errorText = phoneError,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
                         )
                     }
                 }
-                if (errorMsg != null) {
-                    AsciiText(errorMsg!!, style = AsciiType.small, color = c.error)
-                }
+
+                AsciiLivePreviewLine(
+                    previewText = previewContactLine,
+                    isValid = isContactValid,
+                )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    AsciiText("tip: or type `+ Name Phone`", style = AsciiType.small, color = c.dim)
-                    Row {
-                        AsciiButton("cancel", onCancel)
-                        AsciiButton(
-                            label = "+ save contact",
-                            primary = true,
-                            onClick = {
-                                val n = contactName.text.trim()
-                                val p = contactPhone.text.trim()
-                                if (n.isEmpty() || p.isEmpty()) {
-                                    errorMsg = "! enter both name and phone"
-                                } else {
-                                    onSaveContact(n, p)
-                                }
-                            },
-                        )
-                    }
+                    AsciiButton("cancel", onCancel)
+                    AsciiButton(
+                        label = "+ save contact",
+                        enabled = isContactValid,
+                        primary = isContactValid,
+                        onClick = { onSaveContact(cleanName, cleanPhone) },
+                    )
                 }
             }
 
             QuickAddKind.BOOKMARK -> {
+                val rawAlias = bmAlias.text.trim()
+                val cleanAlias = rawAlias.lowercase()
+                val rawTarget = bmTarget.text.trim()
+                val normalizedTarget = if (!rawTarget.startsWith("/") && !rawTarget.startsWith("http://") && !rawTarget.startsWith("https://") && rawTarget.contains('.')) {
+                    "https://$rawTarget"
+                } else rawTarget
+                val effectiveTitle = bmTitle.text.trim().ifEmpty {
+                    if (normalizedTarget.isNotEmpty()) QueryRouter.inferTitleFromTarget(cleanAlias.ifEmpty { "bm" }, normalizedTarget) else ""
+                }
+
+                val dupBm = existingBookmarks.firstOrNull {
+                    it.id != editingId && cleanAlias.isNotEmpty() && it.alias.equals(cleanAlias, ignoreCase = true)
+                }
+                val aliasError = when {
+                    rawAlias.any { it.isWhitespace() } -> "! alias cannot contain spaces"
+                    dupBm != null -> "! duplicate alias (used by ${dupBm.title.lowercase()})"
+                    normalizedTarget.isNotEmpty() && cleanAlias.isEmpty() -> "! alias is required"
+                    else -> null
+                }
+                val titleError = if (cleanAlias.isNotEmpty() && normalizedTarget.isNotEmpty() && effectiveTitle.isEmpty()) {
+                    "! title is required"
+                } else null
+                val targetLooksValid = normalizedTarget.startsWith("/storage/") ||
+                    normalizedTarget.startsWith("/sdcard/") ||
+                    ((normalizedTarget.startsWith("http://") || normalizedTarget.startsWith("https://")) && normalizedTarget.substringAfter("://").contains('.'))
+                val targetError = when {
+                    rawTarget.isNotEmpty() && !targetLooksValid -> "! enter https://domain.com or /storage/... path"
+                    cleanAlias.isNotEmpty() && rawTarget.isEmpty() -> "! url or folder path is required"
+                    else -> null
+                }
+
+                val isBookmarkValid = cleanAlias.isNotEmpty() && aliasError == null && titleError == null && targetLooksValid
+                val detectedKind = when {
+                    normalizedTarget.startsWith("http://") || normalizedTarget.startsWith("https://") -> BookmarkKind.LINK
+                    normalizedTarget.substringAfterLast('/').contains('.') -> BookmarkKind.FILE
+                    else -> BookmarkKind.FOLDER
+                }
+                val shortTargetPreview = normalizedTarget
+                    .removePrefix("https://")
+                    .removePrefix("http://")
+                    .removePrefix("www.")
+                    .ifEmpty { "/storage/emulated/0/Download" }
+                val previewBmLine = "b ${cleanAlias.ifEmpty { "dl" }} -> $shortTargetPreview"
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Box(Modifier.weight(0.35f)) {
+                    Box(Modifier.weight(0.38f)) {
                         AsciiTextField(
                             label = "b alias",
                             promptPrefix = "b ",
                             value = bmAlias,
-                            onValueChange = { bmAlias = it; errorMsg = null },
-                            placeholder = "abb",
+                            onValueChange = { bmAlias = it },
+                            placeholder = "dl",
+                            errorText = aliasError,
                         )
                     }
-                    Box(Modifier.weight(0.65f)) {
+                    Box(Modifier.weight(0.62f)) {
                         AsciiTextField(
-                            label = "title (auto if blank)",
+                            label = "title",
                             promptPrefix = "> ",
                             value = bmTitle,
-                            onValueChange = { bmTitle = it; errorMsg = null },
-                            placeholder = "AudiobookBay",
+                            onValueChange = { bmTitle = it },
+                            placeholder = "Downloads",
+                            errorText = titleError,
                         )
                     }
                 }
                 AsciiTextField(
-                    label = "url or folder/file path (auto-detects type)",
+                    label = "url or folder/file path",
                     promptPrefix = "> ",
                     value = bmTarget,
                     onValueChange = {
                         bmTarget = it
-                        errorMsg = null
                         if (bmTitle.text.isBlank() && it.text.length > 4) {
                             val inferred = QueryRouter.inferTitleFromTarget(bmAlias.text, it.text)
                             bmTitle = TextFieldValue(inferred, TextRange(inferred.length))
                         }
                     },
                     placeholder = "https://... or /storage/emulated/0/...",
+                    errorText = targetError,
                     trailingControl = if (clipText.isNotEmpty()) {
                         {
                             AsciiButton("paste", {
@@ -1218,50 +1299,35 @@ fun QuickAddInlineCard(
                         }
                     } else null,
                 )
-                if (errorMsg != null) {
-                    AsciiText(errorMsg!!, style = AsciiType.small, color = c.error)
-                }
+
+                AsciiLivePreviewLine(
+                    previewText = previewBmLine,
+                    isValid = isBookmarkValid,
+                )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    AsciiText("use via: `b ${bmAlias.text.ifBlank { "alias" }}`", style = AsciiType.small, color = c.accent2)
-                    Row {
-                        AsciiButton("cancel", onCancel)
-                        AsciiButton(
-                            label = if (editingId != null) "update b" else "+ save b",
-                            primary = true,
-                            onClick = {
-                                val rawU = bmTarget.text.trim()
-                                val u = if (!rawU.startsWith("/") && !rawU.startsWith("http://") && !rawU.startsWith("https://") && rawU.contains('.')) {
-                                    "https://$rawU"
-                                } else rawU
-                                val a = bmAlias.text.trim().lowercase().ifEmpty {
-                                    QueryRouter.inferTitleFromTarget("bm", u).lowercase().take(6)
-                                }
-                                val t = bmTitle.text.trim().ifEmpty { QueryRouter.inferTitleFromTarget(a, u) }
-                                if (u.isEmpty()) {
-                                    errorMsg = "! enter or paste a url or file path"
-                                } else {
-                                    val detectedKind = when {
-                                        u.startsWith("http://") || u.startsWith("https://") -> BookmarkKind.LINK
-                                        u.substringAfterLast('/').contains('.') -> BookmarkKind.FILE
-                                        else -> BookmarkKind.FOLDER
-                                    }
-                                    onSaveBookmark(a, t, u, detectedKind, "", editingId)
-                                }
-                            },
-                        )
-                    }
+                    AsciiButton("cancel", onCancel)
+                    AsciiButton(
+                        label = if (editingId != null) "update b" else "+ save b",
+                        enabled = isBookmarkValid,
+                        primary = isBookmarkValid,
+                        onClick = {
+                            onSaveBookmark(cleanAlias, effectiveTitle, normalizedTarget, detectedKind, "", editingId)
+                        },
+                    )
                 }
+
                 if (existingBookmarks.isNotEmpty()) {
                     Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
                     AsciiText("saved bookmarks ([edit] or [x] delete):", style = AsciiType.small, color = c.dim)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 120.dp)
+                            .heightIn(max = 110.dp)
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
@@ -1294,42 +1360,75 @@ fun QuickAddInlineCard(
             }
 
             QuickAddKind.PIPE -> {
+                val rawKw = pipeKeyword.text.trim()
+                val cleanKw = rawKw.lowercase()
+                val rawUrl = pipeUrl.text.trim()
+                val normalizedTemplate = if (rawUrl.isNotEmpty()) QueryRouter.normalizePipeUrlTemplate(rawUrl) else ""
+                val effectiveName = pipeName.text.trim().ifEmpty {
+                    if (normalizedTemplate.isNotEmpty()) QueryRouter.inferTitleFromTarget(cleanKw.ifEmpty { "pipe" }, normalizedTemplate) else ""
+                }
+
+                val validation = QueryRouter.validateEngine(
+                    name = effectiveName,
+                    keyword = rawKw,
+                    urlTemplate = normalizedTemplate,
+                    existingEngines = existingEngines,
+                    editingEngineId = editingId,
+                )
+                val kwError = if (rawKw.isNotEmpty() || rawUrl.isNotEmpty()) validation.keywordError else null
+                val nameError = if (rawKw.isNotEmpty() && rawUrl.isNotEmpty()) validation.nameError else null
+                val urlError = if (rawUrl.isNotEmpty() || rawKw.isNotEmpty()) validation.urlTemplateError else null
+                val isPipeValid = validation.isValid
+
+                val sampleQuery = "compose"
+                val builtSampleUrl = if (normalizedTemplate.contains("{query}")) {
+                    QueryRouter.buildSearchUrl(normalizedTemplate, sampleQuery)
+                        .removePrefix("https://")
+                        .removePrefix("http://")
+                        .removePrefix("www.")
+                } else {
+                    "github.com/search?q=compose"
+                }
+                val previewPipeLine = "${cleanKw.ifEmpty { "gh" }} $sampleQuery -> $builtSampleUrl"
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Box(Modifier.weight(0.35f)) {
+                    Box(Modifier.weight(0.38f)) {
                         AsciiTextField(
                             label = "s keyword",
                             promptPrefix = "s ",
                             value = pipeKeyword,
-                            onValueChange = { pipeKeyword = it; errorMsg = null },
-                            placeholder = "abb",
+                            onValueChange = { pipeKeyword = it },
+                            placeholder = "gh",
+                            errorText = kwError,
                         )
                     }
-                    Box(Modifier.weight(0.65f)) {
+                    Box(Modifier.weight(0.62f)) {
                         AsciiTextField(
-                            label = "pipe name (auto if blank)",
+                            label = "pipe name",
                             promptPrefix = "> ",
                             value = pipeName,
-                            onValueChange = { pipeName = it; errorMsg = null },
-                            placeholder = "AudiobookBay",
+                            onValueChange = { pipeName = it },
+                            placeholder = "GitHub",
+                            errorText = nameError,
                         )
                     }
                 }
                 AsciiTextField(
-                    label = "search url (paste any ?q=test url; auto-converts to {query})",
+                    label = "search url (must contain {query} or ?q=...)",
                     promptPrefix = "> ",
                     value = pipeUrl,
                     onValueChange = {
                         pipeUrl = it
-                        errorMsg = null
                         if (pipeName.text.isBlank() && it.text.length > 4) {
                             val inf = QueryRouter.inferTitleFromTarget(pipeKeyword.text, it.text)
                             pipeName = TextFieldValue(inf, TextRange(inf.length))
                         }
                     },
-                    placeholder = "https://site.com/search?q={query}",
+                    placeholder = "https://github.com/search?q={query}",
+                    errorText = urlError,
                     trailingControl = if (clipText.isNotEmpty()) {
                         {
                             AsciiButton("paste", {
@@ -1343,42 +1442,35 @@ fun QuickAddInlineCard(
                         }
                     } else null,
                 )
-                if (errorMsg != null) {
-                    AsciiText(errorMsg!!, style = AsciiType.small, color = c.error)
-                }
+
+                AsciiLivePreviewLine(
+                    previewText = previewPipeLine,
+                    isValid = isPipeValid,
+                )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    AsciiText("use via: `s ${pipeKeyword.text.ifBlank { "kw" }} <query>`", style = AsciiType.small, color = c.accent)
-                    Row {
-                        AsciiButton("cancel", onCancel)
-                        AsciiButton(
-                            label = if (editingId != null) "update s" else "+ save s",
-                            primary = true,
-                            onClick = {
-                                val u = QueryRouter.normalizePipeUrlTemplate(pipeUrl.text)
-                                val k = pipeKeyword.text.trim().lowercase().ifEmpty {
-                                    QueryRouter.inferTitleFromTarget("s", u).lowercase().take(4)
-                                }
-                                val n = pipeName.text.trim().ifEmpty { QueryRouter.inferTitleFromTarget(k, u) }
-                                if (k.isEmpty() || u.isEmpty()) {
-                                    errorMsg = "! enter keyword and search url"
-                                } else {
-                                    onSavePipe(k, n, u, editingId)
-                                }
-                            },
-                        )
-                    }
+                    AsciiButton("cancel", onCancel)
+                    AsciiButton(
+                        label = if (editingId != null) "update s" else "+ save s",
+                        enabled = isPipeValid,
+                        primary = isPipeValid,
+                        onClick = {
+                            onSavePipe(cleanKw, effectiveName, normalizedTemplate, editingId)
+                        },
+                    )
                 }
+
                 if (existingEngines.isNotEmpty()) {
                     Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
                     AsciiText("saved search pipes ([edit] or [x] delete):", style = AsciiType.small, color = c.dim)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 120.dp)
+                            .heightIn(max = 110.dp)
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
@@ -2702,12 +2794,22 @@ fun PipeLibraryScreen(
                             checked = engineForm.isDefault,
                             onCheckedChange = onEngineDefaultChange,
                         )
-                        if (!engineForm.errors.isValid) {
-                            AsciiText("! fix validation errors above to save", style = AsciiType.small, color = c.error)
+                        val dlgKw = engineForm.keyword.text.trim().lowercase().ifEmpty { "gh" }
+                        val dlgPreviewUrl = if (engineForm.urlTemplate.text.contains("{query}")) {
+                            QueryRouter.buildSearchUrl(engineForm.urlTemplate.text, "compose")
+                                .removePrefix("https://")
+                                .removePrefix("http://")
+                                .removePrefix("www.")
+                        } else {
+                            "github.com/search?q=compose"
                         }
+                        AsciiLivePreviewLine(
+                            previewText = "$dlgKw compose -> $dlgPreviewUrl",
+                            isValid = engineForm.errors.isValid,
+                        )
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             AsciiButton("cancel", onEngineCancel)
-                            AsciiButton("save", onEngineSave, enabled = engineForm.errors.isValid, primary = true)
+                            AsciiButton("save", onEngineSave, enabled = engineForm.errors.isValid, primary = engineForm.errors.isValid)
                         }
                     }
                 }
