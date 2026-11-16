@@ -30,10 +30,22 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -212,41 +224,47 @@ fun PipeApp(
                         onClearHistory = onClearHistory,
                         onLaunchOverlay = onLaunchOverlayPreview,
                     )
-                    PipeView.BOOKMARKS -> PipeBookmarksScreen(
+                    PipeView.BOOKMARKS, PipeView.ENGINES -> PipeLibraryScreen(
+                        initialTab = if (state.bookmarkForm.isOpen) LibraryTab.BOOKMARKS else LibraryTab.PIPES,
+                        engines = state.engines,
                         bookmarks = state.bookmarks,
-                        formState = state.bookmarkForm,
+                        history = state.history,
+                        engineForm = state.engineForm,
+                        bookmarkForm = state.bookmarkForm,
                         hasFilesPermission = state.hasFilesPermission,
                         onBack = { onNavigate(PipeView.PROMPT) },
                         onOpenBookmark = onOpenBookmark,
-                        onAddClick = onAddBookmarkClick,
-                        onEditClick = onEditBookmarkClick,
-                        onDeleteClick = onDeleteBookmarkClick,
+                        onAddBookmarkClick = onAddBookmarkClick,
+                        onEditBookmarkClick = onEditBookmarkClick,
+                        onDeleteBookmarkClick = onDeleteBookmarkClick,
                         onRequestFilesPermission = onRequestFilesPermission,
-                        onAliasChange = onBookmarkFormAliasChange,
-                        onTitleChange = onBookmarkFormTitleChange,
-                        onTargetChange = onBookmarkFormTargetChange,
-                        onTagsChange = onBookmarkFormTagsChange,
-                        onKindChange = onBookmarkFormKindChange,
-                        onSave = onBookmarkFormSave,
-                        onCancel = onBookmarkFormCancel,
-                    )
-                    PipeView.ENGINES -> PipeEnginesScreen(
-                        engines = state.engines,
-                        formState = state.engineForm,
-                        onBack = { onNavigate(PipeView.PROMPT) },
-                        onAddClick = onAddEngineClick,
-                        onEditClick = onEditEngineClick,
-                        onDeleteClick = onDeleteEngineClick,
-                        onMoveUp = onMoveEngineUp,
-                        onMoveDown = onMoveEngineDown,
-                        onSetDefault = onSetDefaultEngine,
-                        onFormNameChange = onFormNameChange,
-                        onFormKeywordChange = onFormKeywordChange,
-                        onFormUrlChange = onFormUrlChange,
-                        onFormColorChange = onFormColorChange,
-                        onFormDefaultChange = onFormDefaultChange,
-                        onFormSave = onFormSave,
-                        onFormCancel = onFormCancel,
+                        onBookmarkAliasChange = onBookmarkFormAliasChange,
+                        onBookmarkTitleChange = onBookmarkFormTitleChange,
+                        onBookmarkTargetChange = onBookmarkFormTargetChange,
+                        onBookmarkTagsChange = onBookmarkFormTagsChange,
+                        onBookmarkKindChange = onBookmarkFormKindChange,
+                        onBookmarkSave = onBookmarkFormSave,
+                        onBookmarkCancel = onBookmarkFormCancel,
+                        onAddEngineClick = onAddEngineClick,
+                        onEditEngineClick = onEditEngineClick,
+                        onDeleteEngineClick = onDeleteEngineClick,
+                        onMoveEngineUp = onMoveEngineUp,
+                        onMoveEngineDown = onMoveEngineDown,
+                        onSetDefaultEngine = onSetDefaultEngine,
+                        onEngineNameChange = onFormNameChange,
+                        onEngineKeywordChange = onFormKeywordChange,
+                        onEngineUrlChange = onFormUrlChange,
+                        onEngineColorChange = onFormColorChange,
+                        onEngineDefaultChange = onFormDefaultChange,
+                        onEngineSave = onFormSave,
+                        onEngineCancel = onFormCancel,
+                        onRerunHistory = onRerunHistory,
+                        onFillHistory = { entry ->
+                            onFillHistory(entry)
+                            onNavigate(PipeView.PROMPT)
+                        },
+                        onDeleteHistory = onDeleteHistory,
+                        onClearHistory = onClearHistory,
                     )
                     PipeView.SETTINGS -> PipeSettingsScreen(
                         state = state,
@@ -420,6 +438,7 @@ private fun PipePromptScreen(
             existingEngines = state.engines,
             onQuickDeleteBookmark = { bm -> onQuickRemoveItem(true, bm.id) },
             onQuickDeleteEngine = { eng -> onQuickRemoveItem(false, eng.id) },
+            onQuickDeleteHistory = onDeleteHistory,
             headerRightActions = {
                 AsciiButton("+", {
                     if (inlineQuickAdd != null) {
@@ -434,11 +453,9 @@ private fun PipePromptScreen(
                             arg1 = raw,
                         )
                     }
-                }, primary = inlineQuickAdd != null, spokenLabel = "quick add or edit")
-                AsciiButton("bm", { onNavigate(PipeView.BOOKMARKS) }, spokenLabel = "bookmarks manager")
-                AsciiButton("pipes", { onNavigate(PipeView.ENGINES) }, spokenLabel = "search pipes manager")
-                AsciiButton("ovl", onLaunchOverlay, spokenLabel = "floating overlay")
-                AsciiButton("set", { onNavigate(PipeView.SETTINGS) }, spokenLabel = "settings")
+                }, primary = inlineQuickAdd != null, spokenLabel = "quick add")
+                AsciiButton("lib", { onNavigate(PipeView.BOOKMARKS) }, spokenLabel = "open library")
+                AsciiButton("set", { onNavigate(PipeView.SETTINGS) }, spokenLabel = "open settings")
             },
             onAliasPillClick = { alias ->
                 onAliasPillClick(alias)
@@ -513,6 +530,51 @@ private fun PipePromptScreen(
  * Features character-drawn `┌──┐`, `├──┤`, `└──┘` borders, a unified top-10 result list sorted by
  * usage frequency (`#N`), strict alias scoping (`c`, `f`, `d`, `bm`, `dl`, `yt`), and a Raycast footer bar.
  */
+/**
+ * 44dp square-cornered, 1dp-bordered ASCII scope chip used in the horizontally scrollable scope bar.
+ */
+@Composable
+fun AsciiScopeChip(
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAscii.current
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val highlighted = active || pressed
+    Box(
+        modifier = modifier
+            .heightIn(min = 44.dp)
+            .background(if (highlighted) c.accent else c.bg)
+            .border(1.dp, if (highlighted) c.accent else c.border)
+            .clickable(
+                interactionSource = src,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        AsciiText(
+            text = if (active) "[$label*]" else "[$label]",
+            style = if (active) AsciiType.title else AsciiType.body,
+            color = if (highlighted) c.bg else c.fg,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * Bottom-anchored ASCII Command Palette Window (`~/pipe`).
+ * Layout stack (top to bottom):
+ * 1. Header (`+- ~/pipe` + `[+]`, `[lib]`, `[set]`)
+ * 2. Results list (`reverseLayout = true` so `#1` best match sits closest to the input row with `|>`, surface bg, 3dp accent left border, and `#1`)
+ * 3. Horizontally scrollable row of 44dp bordered scope chips (`c:`, `f:`, `b:`, `s:`, `app:`, `dl:`, `yt:`) with active scope highlighted
+ * 4. Input row above the keyboard (`>` prefix, field, `[scope]` badge, `[x]`, and primary `[RET ->]` button)
+ */
 @Composable
 fun AsciiRaycastPaletteWindow(
     titlePath: String,
@@ -525,7 +587,7 @@ fun AsciiRaycastPaletteWindow(
     launchError: String?,
     focusRequester: FocusRequester,
     promptPrefix: String = "> ",
-    placeholderText: String = "pipe (c, f, d, app, dl, yt)...",
+    placeholderText: String = "pipe (c, f, b, s, app)...",
     showScopeBadge: Boolean = true,
     inlineQuickAdd: com.sujan.pipe.domain.PaletteItem.QuickAddAction? = null,
     onDismissInlineQuickAdd: () -> Unit = {},
@@ -538,6 +600,7 @@ fun AsciiRaycastPaletteWindow(
     onQuickEditEngine: ((SearchEngine) -> Unit)? = null,
     onQuickDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
     onQuickDeleteEngine: ((SearchEngine) -> Unit)? = null,
+    onQuickDeleteHistory: ((SearchHistoryEntry) -> Unit)? = null,
     headerRightActions: @Composable () -> Unit,
     onAliasPillClick: (String) -> Unit,
     onSubmitPrimary: () -> Unit,
@@ -554,22 +617,35 @@ fun AsciiRaycastPaletteWindow(
     modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
+    val clipboard = LocalClipboardManager.current
+    var actionSheetItem by remember { mutableStateOf<com.sujan.pipe.domain.PaletteItem?>(null) }
     val scopeBadge = when (parsedCommand.mode) {
         PromptIntentMode.SCOPED_FOLDER -> "b:${parsedCommand.scopedFolderBookmark?.alias ?: "folder"}"
         PromptIntentMode.ENGINE_ONLY -> "s:${parsedCommand.matchedEngine?.keyword ?: "pipe"}"
         else -> parsedCommand.mode.scopeBadge
     }
 
+    val scopeChips = listOf(
+        "c" to (parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY),
+        "f" to (parsedCommand.mode == PromptIntentMode.FILES_ONLY || parsedCommand.mode == PromptIntentMode.DIRS_ONLY),
+        "b" to (parsedCommand.mode == PromptIntentMode.BOOKMARKS_ONLY),
+        "s" to (parsedCommand.mode == PromptIntentMode.PIPES_LIST || (parsedCommand.mode == PromptIntentMode.ENGINE_ONLY && !parsedCommand.matchedEngine?.keyword.equals("yt", ignoreCase = true))),
+        "app" to (parsedCommand.mode == PromptIntentMode.APPS_ONLY),
+        "dl" to (parsedCommand.mode == PromptIntentMode.SCOPED_FOLDER && parsedCommand.scopedFolderBookmark?.alias.equals("dl", ignoreCase = true)),
+        "yt" to (parsedCommand.mode == PromptIntentMode.ENGINE_ONLY && parsedCommand.matchedEngine?.keyword.equals("yt", ignoreCase = true)),
+    )
+
     Column(
         modifier = modifier
-            .fillMaxWidth()
+            .fillMaxSize()
             .background(c.bg)
             .border(1.dp, c.border),
     ) {
-        // 1. Top ASCII Title Bar: `┌─ ~/pipe ─────────────────── [ovl] [bm] [pipes] [set] ─┐`
+        // 1. Top ASCII Header Bar: `+- ~/pipe ─────────────────────── [+] [lib] [set]`
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 46.dp)
                 .background(c.surface)
                 .padding(horizontal = 8.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -587,22 +663,153 @@ fun AsciiRaycastPaletteWindow(
 
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
 
-        // 2. Raycast Command Input Bar (`| > type alias or command_         [scope] [x] |`)
+        // Permission banners if needed for active alias
+        if (!hasContactsPermission && parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY && onRequestContactsPermission != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(c.surface)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("! contacts permission needed for `c:`", style = AsciiType.small, color = c.warn)
+                AsciiButton("grant", onRequestContactsPermission, primary = true)
+            }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        }
+        if (!hasFilesPermission && (parsedCommand.mode == PromptIntentMode.FILES_ONLY || parsedCommand.mode == PromptIntentMode.DIRS_ONLY || parsedCommand.mode == PromptIntentMode.SCOPED_FOLDER) && onRequestFilesPermission != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(c.surface)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("! storage access needed for `f:` / `dl:`", style = AsciiType.small, color = c.warn)
+                AsciiButton("grant", onRequestFilesPermission, primary = true)
+            }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        }
+
+        if (inlineQuickAdd != null) {
+            QuickAddInlineCard(
+                initialAction = inlineQuickAdd,
+                existingBookmarks = existingBookmarks,
+                existingEngines = existingEngines,
+                onSaveContact = onQuickSaveContact,
+                onSaveBookmark = onQuickSaveBookmark,
+                onSavePipe = onQuickSavePipe,
+                onDeleteBookmark = onQuickDeleteBookmark,
+                onDeleteEngine = onQuickDeleteEngine,
+                onCancel = onDismissInlineQuickAdd,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            )
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        }
+
+        // 2. Bottom-Anchored Results List (`reverseLayout = true` puts index 0 / `#1` closest to the input row!)
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            reverseLayout = true,
+            verticalArrangement = Arrangement.Bottom,
+        ) {
+            if (results.isEmpty()) {
+                item {
+                    AsciiText(
+                        text = "  | no matching items in [$scopeBadge].",
+                        style = AsciiType.small,
+                        color = c.dim,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+                    )
+                }
+            } else {
+                itemsIndexed(results, key = { idx, item -> "${idx}_${item.usageKey}" }) { index, item ->
+                    val isTop = index == 0
+                    val accentCol = c.accent
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .drawWithContent {
+                                drawContent()
+                                if (isTop) {
+                                    drawRect(
+                                        color = accentCol,
+                                        topLeft = Offset.Zero,
+                                        size = Size(3.dp.toPx(), size.height),
+                                    )
+                                }
+                            },
+                    ) {
+                        AsciiRaycastRow(
+                            item = item,
+                            isTop = isTop,
+                            onExecute = { onExecuteItem(item) },
+                            onOpenActionSheet = { actionSheetItem = item },
+                        )
+                    }
+                }
+            }
+        }
+
+        if (launchError != null) {
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+            AsciiText(
+                text = "  $launchError",
+                style = AsciiType.small,
+                color = if (launchError.startsWith("!")) c.error else c.good,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(c.surface)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+
+        // 3. Horizontally Scrollable 44dp Bordered Scope Chips (`c:`, `f:`, `b:`, `s:`, `app:`, `dl:`, `yt:`)
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 52.dp)
-                .background(c.bg)
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                .background(c.surface)
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (promptPrefix.isNotEmpty()) {
-                AsciiText(
-                    text = promptPrefix,
-                    style = AsciiType.title,
-                    color = c.accent,
+            scopeChips.forEach { (alias, isActive) ->
+                AsciiScopeChip(
+                    label = "$alias:",
+                    active = isActive,
+                    onClick = {
+                        if (isActive) {
+                            onSearchInputChange(TextFieldValue(""))
+                        } else {
+                            onAliasPillClick(alias)
+                        }
+                    },
                 )
             }
+        }
+
+        // 4. Bottom Input Row Above Keyboard: `>` prefix, field, `[scope]` badge, `[x]`, and primary `RET ->` button
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 54.dp)
+                .background(c.bg)
+                .padding(start = 10.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val effectivePrefix = promptPrefix.ifEmpty { "> " }
+            AsciiText(
+                text = effectivePrefix,
+                style = AsciiType.title,
+                color = c.accent,
+            )
             Box(
                 modifier = Modifier.weight(1f),
                 contentAlignment = Alignment.CenterStart,
@@ -628,7 +835,12 @@ fun AsciiRaycastPaletteWindow(
                         keyboardType = KeyboardType.Text,
                         imeAction = ImeAction.Search,
                     ),
-                    keyboardActions = KeyboardActions(onSearch = { onSubmitPrimary() }),
+                    keyboardActions = KeyboardActions(
+                        onSearch = {
+                            val firstItem = results.firstOrNull()
+                            if (firstItem != null) onExecuteItem(firstItem) else onSubmitPrimary()
+                        },
+                    ),
                 )
             }
             if (showScopeBadge) {
@@ -646,117 +858,6 @@ fun AsciiRaycastPaletteWindow(
                     spokenLabel = "clear input",
                 )
             }
-        }
-
-        if (launchError != null) {
-            AsciiText(
-                text = "  $launchError",
-                style = AsciiType.small,
-                color = c.error,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-            )
-        }
-
-        // Permission banners if needed for active alias
-        if (!hasContactsPermission && parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY && onRequestContactsPermission != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(c.surface)
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsciiText("! contacts permission needed for `c` alias", style = AsciiType.small, color = c.warn)
-                AsciiButton("grant", onRequestContactsPermission, primary = true)
-            }
-        }
-        if (!hasFilesPermission && (parsedCommand.mode == PromptIntentMode.FILES_ONLY || parsedCommand.mode == PromptIntentMode.DIRS_ONLY || parsedCommand.mode == PromptIntentMode.SCOPED_FOLDER) && onRequestFilesPermission != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(c.surface)
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsciiText("! storage access needed to search/open folders", style = AsciiType.small, color = c.warn)
-                AsciiButton("grant", onRequestFilesPermission, primary = true)
-            }
-        }
-
-        if (inlineQuickAdd != null) {
-            QuickAddInlineCard(
-                initialAction = inlineQuickAdd,
-                existingBookmarks = existingBookmarks,
-                existingEngines = existingEngines,
-                onSaveContact = onQuickSaveContact,
-                onSaveBookmark = onQuickSaveBookmark,
-                onSavePipe = onQuickSavePipe,
-                onDeleteBookmark = onQuickDeleteBookmark,
-                onDeleteEngine = onQuickDeleteEngine,
-                onCancel = onDismissInlineQuickAdd,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-            )
-        }
-
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
-
-        // 4. Unified Raycast Results List (Max 10 rows)
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f, fill = false)
-                .fillMaxWidth(),
-        ) {
-            if (results.isEmpty()) {
-                item {
-                    AsciiText(
-                        text = "  | no matching items in [$scopeBadge].",
-                        style = AsciiType.small,
-                        color = c.dim,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
-                    )
-                }
-            } else {
-                itemsIndexed(results, key = { idx, item -> "${idx}_${item.usageKey}" }) { index, item ->
-                    val isTop = index == 0
-                    AsciiRaycastRow(
-                        item = item,
-                        isTop = isTop,
-                        onExecute = { onExecuteItem(item) },
-                        onCallContact = onCallContact,
-                        onSmsContact = onSmsContact,
-                        onWhatsAppContact = onWhatsAppContact,
-                        onScopeIntoFolder = onScopeIntoFolder,
-                        onBookmarkFile = onBookmarkFile,
-                        onShareFile = onShareFile,
-                        onPreviewImage = onPreviewImage,
-                        onEditBookmark = onQuickEditBookmark,
-                        onEditEngine = onQuickEditEngine,
-                        onDeleteBookmark = onQuickDeleteBookmark,
-                        onDeleteEngine = if (existingEngines.size > 1) onQuickDeleteEngine else null,
-                    )
-                }
-            }
-        }
-
-        // 5. Raycast Bottom Action Bar / Alias Strip (`└─ [c] [f] [d] [dl] [yt] ─────── [RET ->] ─┘`)
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(c.surface)
-                .padding(horizontal = 6.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AsciiButton("c:", { onAliasPillClick("c") }, spokenLabel = "contacts scope c")
-                AsciiButton("f:", { onAliasPillClick("f") }, spokenLabel = "files scope f")
-                AsciiButton("b:", { onAliasPillClick("b") }, spokenLabel = "bookmarks scope b")
-                AsciiButton("s:", { onAliasPillClick("s") }, spokenLabel = "search pipes scope s")
-                AsciiButton("app:", { onAliasPillClick("app") }, spokenLabel = "apps scope app")
-            }
             AsciiButton(
                 label = "RET ->",
                 onClick = {
@@ -764,9 +865,74 @@ fun AsciiRaycastPaletteWindow(
                     if (firstItem != null) onExecuteItem(firstItem) else onSubmitPrimary()
                 },
                 primary = true,
-                spokenLabel = "run top command",
+                spokenLabel = "run top match",
             )
         }
+    }
+
+    if (actionSheetItem != null) {
+        val currentSheetItem = actionSheetItem!!
+        AsciiResultActionSheet(
+            item = currentSheetItem,
+            canDeleteEngine = existingEngines.size > 1,
+            onDismiss = { actionSheetItem = null },
+            onPrimaryExecute = {
+                actionSheetItem = null
+                onExecuteItem(currentSheetItem)
+            },
+            onCallContact = { contact ->
+                actionSheetItem = null
+                onCallContact(contact)
+            },
+            onSmsContact = { contact ->
+                actionSheetItem = null
+                onSmsContact(contact)
+            },
+            onWhatsAppContact = { contact ->
+                actionSheetItem = null
+                onWhatsAppContact(contact)
+            },
+            onScopeFolder = { scopeCmd ->
+                actionSheetItem = null
+                onScopeIntoFolder(scopeCmd)
+            },
+            onBookmarkFile = { f ->
+                actionSheetItem = null
+                onBookmarkFile?.invoke(f)
+            },
+            onShareFile = { f ->
+                actionSheetItem = null
+                onShareFile?.invoke(f)
+            },
+            onPreviewImage = { f ->
+                actionSheetItem = null
+                onPreviewImage?.invoke(f)
+            },
+            onEditBookmark = { bm ->
+                actionSheetItem = null
+                onQuickEditBookmark?.invoke(bm)
+            },
+            onDeleteBookmark = { bm ->
+                actionSheetItem = null
+                onQuickDeleteBookmark?.invoke(bm)
+            },
+            onEditEngine = { eng ->
+                actionSheetItem = null
+                onQuickEditEngine?.invoke(eng)
+            },
+            onDeleteEngine = { eng ->
+                actionSheetItem = null
+                onQuickDeleteEngine?.invoke(eng)
+            },
+            onDeleteHistory = { h ->
+                actionSheetItem = null
+                onQuickDeleteHistory?.invoke(h)
+            },
+            onCopyText = { textToCopy ->
+                clipboard.setText(AnnotatedString(textToCopy))
+                actionSheetItem = null
+            },
+        )
     }
 }
 
@@ -1339,25 +1505,53 @@ fun AsciiImagePreviewDialog(
     }
 }
 
+/**
+ * Fixed-width 1dp-bordered square-cornered kind tag (`app`, `c`, `f.`, `d/`, `b:bm`, `b:d/`, `b:f.`, `s:yt`).
+ */
 @Composable
-private fun AsciiRaycastRow(
+fun AsciiKindBadge(
+    tag: String,
+    color: Color,
+    inverted: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAscii.current
+    Box(
+        modifier = modifier
+            .width(56.dp)
+            .heightIn(min = 26.dp)
+            .background(if (inverted) c.bg else c.surface)
+            .border(1.dp, if (inverted) c.bg else color)
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        AsciiText(
+            text = tag,
+            style = AsciiType.small,
+            color = if (inverted) color else color,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * Step 2 Result Row:
+ * - Fixed-width bordered kind tag (`app`, `c`, `f.`, `d/`, `b:bm`, `b:d/`, `b:f.`, `s:yt`)
+ * - Single-line title
+ * - Dim single-line subtitle
+ * - `#1` badge on top match
+ * - At most ONE trailing `[⋯]` button (44dp+ touch target)
+ * - Tap runs primary action; long-press or `[⋯]` opens `AsciiResultActionSheet`.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun AsciiRaycastRow(
     item: com.sujan.pipe.domain.PaletteItem,
     isTop: Boolean,
     onExecute: () -> Unit,
-    onCallContact: (ContactItem) -> Unit,
-    onSmsContact: (ContactItem) -> Unit,
-    onWhatsAppContact: (ContactItem) -> Unit,
-    onScopeIntoFolder: (String) -> Unit,
-    onBookmarkFile: ((LocalFileItem) -> Unit)?,
-    onShareFile: ((LocalFileItem) -> Unit)? = null,
-    onPreviewImage: ((LocalFileItem) -> Unit)? = null,
-    onEditBookmark: ((PipeBookmark) -> Unit)? = null,
-    onEditEngine: ((SearchEngine) -> Unit)? = null,
-    onDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
-    onDeleteEngine: ((SearchEngine) -> Unit)? = null,
+    onOpenActionSheet: () -> Unit = {},
 ) {
     val c = LocalAscii.current
-    val clipboard = LocalClipboardManager.current
     val src = remember { MutableInteractionSource() }
     val pressed by src.collectIsPressedAsState()
     val rowBg = when {
@@ -1367,440 +1561,1035 @@ private fun AsciiRaycastRow(
     }
     val pointer = if (isTop) "|>" else "  "
 
-    when (item) {
-        is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
-            val contact = item.contact
-            val pref = item.preferredAction
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 44.dp)
-                    .background(rowBg)
-                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsciiText(
-                    text = "$pointer ",
-                    style = if (isTop) AsciiType.title else AsciiType.small,
-                    color = if (pressed) c.bg else c.good,
-                )
-                AsciiContactAvatar(contact = contact)
-                Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(
-                        text = contact.displayName,
-                        style = if (isTop) AsciiType.title else AsciiType.body,
-                        color = if (pressed) c.bg else c.fg,
-                        maxLines = 1,
-                    )
-                    AsciiText(
-                        text = contact.phoneNumber,
-                        style = AsciiType.small,
-                        color = if (pressed) c.bg else c.dim,
-                        maxLines = 1,
-                    )
-                }
-                AsciiButton("call", { onCallContact(contact) }, primary = isTop && pref == com.sujan.pipe.model.ContactQuickAction.CALL)
-                AsciiButton("sms", { onSmsContact(contact) }, primary = isTop && pref == com.sujan.pipe.model.ContactQuickAction.SMS)
-                AsciiButton("wa", { onWhatsAppContact(contact) }, primary = isTop && pref == com.sujan.pipe.model.ContactQuickAction.WHATSAPP)
-            }
-        }
+    val tagText: String
+    val tagColor: Color
+    val titleText: String
+    val subtitleText: String
+    val hasActionSheet: Boolean
 
+    when (item) {
+        is com.sujan.pipe.domain.PaletteItem.AppAction -> {
+            tagText = "app"
+            tagColor = c.accent
+            titleText = item.app.label
+            subtitleText = item.app.packageName
+            hasActionSheet = true
+        }
+        is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
+            tagText = "c"
+            tagColor = c.good
+            titleText = item.contact.displayName
+            subtitleText = item.contact.phoneNumber
+            hasActionSheet = true
+        }
+        is com.sujan.pipe.domain.PaletteItem.FileAction -> {
+            val f = item.file
+            tagText = if (f.isDirectory) "d/" else "f."
+            tagColor = if (f.isDirectory) c.warn else c.accent3
+            titleText = f.name
+            subtitleText = "${f.parentName} · ${f.formattedSize}"
+            hasActionSheet = true
+        }
         is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> {
             val bm = item.bookmark
-            val badge = when (bm.kind) {
-                BookmarkKind.FOLDER -> "[b:d/]"
-                BookmarkKind.FILE -> "[b:f.]"
-                BookmarkKind.LINK -> "[b:bm]"
+            tagText = when (bm.kind) {
+                BookmarkKind.FOLDER -> "b:d/"
+                BookmarkKind.FILE -> "b:f."
+                BookmarkKind.LINK -> "b:bm"
             }
-            val badgeCol = when (bm.kind) {
+            tagColor = when (bm.kind) {
                 BookmarkKind.FOLDER -> c.warn
                 BookmarkKind.FILE -> c.accent3
                 BookmarkKind.LINK -> c.accent2
             }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 44.dp)
-                    .background(rowBg)
-                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsciiText(
-                    text = "$pointer $badge ",
-                    style = if (isTop) AsciiType.title else AsciiType.small,
-                    color = if (pressed) c.bg else badgeCol,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(
-                        text = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title,
-                        style = if (isTop) AsciiType.title else AsciiType.body,
-                        color = if (pressed) c.bg else c.fg,
-                        maxLines = 1,
-                    )
-                    if (bm.tags.isNotBlank()) {
-                        AsciiText(
-                            text = bm.tags,
-                            style = AsciiType.small,
-                            color = if (pressed) c.bg else c.accent,
-                            maxLines = 1,
-                        )
-                    }
-                }
-                if (bm.kind == BookmarkKind.FOLDER && bm.alias.isNotBlank()) {
-                    AsciiButton("ls", { onScopeIntoFolder("b ${bm.alias}") })
-                }
-                if (onEditBookmark != null) {
-                    AsciiButton("edit", { onEditBookmark(bm) }, spokenLabel = "edit bookmark ${bm.title}")
-                }
-                if (onDeleteBookmark != null) {
-                    AsciiButton("x", { onDeleteBookmark(bm) }, spokenLabel = "delete bookmark ${bm.title}")
-                }
-            }
+            titleText = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title
+            subtitleText = if (bm.tags.isNotBlank()) "${bm.target} · ${bm.tags}" else bm.target
+            hasActionSheet = true
         }
-
-        is com.sujan.pipe.domain.PaletteItem.FileAction -> {
-            val f = item.file
-            val badge = if (f.isDirectory) "[d/]" else "[f.]"
-            val badgeCol = if (f.isDirectory) c.warn else c.accent3
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 44.dp)
-                    .background(rowBg)
-                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsciiText(
-                    text = "$pointer $badge ",
-                    style = if (isTop) AsciiType.title else AsciiType.small,
-                    color = if (pressed) c.bg else badgeCol,
-                )
-                if (f.isImageFile) {
-                    AsciiThumbnailBadge(
-                        filePath = f.absolutePath,
-                        onClick = { onPreviewImage?.invoke(f) ?: onExecute() },
-                    )
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(
-                        text = f.name,
-                        style = if (isTop) AsciiType.title else AsciiType.body,
-                        color = if (pressed) c.bg else c.fg,
-                        maxLines = 1,
-                    )
-                    AsciiText(
-                        text = "${f.parentName} · ${f.formattedSize}",
-                        style = AsciiType.small,
-                        color = if (pressed) c.bg else c.dim,
-                        maxLines = 1,
-                    )
-                }
-                if (f.isImageFile && onPreviewImage != null) {
-                    AsciiButton("view", { onPreviewImage(f) })
-                }
-                if (!f.isDirectory && onShareFile != null) {
-                    AsciiButton("shr", { onShareFile(f) })
-                }
-                AsciiButton("cp", { clipboard.setText(AnnotatedString(f.absolutePath)) })
-                if (onBookmarkFile != null) {
-                    AsciiButton("+bm", { onBookmarkFile(f) })
-                }
-            }
-        }
-
-        is com.sujan.pipe.domain.PaletteItem.AppAction -> {
-            val app = item.app
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 44.dp)
-                    .background(rowBg)
-                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsciiText(
-                    text = "$pointer [app] ",
-                    style = if (isTop) AsciiType.title else AsciiType.small,
-                    color = if (pressed) c.bg else c.accent,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(
-                        text = app.label,
-                        style = if (isTop) AsciiType.title else AsciiType.body,
-                        color = if (pressed) c.bg else c.fg,
-                        maxLines = 1,
-                    )
-                    AsciiText(
-                        text = app.packageName,
-                        style = AsciiType.small,
-                        color = if (pressed) c.bg else c.dim,
-                        maxLines = 1,
-                    )
-                }
-                val meta = if (item.usageCount > 0) "app #${item.usageCount}" else "app"
-                AsciiText(
-                    text = " $meta",
-                    style = AsciiType.small,
-                    color = if (pressed) c.bg else c.dim,
-                    maxLines = 1,
-                )
-            }
-        }
-
         is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
             val eng = item.engine
-            val desc = if (item.isHome) "${eng.name} (open home)" else "${eng.name}: \"${item.query}\""
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 44.dp)
-                    .background(rowBg)
-                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsciiText(
-                    text = "$pointer [s:${eng.keyword}] ",
-                    style = if (isTop) AsciiType.title else AsciiType.small,
-                    color = if (pressed) c.bg else c.forRole(eng.colorRole),
-                )
-                AsciiText(
-                    text = desc,
-                    style = if (isTop) AsciiType.title else AsciiType.body,
-                    color = if (pressed) c.bg else c.fg,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f),
-                )
-                if (item.isHome) {
-                    if (onEditEngine != null) {
-                        AsciiButton("edit", { onEditEngine(eng) }, spokenLabel = "edit pipe ${eng.name}")
-                    }
-                    if (onDeleteEngine != null) {
-                        AsciiButton("x", { onDeleteEngine(eng) }, spokenLabel = "delete pipe ${eng.name}")
-                    }
-                } else {
-                    AsciiText(
-                        text = " pipe",
-                        style = AsciiType.small,
-                        color = if (pressed) c.bg else c.dim,
-                        maxLines = 1,
-                    )
-                }
-            }
+            tagText = "s:${eng.keyword}"
+            tagColor = c.forRole(eng.colorRole)
+            titleText = if (item.isHome) eng.name else "${eng.name}: \"${item.query}\""
+            subtitleText = if (item.isHome) eng.homeUrl else item.targetUrl
+            hasActionSheet = true
         }
-
+        is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
+            val h = item.entry
+            tagText = "hist"
+            tagColor = c.accent2
+            titleText = h.rawInput
+            subtitleText = "-> ${h.engineName.lowercase()} (${h.resolvedUrl})"
+            hasActionSheet = true
+        }
         is com.sujan.pipe.domain.PaletteItem.QuickAddAction -> {
-            val badgeCol = when (item.kind) {
+            tagText = item.kind.tag
+            tagColor = when (item.kind) {
                 QuickAddKind.CONTACT -> c.good
                 QuickAddKind.BOOKMARK -> c.accent2
                 QuickAddKind.PIPE -> c.accent
             }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 44.dp)
-                    .background(rowBg)
-                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsciiText(
-                    text = "$pointer [${item.kind.tag}] ",
-                    style = if (isTop) AsciiType.title else AsciiType.small,
-                    color = if (pressed) c.bg else badgeCol,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(
-                        text = item.title,
-                        style = if (isTop) AsciiType.title else AsciiType.body,
-                        color = if (pressed) c.bg else c.fg,
-                        maxLines = 1,
-                    )
-                    AsciiText(
-                        text = item.subtitle,
-                        style = AsciiType.small,
-                        color = if (pressed) c.bg else c.dim,
-                        maxLines = 1,
-                    )
-                }
-                AsciiButton(
-                    label = if (item.isReadyToCommit) "save" else "form",
-                    onClick = onExecute,
-                    primary = item.isReadyToCommit,
-                )
-            }
+            titleText = item.title
+            subtitleText = item.subtitle
+            hasActionSheet = false
         }
-
         is com.sujan.pipe.domain.PaletteItem.QuickRemoveAction -> {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 44.dp)
-                    .background(rowBg)
-                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsciiText(
-                    text = "$pointer [-rm] ",
-                    style = if (isTop) AsciiType.title else AsciiType.small,
-                    color = if (pressed) c.bg else c.error,
-                )
-                AsciiText(
-                    text = item.displayTitle,
-                    style = if (isTop) AsciiType.title else AsciiType.body,
-                    color = if (pressed) c.bg else c.fg,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f),
-                )
-                AsciiButton("del", onExecute, primary = isTop)
-            }
+            tagText = "-del"
+            tagColor = c.error
+            titleText = item.displayTitle
+            subtitleText = "tap or press RET to delete"
+            hasActionSheet = false
+        }
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 50.dp)
+            .background(rowBg)
+            .combinedClickable(
+                interactionSource = src,
+                indication = null,
+                role = Role.Button,
+                onClick = onExecute,
+                onLongClick = {
+                    if (hasActionSheet) onOpenActionSheet() else onExecute()
+                },
+            )
+            .padding(start = 6.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AsciiText(
+            text = "$pointer ",
+            style = if (isTop) AsciiType.title else AsciiType.small,
+            color = if (pressed) c.bg else if (isTop) c.accent else c.dim,
+        )
+
+        AsciiKindBadge(
+            tag = tagText,
+            color = tagColor,
+            inverted = pressed,
+        )
+
+        Spacer(Modifier.width(6.dp))
+
+        if (item is com.sujan.pipe.domain.PaletteItem.ContactAction) {
+            AsciiContactAvatar(contact = item.contact)
+        } else if (item is com.sujan.pipe.domain.PaletteItem.FileAction && item.file.isImageFile) {
+            AsciiThumbnailBadge(
+                filePath = item.file.absolutePath,
+                onClick = onOpenActionSheet,
+            )
         }
 
-        is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
-            val h = item.entry
-            Row(
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 4.dp),
+        ) {
+            AsciiText(
+                text = titleText,
+                style = if (isTop) AsciiType.title else AsciiType.body,
+                color = if (pressed) c.bg else c.fg,
+                maxLines = 1,
+            )
+            AsciiText(
+                text = subtitleText,
+                style = AsciiType.small,
+                color = if (pressed) c.bg else c.dim,
+                maxLines = 1,
+            )
+        }
+
+        if (isTop) {
+            AsciiText(
+                text = "#1",
+                style = AsciiType.title,
+                color = if (pressed) c.bg else c.accent,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+        }
+
+        if (hasActionSheet) {
+            AsciiButton(
+                label = "⋯",
+                onClick = onOpenActionSheet,
+                spokenLabel = "more actions for $titleText",
+            )
+        } else if (item is com.sujan.pipe.domain.PaletteItem.QuickAddAction) {
+            AsciiButton(
+                label = if (item.isReadyToCommit) "save" else "form",
+                onClick = onExecute,
+                primary = item.isReadyToCommit,
+            )
+        } else if (item is com.sujan.pipe.domain.PaletteItem.QuickRemoveAction) {
+            AsciiButton(
+                label = "del",
+                onClick = onExecute,
+                primary = true,
+            )
+        }
+    }
+}
+
+/**
+ * Full-width 48dp action row inside `AsciiResultActionSheet`.
+ * Destructive actions (`isDestructive = true`) render last in `c.error`.
+ */
+@Composable
+fun AsciiSheetActionRow(
+    tag: String,
+    label: String,
+    onClick: () -> Unit,
+    isDestructive: Boolean = false,
+    isPrimary: Boolean = false,
+) {
+    val c = LocalAscii.current
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val ink = when {
+        isDestructive -> c.error
+        isPrimary -> c.accent
+        else -> c.fg
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .background(if (pressed) ink else c.surface)
+            .border(1.dp, if (isDestructive) c.error else if (isPrimary) c.accent else c.border)
+            .clickable(
+                interactionSource = src,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AsciiText(
+            text = "[$tag]",
+            style = AsciiType.title,
+            color = if (pressed) c.bg else ink,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(10.dp))
+        AsciiText(
+            text = label,
+            style = AsciiType.body,
+            color = if (pressed) c.bg else ink,
+            maxLines = 1,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * Bottom sheet opened by long-pressing a result row or tapping its trailing `[⋯]` button.
+ * Provides full-width 48dp actions tailored to each item kind:
+ * - Contacts: call / sms / wa / copy
+ * - Bookmarks: open / ls / edit / copy / delete (in error color, triggers undo banner)
+ * - Files: open / ls / bookmark / share / preview / copy
+ * - Pipes: open / edit / delete (in error color, triggers undo banner)
+ */
+@Composable
+fun AsciiResultActionSheet(
+    item: com.sujan.pipe.domain.PaletteItem,
+    canDeleteEngine: Boolean,
+    onDismiss: () -> Unit,
+    onPrimaryExecute: () -> Unit,
+    onCallContact: (ContactItem) -> Unit,
+    onSmsContact: (ContactItem) -> Unit,
+    onWhatsAppContact: (ContactItem) -> Unit,
+    onScopeFolder: (String) -> Unit,
+    onBookmarkFile: (LocalFileItem) -> Unit,
+    onShareFile: (LocalFileItem) -> Unit,
+    onPreviewImage: (LocalFileItem) -> Unit,
+    onEditBookmark: (PipeBookmark) -> Unit,
+    onDeleteBookmark: (PipeBookmark) -> Unit,
+    onEditEngine: (SearchEngine) -> Unit,
+    onDeleteEngine: (SearchEngine) -> Unit,
+    onDeleteHistory: (SearchHistoryEntry) -> Unit = {},
+    onCopyText: (String) -> Unit,
+) {
+    val c = LocalAscii.current
+    Dialog(onDismissRequest = onDismiss) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss,
+                ),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 44.dp)
-                    .background(rowBg)
-                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .background(c.bg)
+                    .border(1.dp, c.accent)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {},
+                    )
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                AsciiText(
-                    text = "$pointer [$ ] ",
-                    style = if (isTop) AsciiType.title else AsciiType.small,
-                    color = if (pressed) c.bg else c.accent2,
-                )
-                AsciiText(
-                    text = "${h.rawInput} -> ${h.engineName.lowercase()}",
-                    style = if (isTop) AsciiType.title else AsciiType.body,
-                    color = if (pressed) c.bg else c.fg,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f),
-                )
-                val meta = if (item.usageCount > 0) "hist #${item.usageCount}" else "hist"
-                AsciiText(
-                    text = " $meta",
-                    style = AsciiType.small,
-                    color = if (pressed) c.bg else c.dim,
-                    maxLines = 1,
-                )
+                when (item) {
+                    is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
+                        val contact = item.contact
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                AsciiKindBadge("c", c.good)
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    AsciiText(contact.displayName, style = AsciiType.title, color = c.fg, maxLines = 1)
+                                    AsciiText(contact.phoneNumber, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                }
+                            }
+                            AsciiButton("x", onDismiss)
+                        }
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiSheetActionRow("call", "Call ${contact.phoneNumber}", { onCallContact(contact) }, isPrimary = true)
+                        AsciiSheetActionRow("sms", "Send SMS to ${contact.displayName}", { onSmsContact(contact) })
+                        AsciiSheetActionRow("wa", "Message on WhatsApp", { onWhatsAppContact(contact) })
+                        AsciiSheetActionRow("copy", "Copy phone number", { onCopyText(contact.phoneNumber) })
+                    }
+
+                    is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> {
+                        val bm = item.bookmark
+                        val tag = when (bm.kind) {
+                            BookmarkKind.FOLDER -> "b:d/"
+                            BookmarkKind.FILE -> "b:f."
+                            BookmarkKind.LINK -> "b:bm"
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                AsciiKindBadge(tag, c.accent2)
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    AsciiText("${bm.title} (${bm.alias})", style = AsciiType.title, color = c.fg, maxLines = 1)
+                                    AsciiText(bm.target, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                }
+                            }
+                            AsciiButton("x", onDismiss)
+                        }
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiSheetActionRow("open", "Open ${bm.title}", onPrimaryExecute, isPrimary = true)
+                        if (bm.kind == BookmarkKind.FOLDER && bm.alias.isNotBlank()) {
+                            AsciiSheetActionRow("ls", "Scope inside folder (b ${bm.alias})", { onScopeFolder("b ${bm.alias}") })
+                        }
+                        AsciiSheetActionRow("edit", "Edit bookmark", { onEditBookmark(bm) })
+                        AsciiSheetActionRow("copy", "Copy target URL / path", { onCopyText(bm.target) })
+                        AsciiSheetActionRow("delete", "Delete bookmark", { onDeleteBookmark(bm) }, isDestructive = true)
+                    }
+
+                    is com.sujan.pipe.domain.PaletteItem.FileAction -> {
+                        val f = item.file
+                        val tag = if (f.isDirectory) "d/" else "f."
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                AsciiKindBadge(tag, if (f.isDirectory) c.warn else c.accent3)
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    AsciiText(f.name, style = AsciiType.title, color = c.fg, maxLines = 1)
+                                    AsciiText("${f.parentName} · ${f.formattedSize}", style = AsciiType.small, color = c.dim, maxLines = 1)
+                                }
+                            }
+                            AsciiButton("x", onDismiss)
+                        }
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiSheetActionRow("open", "Open ${f.name}", onPrimaryExecute, isPrimary = true)
+                        if (f.isDirectory) {
+                            AsciiSheetActionRow("ls", "Filter inside folder (f ${f.name})", { onScopeFolder("f ${f.name}") })
+                        }
+                        AsciiSheetActionRow("bookmark", "Save as bookmark", { onBookmarkFile(f) })
+                        if (!f.isDirectory) {
+                            AsciiSheetActionRow("share", "Share file", { onShareFile(f) })
+                        }
+                        if (f.isImageFile) {
+                            AsciiSheetActionRow("preview", "Preview image", { onPreviewImage(f) })
+                        }
+                        AsciiSheetActionRow("copy", "Copy full path", { onCopyText(f.absolutePath) })
+                    }
+
+                    is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
+                        val eng = item.engine
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                AsciiKindBadge("s:${eng.keyword}", c.forRole(eng.colorRole))
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    AsciiText(eng.name, style = AsciiType.title, color = c.fg, maxLines = 1)
+                                    AsciiText(eng.urlTemplate, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                }
+                            }
+                            AsciiButton("x", onDismiss)
+                        }
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiSheetActionRow(
+                            tag = "open",
+                            label = if (item.isHome) "Open ${eng.name} home" else "Pipe \"${item.query}\" to ${eng.name}",
+                            onClick = onPrimaryExecute,
+                            isPrimary = true,
+                        )
+                        AsciiSheetActionRow("edit", "Edit search pipe", { onEditEngine(eng) })
+                        if (canDeleteEngine) {
+                            AsciiSheetActionRow("delete", "Delete search pipe", { onDeleteEngine(eng) }, isDestructive = true)
+                        }
+                    }
+
+                    is com.sujan.pipe.domain.PaletteItem.AppAction -> {
+                        val app = item.app
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                AsciiKindBadge("app", c.accent)
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    AsciiText(app.label, style = AsciiType.title, color = c.fg, maxLines = 1)
+                                    AsciiText(app.packageName, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                }
+                            }
+                            AsciiButton("x", onDismiss)
+                        }
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiSheetActionRow("open", "Launch ${app.label}", onPrimaryExecute, isPrimary = true)
+                        AsciiSheetActionRow("copy", "Copy package name", { onCopyText(app.packageName) })
+                    }
+
+                    is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
+                        val h = item.entry
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                AsciiKindBadge("hist", c.accent2)
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    AsciiText(h.rawInput, style = AsciiType.title, color = c.fg, maxLines = 1)
+                                    AsciiText(h.resolvedUrl, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                }
+                            }
+                            AsciiButton("x", onDismiss)
+                        }
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiSheetActionRow("open", "Re-run \"${h.rawInput}\"", onPrimaryExecute, isPrimary = true)
+                        AsciiSheetActionRow("copy", "Copy query text", { onCopyText(h.rawInput) })
+                        AsciiSheetActionRow("delete", "Delete from history", { onDeleteHistory(h) }, isDestructive = true)
+                    }
+
+                    else -> {
+                        AsciiButton("close", onDismiss)
+                    }
+                }
             }
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+enum class LibraryTab(val label: String) {
+    PIPES("pipes"),
+    BOOKMARKS("bookmarks"),
+    HISTORY("history"),
+}
+
+private sealed interface LibrarySheetTarget {
+    data class PipeTarget(val engine: SearchEngine) : LibrarySheetTarget
+    data class BookmarkTarget(val bookmark: PipeBookmark) : LibrarySheetTarget
+    data class HistoryTarget(val entry: SearchHistoryEntry) : LibrarySheetTarget
+}
+
+/**
+ * Step 3 Merged Library Screen (`~/pipe/lib`):
+ * - Chip tabs: `pipes`, `bookmarks`, `history` (44dp bordered chips with active highlight)
+ * - Pipes tab: `::` drag handle to reorder (replaces `^` and `v`), `*` default marker, `[⋯]` for default/edit/delete, pinned `+ add pipe` button at the bottom
+ * - Bookmarks tab: fixed-width kind tag (`b:bm`, `b:d/`, `b:f.`), single-line title + dim subtitle, `[⋯]` for open/edit/copy/delete, pinned `+ add bookmark` button at the bottom
+ * - History tab: fixed-width `hist` tag, query + dim URL, `[⋯]` for run/fill/copy/delete, pinned `clear history` button at the bottom
+ */
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
-private fun PipeBookmarksScreen(
+fun PipeLibraryScreen(
+    initialTab: LibraryTab = LibraryTab.PIPES,
+    engines: List<SearchEngine>,
     bookmarks: List<PipeBookmark>,
-    formState: BookmarkFormState,
+    history: List<SearchHistoryEntry>,
+    engineForm: EngineFormState,
+    bookmarkForm: BookmarkFormState,
     hasFilesPermission: Boolean,
     onBack: () -> Unit,
     onOpenBookmark: (PipeBookmark) -> Unit,
-    onAddClick: () -> Unit,
-    onEditClick: (PipeBookmark) -> Unit,
-    onDeleteClick: (PipeBookmark) -> Unit,
+    onAddBookmarkClick: () -> Unit,
+    onEditBookmarkClick: (PipeBookmark) -> Unit,
+    onDeleteBookmarkClick: (PipeBookmark) -> Unit,
     onRequestFilesPermission: () -> Unit,
-    onAliasChange: (TextFieldValue) -> Unit,
-    onTitleChange: (TextFieldValue) -> Unit,
-    onTargetChange: (TextFieldValue) -> Unit,
-    onTagsChange: (TextFieldValue) -> Unit,
-    onKindChange: (BookmarkKind) -> Unit,
-    onSave: () -> Unit,
-    onCancel: () -> Unit,
+    onBookmarkAliasChange: (TextFieldValue) -> Unit,
+    onBookmarkTitleChange: (TextFieldValue) -> Unit,
+    onBookmarkTargetChange: (TextFieldValue) -> Unit,
+    onBookmarkTagsChange: (TextFieldValue) -> Unit,
+    onBookmarkKindChange: (BookmarkKind) -> Unit,
+    onBookmarkSave: () -> Unit,
+    onBookmarkCancel: () -> Unit,
+    onAddEngineClick: () -> Unit,
+    onEditEngineClick: (SearchEngine) -> Unit,
+    onDeleteEngineClick: (SearchEngine) -> Unit,
+    onMoveEngineUp: (Int) -> Unit,
+    onMoveEngineDown: (Int) -> Unit,
+    onSetDefaultEngine: (String) -> Unit,
+    onEngineNameChange: (TextFieldValue) -> Unit,
+    onEngineKeywordChange: (TextFieldValue) -> Unit,
+    onEngineUrlChange: (TextFieldValue) -> Unit,
+    onEngineColorChange: (EngineColorRole) -> Unit,
+    onEngineDefaultChange: (Boolean) -> Unit,
+    onEngineSave: () -> Unit,
+    onEngineCancel: () -> Unit,
+    onRerunHistory: (SearchHistoryEntry) -> Unit,
+    onFillHistory: (SearchHistoryEntry) -> Unit,
+    onDeleteHistory: (SearchHistoryEntry) -> Unit,
+    onClearHistory: () -> Unit,
 ) {
     val c = LocalAscii.current
+    val clipboard = LocalClipboardManager.current
+    val density = LocalDensity.current
+    val dragStepPx = remember(density) { with(density) { 48.dp.toPx() } }
 
-    Column(Modifier.fillMaxSize()) {
+    var activeTab by remember(initialTab) { mutableStateOf(initialTab) }
+    var sheetTarget by remember { mutableStateOf<LibrarySheetTarget?>(null) }
+
+    Column(Modifier.fillMaxSize().background(c.bg)) {
         AsciiTopHeader(
-            path = "~/pipe/bm",
+            path = "~/pipe/lib",
             actions = {
                 AsciiButton(label = "< back", onClick = onBack, spokenLabel = "back to search prompt")
             },
         )
 
-        LazyColumn(
+        // Chip Tabs Row (`pipes`, `bookmarks`, `history`)
+        Row(
             modifier = Modifier
-                .weight(1f)
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .background(c.surface)
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            item {
-                Spacer(Modifier.height(4.dp))
-                AsciiText(
-                    text = "type an alias (e.g. `dl`, `docs`, `pic`) in ~/pipe to jump to folders, files, or links.",
-                    style = AsciiType.small,
-                    color = c.dim,
-                )
-                if (!hasFilesPermission) {
-                    Spacer(Modifier.height(4.dp))
-                    AsciiButton("grant all-files access", onRequestFilesPermission, primary = true)
+            LibraryTab.entries.forEach { tab ->
+                val count = when (tab) {
+                    LibraryTab.PIPES -> engines.size
+                    LibraryTab.BOOKMARKS -> bookmarks.size
+                    LibraryTab.HISTORY -> history.size
                 }
+                AsciiScopeChip(
+                    label = "${tab.label} ($count)",
+                    active = activeTab == tab,
+                    onClick = { activeTab = tab },
+                )
             }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
 
-            items(bookmarks, key = { it.id }) { bm ->
-                Column(
+        when (activeTab) {
+            // TAB 1: PIPES (`::` drag handle, `*` default marker, `[⋯]` for edit/delete, pinned `+ add pipe`)
+            LibraryTab.PIPES -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    item {
+                        AsciiText(
+                            text = "drag [::] to reorder pipes. `*` marks the default fallback pipe.",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                    }
+
+                    itemsIndexed(engines, key = { _, item -> item.id }) { idx, eng ->
+                        var dragAccumY by remember(eng.id, idx) { mutableStateOf(0f) }
+                        var isDragging by remember(eng.id) { mutableStateOf(false) }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 52.dp)
+                                .background(if (isDragging) c.surface else c.bg)
+                                .border(1.dp, if (eng.isDefault || isDragging) c.accent else c.border)
+                                .combinedClickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    role = Role.Button,
+                                    onClick = { onSetDefaultEngine(eng.id) },
+                                    onLongClick = { sheetTarget = LibrarySheetTarget.PipeTarget(eng) },
+                                )
+                                .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // Drag handle `::` (44dp+ touch target) to reorder pipes
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 44.dp, height = 44.dp)
+                                    .pointerInput(idx, engines.size) {
+                                        detectVerticalDragGestures(
+                                            onDragStart = {
+                                                dragAccumY = 0f
+                                                isDragging = true
+                                            },
+                                            onDragEnd = {
+                                                dragAccumY = 0f
+                                                isDragging = false
+                                            },
+                                            onDragCancel = {
+                                                dragAccumY = 0f
+                                                isDragging = false
+                                            },
+                                            onVerticalDrag = { change, dragAmount ->
+                                                change.consume()
+                                                dragAccumY += dragAmount
+                                                if (dragAccumY >= dragStepPx && idx < engines.lastIndex) {
+                                                    dragAccumY -= dragStepPx
+                                                    onMoveEngineDown(idx)
+                                                } else if (dragAccumY <= -dragStepPx && idx > 0) {
+                                                    dragAccumY += dragStepPx
+                                                    onMoveEngineUp(idx)
+                                                }
+                                            },
+                                        )
+                                    },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                AsciiText(
+                                    text = "::",
+                                    style = AsciiType.title,
+                                    color = if (isDragging) c.accent else c.dim,
+                                )
+                            }
+
+                            AsciiKindBadge(
+                                tag = "s:${eng.keyword}",
+                                color = c.forRole(eng.colorRole),
+                            )
+
+                            Spacer(Modifier.width(8.dp))
+
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 4.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    AsciiText(
+                                        text = eng.name,
+                                        style = AsciiType.title,
+                                        color = if (eng.isDefault) c.accent else c.fg,
+                                        maxLines = 1,
+                                    )
+                                    if (eng.isDefault) {
+                                        AsciiText(
+                                            text = " *",
+                                            style = AsciiType.title,
+                                            color = c.accent,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                }
+                                AsciiText(
+                                    text = eng.urlTemplate,
+                                    style = AsciiType.small,
+                                    color = c.dim,
+                                    maxLines = 1,
+                                )
+                            }
+
+                            AsciiButton(
+                                label = "⋯",
+                                onClick = { sheetTarget = LibrarySheetTarget.PipeTarget(eng) },
+                                spokenLabel = "options for ${eng.name}",
+                            )
+                        }
+                    }
+                }
+
+                Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, c.border)
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                        .background(c.surface)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        AsciiText(
-                            text = "[${bm.alias}] ${bm.title}",
-                            style = AsciiType.title,
-                            color = c.accent,
-                        )
-                        AsciiText(
-                            text = bm.kind.badge,
-                            style = AsciiType.small,
-                            color = c.accent2,
-                        )
-                    }
-                    AsciiText(text = bm.target, style = AsciiType.small, color = c.dim, maxLines = 1)
-                    if (bm.tags.isNotBlank()) {
-                        AsciiText(text = "tags: ${bm.tags}", style = AsciiType.small, color = c.accent2, maxLines = 1)
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        AsciiButton("open", { onOpenBookmark(bm) }, primary = true)
-                        AsciiButton("edit", { onEditClick(bm) })
-                        AsciiButton("del", { onDeleteClick(bm) })
-                    }
+                    AsciiButton(
+                        label = "+ add pipe",
+                        onClick = onAddEngineClick,
+                        primary = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 46.dp)
+                            .border(1.dp, c.accent),
+                        spokenLabel = "add pipe",
+                    )
                 }
             }
 
-            item { Spacer(Modifier.height(8.dp)) }
-        }
+            // TAB 2: BOOKMARKS
+            LibraryTab.BOOKMARKS -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (!hasFilesPermission) {
+                        item {
+                            AsciiButton(
+                                label = "! grant all-files access for folder bookmarks",
+                                onClick = onRequestFilesPermission,
+                                primary = true,
+                                modifier = Modifier.fillMaxWidth().border(1.dp, c.warn),
+                            )
+                        }
+                    }
 
-        Box(Modifier.fillMaxWidth().background(c.bg).padding(horizontal = 12.dp, vertical = 6.dp)) {
-            AsciiButton(
-                label = "+ add bookmark (link / folder / file)",
-                onClick = onAddClick,
-                primary = true,
-                modifier = Modifier.fillMaxWidth().border(1.dp, c.accent),
-            )
+                    items(bookmarks, key = { it.id }) { bm ->
+                        val badge = when (bm.kind) {
+                            BookmarkKind.FOLDER -> "b:d/"
+                            BookmarkKind.FILE -> "b:f."
+                            BookmarkKind.LINK -> "b:bm"
+                        }
+                        val badgeCol = when (bm.kind) {
+                            BookmarkKind.FOLDER -> c.warn
+                            BookmarkKind.FILE -> c.accent3
+                            BookmarkKind.LINK -> c.accent2
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 52.dp)
+                                .background(c.bg)
+                                .border(1.dp, c.border)
+                                .combinedClickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    role = Role.Button,
+                                    onClick = { onOpenBookmark(bm) },
+                                    onLongClick = { sheetTarget = LibrarySheetTarget.BookmarkTarget(bm) },
+                                )
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AsciiKindBadge(tag = badge, color = badgeCol)
+                            Spacer(Modifier.width(8.dp))
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 4.dp),
+                            ) {
+                                AsciiText(
+                                    text = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title,
+                                    style = AsciiType.title,
+                                    color = c.fg,
+                                    maxLines = 1,
+                                )
+                                AsciiText(
+                                    text = if (bm.tags.isNotBlank()) "${bm.target} · ${bm.tags}" else bm.target,
+                                    style = AsciiType.small,
+                                    color = c.dim,
+                                    maxLines = 1,
+                                )
+                            }
+                            AsciiButton(
+                                label = "⋯",
+                                onClick = { sheetTarget = LibrarySheetTarget.BookmarkTarget(bm) },
+                                spokenLabel = "options for ${bm.title}",
+                            )
+                        }
+                    }
+                }
+
+                Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(c.surface)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    AsciiButton(
+                        label = "+ add bookmark",
+                        onClick = onAddBookmarkClick,
+                        primary = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 46.dp)
+                            .border(1.dp, c.accent),
+                        spokenLabel = "add bookmark",
+                    )
+                }
+            }
+
+            // TAB 3: HISTORY
+            LibraryTab.HISTORY -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (history.isEmpty()) {
+                        item {
+                            AsciiText(
+                                text = "no command history recorded yet.",
+                                style = AsciiType.small,
+                                color = c.dim,
+                                modifier = Modifier.padding(vertical = 12.dp),
+                            )
+                        }
+                    } else {
+                        items(history, key = { it.id }) { entry ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 52.dp)
+                                    .background(c.bg)
+                                    .border(1.dp, c.border)
+                                    .combinedClickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        role = Role.Button,
+                                        onClick = { onRerunHistory(entry) },
+                                        onLongClick = { sheetTarget = LibrarySheetTarget.HistoryTarget(entry) },
+                                    )
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                AsciiKindBadge(tag = "hist", color = c.accent2)
+                                Spacer(Modifier.width(8.dp))
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(end = 4.dp),
+                                ) {
+                                    AsciiText(
+                                        text = entry.rawInput,
+                                        style = AsciiType.title,
+                                        color = c.fg,
+                                        maxLines = 1,
+                                    )
+                                    AsciiText(
+                                        text = "-> ${entry.engineName.lowercase()} (${entry.resolvedUrl})",
+                                        style = AsciiType.small,
+                                        color = c.dim,
+                                        maxLines = 1,
+                                    )
+                                }
+                                AsciiButton(
+                                    label = "⋯",
+                                    onClick = { sheetTarget = LibrarySheetTarget.HistoryTarget(entry) },
+                                    spokenLabel = "options for ${entry.rawInput}",
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(c.surface)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    AsciiButton(
+                        label = "clear history",
+                        onClick = onClearHistory,
+                        enabled = history.isNotEmpty(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 46.dp)
+                            .border(1.dp, if (history.isNotEmpty()) c.error else c.border),
+                        spokenLabel = "clear history",
+                    )
+                }
+            }
         }
     }
 
-    if (formState.isOpen) {
-        Dialog(onDismissRequest = onCancel) {
+    // Bottom sheet for `[⋯]` in `~/pipe/lib`
+    val currentTarget = sheetTarget
+    if (currentTarget != null) {
+        Dialog(onDismissRequest = { sheetTarget = null }) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { sheetTarget = null },
+                    ),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(c.bg)
+                        .border(1.dp, c.accent)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = {},
+                        )
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    when (currentTarget) {
+                        is LibrarySheetTarget.PipeTarget -> {
+                            val eng = currentTarget.engine
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    AsciiKindBadge("s:${eng.keyword}", c.forRole(eng.colorRole))
+                                    Spacer(Modifier.width(8.dp))
+                                    Column {
+                                        AsciiText(if (eng.isDefault) "${eng.name} *" else eng.name, style = AsciiType.title, color = c.fg, maxLines = 1)
+                                        AsciiText(eng.urlTemplate, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                    }
+                                }
+                                AsciiButton("x", { sheetTarget = null })
+                            }
+                            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                            if (!eng.isDefault) {
+                                AsciiSheetActionRow("default", "Set as default pipe (*)", {
+                                    sheetTarget = null
+                                    onSetDefaultEngine(eng.id)
+                                }, isPrimary = true)
+                            }
+                            AsciiSheetActionRow("edit", "Edit search pipe", {
+                                sheetTarget = null
+                                onEditEngineClick(eng)
+                            }, isPrimary = eng.isDefault)
+                            if (engines.size > 1) {
+                                AsciiSheetActionRow("delete", "Delete search pipe", {
+                                    sheetTarget = null
+                                    onDeleteEngineClick(eng)
+                                }, isDestructive = true)
+                            }
+                        }
+
+                        is LibrarySheetTarget.BookmarkTarget -> {
+                            val bm = currentTarget.bookmark
+                            val badge = when (bm.kind) {
+                                BookmarkKind.FOLDER -> "b:d/"
+                                BookmarkKind.FILE -> "b:f."
+                                BookmarkKind.LINK -> "b:bm"
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    AsciiKindBadge(badge, c.accent2)
+                                    Spacer(Modifier.width(8.dp))
+                                    Column {
+                                        AsciiText("${bm.title} (${bm.alias})", style = AsciiType.title, color = c.fg, maxLines = 1)
+                                        AsciiText(bm.target, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                    }
+                                }
+                                AsciiButton("x", { sheetTarget = null })
+                            }
+                            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                            AsciiSheetActionRow("open", "Open ${bm.title}", {
+                                sheetTarget = null
+                                onOpenBookmark(bm)
+                            }, isPrimary = true)
+                            AsciiSheetActionRow("edit", "Edit bookmark", {
+                                sheetTarget = null
+                                onEditBookmarkClick(bm)
+                            })
+                            AsciiSheetActionRow("copy", "Copy target URL / path", {
+                                clipboard.setText(AnnotatedString(bm.target))
+                                sheetTarget = null
+                            })
+                            AsciiSheetActionRow("delete", "Delete bookmark", {
+                                sheetTarget = null
+                                onDeleteBookmarkClick(bm)
+                            }, isDestructive = true)
+                        }
+
+                        is LibrarySheetTarget.HistoryTarget -> {
+                            val entry = currentTarget.entry
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    AsciiKindBadge("hist", c.accent2)
+                                    Spacer(Modifier.width(8.dp))
+                                    Column {
+                                        AsciiText(entry.rawInput, style = AsciiType.title, color = c.fg, maxLines = 1)
+                                        AsciiText(entry.resolvedUrl, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                    }
+                                }
+                                AsciiButton("x", { sheetTarget = null })
+                            }
+                            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                            AsciiSheetActionRow("open", "Re-run query", {
+                                sheetTarget = null
+                                onRerunHistory(entry)
+                            }, isPrimary = true)
+                            AsciiSheetActionRow("fill", "Fill into search box", {
+                                sheetTarget = null
+                                onFillHistory(entry)
+                            })
+                            AsciiSheetActionRow("copy", "Copy query text", {
+                                clipboard.setText(AnnotatedString(entry.rawInput))
+                                sheetTarget = null
+                            })
+                            AsciiSheetActionRow("delete", "Delete history item", {
+                                sheetTarget = null
+                                onDeleteHistory(entry)
+                            }, isDestructive = true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Bookmark Add/Edit Modal Dialog
+    if (bookmarkForm.isOpen) {
+        Dialog(onDismissRequest = onBookmarkCancel) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1810,161 +2599,60 @@ private fun PipeBookmarksScreen(
                     .verticalScroll(rememberScrollState())
                     .imePadding(),
             ) {
-                AsciiBox(title = if (formState.editingId != null) "edit bookmark" else "new bookmark") {
+                AsciiBox(title = if (bookmarkForm.editingId != null) "edit bookmark" else "new bookmark") {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        AsciiText("type:", style = AsciiType.small, color = c.dim)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            BookmarkKind.entries.forEach { k ->
-                                AsciiRadio(
-                                    selected = formState.kind == k,
-                                    onClick = { onKindChange(k) },
-                                    label = k.name.lowercase(),
-                                )
-                            }
-                        }
+                        AsciiDropdownRow(
+                            label = "bookmark type",
+                            selectedValue = bookmarkForm.kind,
+                            options = BookmarkKind.entries.map { it to it.name.lowercase() },
+                            onSelect = onBookmarkKindChange,
+                        )
                         AsciiTextField(
-                            label = "alias (short trigger, e.g. dl, notes, hn)",
-                            promptPrefix = "| ",
-                            value = formState.alias,
-                            onValueChange = onAliasChange,
+                            label = "b alias (e.g. dl, docs, hn)",
+                            promptPrefix = "b ",
+                            value = bookmarkForm.alias,
+                            onValueChange = onBookmarkAliasChange,
                             placeholder = "dl",
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Next),
                         )
                         AsciiTextField(
                             label = "title",
                             promptPrefix = "> ",
-                            value = formState.title,
-                            onValueChange = onTitleChange,
+                            value = bookmarkForm.title,
+                            onValueChange = onBookmarkTitleChange,
                             placeholder = "Downloads",
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                         )
                         AsciiTextField(
-                            label = if (formState.kind == BookmarkKind.LINK) "url (https://...)" else "phone path (/storage/emulated/0/...)",
+                            label = if (bookmarkForm.kind == BookmarkKind.LINK) "url (https://...)" else "phone path (/storage/emulated/0/...)",
                             promptPrefix = "> ",
-                            value = formState.target,
-                            onValueChange = onTargetChange,
-                            placeholder = if (formState.kind == BookmarkKind.LINK) "https://news.ycombinator.com" else "/storage/emulated/0/Download",
-                            errorText = formState.errorText,
+                            value = bookmarkForm.target,
+                            onValueChange = onBookmarkTargetChange,
+                            placeholder = if (bookmarkForm.kind == BookmarkKind.LINK) "https://news.ycombinator.com" else "/storage/emulated/0/Download",
+                            errorText = bookmarkForm.errorText,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                         )
                         AsciiTextField(
-                            label = "optional #tags (e.g. #legal #work #docs)",
+                            label = "optional #tags",
                             promptPrefix = "# ",
-                            value = formState.tags,
-                            onValueChange = onTagsChange,
+                            value = bookmarkForm.tags,
+                            onValueChange = onBookmarkTagsChange,
                             placeholder = "#legal #id",
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                         )
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            AsciiButton("cancel", onCancel)
-                            AsciiButton("save", onSave, primary = true)
+                            AsciiButton("cancel", onBookmarkCancel)
+                            AsciiButton("save", onBookmarkSave, primary = true)
                         }
                     }
                 }
             }
         }
     }
-}
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun PipeEnginesScreen(
-    engines: List<SearchEngine>,
-    formState: EngineFormState,
-    onBack: () -> Unit,
-    onAddClick: () -> Unit,
-    onEditClick: (SearchEngine) -> Unit,
-    onDeleteClick: (SearchEngine) -> Unit,
-    onMoveUp: (Int) -> Unit,
-    onMoveDown: (Int) -> Unit,
-    onSetDefault: (String) -> Unit,
-    onFormNameChange: (TextFieldValue) -> Unit,
-    onFormKeywordChange: (TextFieldValue) -> Unit,
-    onFormUrlChange: (TextFieldValue) -> Unit,
-    onFormColorChange: (EngineColorRole) -> Unit,
-    onFormDefaultChange: (Boolean) -> Unit,
-    onFormSave: () -> Unit,
-    onFormCancel: () -> Unit,
-) {
-    val c = LocalAscii.current
-
-    Column(Modifier.fillMaxSize()) {
-        AsciiTopHeader(
-            path = "~/pipe/engines",
-            actions = {
-                AsciiButton(label = "< back", onClick = onBack, spokenLabel = "back to search prompt")
-            },
-        )
-
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            item {
-                Spacer(Modifier.height(4.dp))
-                AsciiText(
-                    text = "tap (*) to set default fallback pipe. use [^] [v] to reorder.",
-                    style = AsciiType.small,
-                    color = c.dim,
-                )
-            }
-
-            itemsIndexed(engines, key = { _, item -> item.id }) { idx, eng ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, if (eng.isDefault) c.accent else c.border)
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    BoxWithConstraints(Modifier.fillMaxWidth()) {
-                        val cols = rememberCols(AsciiType.body)
-                        val left = "|${eng.keyword}  ${eng.name}"
-                        val right = if (eng.isDefault) "[default*]" else "pipe"
-                        AsciiText(
-                            text = leader(left, right, cols),
-                            style = AsciiType.title,
-                            color = if (eng.isDefault) c.accent else c.forRole(eng.colorRole),
-                            softWrap = false,
-                            maxLines = 1,
-                        )
-                    }
-                    AsciiText(text = eng.urlTemplate, style = AsciiType.small, color = c.dim, maxLines = 1)
-                    Row(
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        AsciiRadio(selected = eng.isDefault, onClick = { onSetDefault(eng.id) }, label = "default")
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            AsciiButton("^", { onMoveUp(idx) }, enabled = idx > 0, spokenLabel = "move ${eng.name} up")
-                            AsciiButton("v", { onMoveDown(idx) }, enabled = idx < engines.lastIndex, spokenLabel = "move ${eng.name} down")
-                            AsciiButton("edit", { onEditClick(eng) }, spokenLabel = "edit ${eng.name}")
-                            AsciiButton("del", { onDeleteClick(eng) }, enabled = engines.size > 1, spokenLabel = "delete ${eng.name}")
-                        }
-                    }
-                }
-            }
-
-            item { Spacer(Modifier.height(8.dp)) }
-        }
-
-        Box(Modifier.fillMaxWidth().background(c.bg).padding(horizontal = 12.dp, vertical = 6.dp)) {
-            AsciiButton(
-                label = "+ add pipe engine",
-                onClick = onAddClick,
-                primary = true,
-                modifier = Modifier.fillMaxWidth().border(1.dp, c.accent),
-                spokenLabel = "add new search engine pipe",
-            )
-        }
-    }
-
-    if (formState.isOpen) {
-        Dialog(onDismissRequest = onFormCancel) {
+    // Engine Add/Edit Modal Dialog
+    if (engineForm.isOpen) {
+        Dialog(onDismissRequest = onEngineCancel) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1974,57 +2662,52 @@ private fun PipeEnginesScreen(
                     .verticalScroll(rememberScrollState())
                     .imePadding(),
             ) {
-                AsciiBox(title = if (formState.editingId != null) "edit pipe" else "new pipe") {
+                AsciiBox(title = if (engineForm.editingId != null) "edit pipe" else "new pipe") {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         AsciiTextField(
                             label = "name",
                             promptPrefix = "> ",
-                            value = formState.name,
-                            onValueChange = onFormNameChange,
+                            value = engineForm.name,
+                            onValueChange = onEngineNameChange,
                             placeholder = "DuckDuckGo",
-                            errorText = formState.errors.nameError,
+                            errorText = engineForm.errors.nameError,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                         )
                         AsciiTextField(
-                            label = "keyword (unique, no spaces)",
-                            promptPrefix = "| ",
-                            value = formState.keyword,
-                            onValueChange = onFormKeywordChange,
+                            label = "s keyword (unique, no spaces)",
+                            promptPrefix = "s ",
+                            value = engineForm.keyword,
+                            onValueChange = onEngineKeywordChange,
                             placeholder = "ddg",
-                            errorText = formState.errors.keywordError,
+                            errorText = engineForm.errors.keywordError,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Next),
                         )
                         AsciiTextField(
                             label = "url template (must contain {query})",
                             promptPrefix = "> ",
-                            value = formState.urlTemplate,
-                            onValueChange = onFormUrlChange,
+                            value = engineForm.urlTemplate,
+                            onValueChange = onEngineUrlChange,
                             placeholder = "https://duckduckgo.com/?q={query}",
-                            errorText = formState.errors.urlTemplateError,
+                            errorText = engineForm.errors.urlTemplateError,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
                         )
-                        AsciiText("tag color role:", style = AsciiType.small, color = c.dim)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            EngineColorRole.entries.forEach { role ->
-                                AsciiPipePill(
-                                    keyword = role.label,
-                                    selected = formState.colorRole == role,
-                                    accentColor = c.forRole(role),
-                                    onClick = { onFormColorChange(role) },
-                                )
-                            }
-                        }
-                        AsciiCheckbox(
-                            checked = formState.isDefault,
-                            onChange = onFormDefaultChange,
-                            label = "set as default fallback pipe",
+                        AsciiDropdownRow(
+                            label = "tag color role",
+                            selectedValue = engineForm.colorRole,
+                            options = EngineColorRole.entries.map { it to it.label },
+                            onSelect = onEngineColorChange,
                         )
-                        if (!formState.errors.isValid) {
+                        AsciiToggleRow(
+                            label = "set as default fallback pipe (*)",
+                            checked = engineForm.isDefault,
+                            onCheckedChange = onEngineDefaultChange,
+                        )
+                        if (!engineForm.errors.isValid) {
                             AsciiText("! fix validation errors above to save", style = AsciiType.small, color = c.error)
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            AsciiButton("cancel", onFormCancel)
-                            AsciiButton("save", onFormSave, enabled = formState.errors.isValid, primary = true)
+                            AsciiButton("cancel", onEngineCancel)
+                            AsciiButton("save", onEngineSave, enabled = engineForm.errors.isValid, primary = true)
                         }
                     }
                 }
@@ -2033,6 +2716,112 @@ private fun PipeEnginesScreen(
     }
 }
 
+/**
+ * Step 4 ASCII Slider Row (`44dp` touch height, 1dp square border, live drag + tap track, ASCII progress bar).
+ * Replaces the old `-10%` / `+10%` buttons for overlay opacity and background dim.
+ */
+@Composable
+fun AsciiSliderRow(
+    label: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAscii.current
+    val pct = (value * 100f).toInt()
+    val rangeSpan = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0.01f)
+    val fraction = ((value - valueRange.start) / rangeSpan).coerceIn(0f, 1f)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AsciiText(text = label, style = AsciiType.body, color = c.fg)
+            AsciiText(text = "$pct%", style = AsciiType.title, color = c.accent)
+        }
+        Spacer(Modifier.height(4.dp))
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 44.dp)
+                .background(c.surface)
+                .border(1.dp, c.border)
+                .pointerInput(valueRange.start, valueRange.endInclusive) {
+                    detectTapGestures { offset ->
+                        val w = size.width.toFloat().coerceAtLeast(1f)
+                        val newFrac = (offset.x / w).coerceIn(0f, 1f)
+                        onValueChange(valueRange.start + newFrac * rangeSpan)
+                    }
+                }
+                .pointerInput(valueRange.start, valueRange.endInclusive) {
+                    detectHorizontalDragGestures { change, _ ->
+                        change.consume()
+                        val w = size.width.toFloat().coerceAtLeast(1f)
+                        val newFrac = (change.position.x / w).coerceIn(0f, 1f)
+                        onValueChange(valueRange.start + newFrac * rangeSpan)
+                    }
+                }
+                .padding(horizontal = 8.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            val totalCells = (rememberCols(AsciiType.body) - 4).coerceIn(10, 36)
+            val filledCells = (fraction * totalCells).toInt().coerceIn(0, totalCells)
+            val bar = "[" + "#".repeat(filledCells) + "-".repeat(totalCells - filledCells) + "]"
+            AsciiText(
+                text = bar,
+                style = AsciiType.title,
+                color = c.accent,
+                softWrap = false,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
+ * Red-bordered ASCII box for destructive actions (`danger zone`).
+ */
+@Composable
+fun AsciiDangerBox(
+    title: String = "danger zone",
+    modifier: Modifier = Modifier,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    val c = LocalAscii.current
+    Box(modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp)
+                .border(1.dp, c.error)
+                .padding(start = 12.dp, top = 16.dp, end = 12.dp, bottom = 12.dp),
+            content = content,
+        )
+        AsciiText(
+            text = " ! $title ",
+            modifier = Modifier
+                .padding(start = 10.dp)
+                .background(c.bg),
+            style = AsciiType.title,
+            color = c.error,
+        )
+    }
+}
+
+/**
+ * Step 4 Redesigned Settings Screen (`~/pipe/set`):
+ * - Horizontally scrollable 44dp chip row (`ovl`, `idx`, `thm`, `rte`, `bak`) that smoothly scrolls to each section in a unified `LazyColumn`.
+ * - Interactive `AsciiSliderRow` sliders (instead of `-10%` / `+10%`) for overlay opacity and background dim.
+ * - JSON backup laid out as a symmetric 2x2 button grid (`export file` / `import file` / `copy json` / `paste json`).
+ * - `reset pipes` moved into a separate red-bordered `danger zone` box at the bottom.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PipeSettingsScreen(
@@ -2075,90 +2864,76 @@ private fun PipeSettingsScreen(
 ) {
     val c = LocalAscii.current
     val clipboard = LocalClipboardManager.current
-    val section = state.settingsSection
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    val sections = SettingsSection.entries
 
-    Column(Modifier.fillMaxSize()) {
+    // Sync active chip highlight as user scrolls through the 5 sections
+    val visibleSection = remember(listState.firstVisibleItemIndex) {
+        sections.getOrElse(listState.firstVisibleItemIndex.coerceIn(0, sections.lastIndex)) { SettingsSection.OVERLAY }
+    }
+
+    Column(Modifier.fillMaxSize().background(c.bg)) {
         AsciiTopHeader(
-            path = "~/pipe/set/${section.label}",
+            path = "~/pipe/set/${visibleSection.label}",
             actions = {
                 AsciiButton(label = "< back", onClick = onBack, spokenLabel = "back to search prompt")
             },
         )
 
-        // Standardized Sub-Tab Bar (`[1 ovl] [2 idx] [3 thm] [4 rte] [5 bak]`)
+        // Scroll-to-Section 44dp Bordered Chip Row (`ovl`, `idx`, `thm`, `rte`, `bak`)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(c.surface)
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SettingsSection.entries.forEach { tab ->
-                val isSelected = section == tab
-                val src = remember { MutableInteractionSource() }
-                val pressed by src.collectIsPressedAsState()
-                val inverted = isSelected || pressed
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 42.dp)
-                        .background(if (inverted) c.accent else Color.Transparent)
-                        .clickable(
-                            interactionSource = src,
-                            indication = null,
-                            role = Role.Tab,
-                            onClick = { onSelectSettingsSection(tab) },
-                        ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    AsciiText(
-                        text = "[${tab.index} ${tab.label}]",
-                        style = if (isSelected) AsciiType.title else AsciiType.small,
-                        color = if (inverted) c.bg else c.fg,
-                        maxLines = 1,
-                    )
-                }
+            sections.forEachIndexed { idx, tab ->
+                AsciiScopeChip(
+                    label = tab.label,
+                    active = visibleSection == tab,
+                    onClick = {
+                        onSelectSettingsSection(tab)
+                        coroutineScope.launch {
+                            listState.animateScrollToItem(idx)
+                        }
+                    },
+                )
             }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
 
-        Column(
+        // Unified Scrollable Sections List (indices 0..4 correspond to `ovl`, `idx`, `thm`, `rte`, `bak`)
+        LazyColumn(
+            state = listState,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            when (section) {
-                // TAB 1: OVERLAY & SEARCH BOX (Standardized Dropdowns + Toggles)
-                SettingsSection.OVERLAY -> {
-                    AsciiBox(title = "floating overlay") {
-                        val pct = (state.overlayOpacity * 100).toInt()
-                        val dimPct = (state.overlayDimAmount * 100).toInt()
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            AsciiText("card opacity: $pct%", style = AsciiType.body, color = c.fg)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                AsciiButton("-10%", { onOverlayOpacityChange(state.overlayOpacity - 0.10f) })
-                                AsciiButton("+10%", { onOverlayOpacityChange(state.overlayOpacity + 0.10f) })
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            AsciiText("background dim: $dimPct%", style = AsciiType.body, color = c.fg)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                AsciiButton("-10%", { onOverlayDimChange(state.overlayDimAmount - 0.10f) })
-                                AsciiButton("+10%", { onOverlayDimChange(state.overlayDimAmount + 0.10f) })
-                            }
-                        }
+            // SECTION 0: `ovl` (Overlay & Search Box — with Sliders and "launch overlay")
+            item(key = "sec_ovl") {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    AsciiBox(title = "ovl · floating overlay") {
+                        AsciiSliderRow(
+                            label = "card opacity",
+                            value = state.overlayOpacity,
+                            valueRange = 0.15f..1.0f,
+                            onValueChange = onOverlayOpacityChange,
+                        )
+                        AsciiSliderRow(
+                            label = "background dim",
+                            value = state.overlayDimAmount,
+                            valueRange = 0.0f..0.85f,
+                            onValueChange = onOverlayDimChange,
+                        )
 
                         AsciiDropdownRow(
                             label = "overlay position",
@@ -2193,14 +2968,26 @@ private fun PipeSettingsScreen(
                             onCheckedChange = onOverlayIdleChange,
                         )
 
-                        Spacer(Modifier.height(4.dp))
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            AsciiButton("test overlay", onLaunchOverlayPreview, primary = true)
-                            AsciiButton("+ pin shortcut", onPinOverlayShortcut)
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            AsciiButton(
+                                label = "launch overlay",
+                                onClick = onLaunchOverlayPreview,
+                                primary = true,
+                                modifier = Modifier.weight(1f).border(1.dp, c.accent),
+                            )
+                            AsciiButton(
+                                label = "+ pin shortcut",
+                                onClick = onPinOverlayShortcut,
+                                modifier = Modifier.weight(1f).border(1.dp, c.border),
+                            )
                         }
                     }
 
-                    AsciiBox(title = "search box appearance") {
+                    AsciiBox(title = "ovl · search box") {
                         var placeholderField by remember(state.searchBoxPlaceholder) {
                             mutableStateOf(TextFieldValue(state.searchBoxPlaceholder, TextRange(state.searchBoxPlaceholder.length)))
                         }
@@ -2239,10 +3026,15 @@ private fun PipeSettingsScreen(
                         )
                     }
                 }
+            }
 
-                // TAB 2: PERSISTENT STORAGE INDEX & PERMISSIONS
-                SettingsSection.INDEX -> {
-                    AsciiBox(title = "local index & permissions") {
+            // SECTION 1: `idx` (Storage Index, Permissions & Excluded Folders)
+            item(key = "sec_idx") {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    AsciiBox(title = "idx · local index & permissions") {
                         val ageText = if (state.lastIndexedTimestampMs <= 0L) {
                             "never indexed"
                         } else {
@@ -2264,27 +3056,31 @@ private fun PipeSettingsScreen(
                             checked = state.hourlyAutoIndexEnabled,
                             onCheckedChange = onHourlyAutoIndexChange,
                         )
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Spacer(Modifier.height(4.dp))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             AsciiButton(
                                 label = if (state.isIndexingInProgress) "indexing..." else "re-index now",
                                 onClick = onRebuildIndexNow,
                                 enabled = !state.isIndexingInProgress,
                                 primary = true,
+                                modifier = Modifier.border(1.dp, c.accent),
                             )
                             AsciiButton(
                                 label = if (state.hasFilesPermission) "files: ok" else "! grant files",
                                 onClick = onRequestFilesPermission,
                                 primary = !state.hasFilesPermission,
+                                modifier = Modifier.border(1.dp, if (state.hasFilesPermission) c.border else c.warn),
                             )
                             AsciiButton(
                                 label = if (state.hasContactsPermission) "contacts: ok" else "! grant contacts",
                                 onClick = onRequestContactsPermission,
                                 primary = !state.hasContactsPermission,
+                                modifier = Modifier.border(1.dp, if (state.hasContactsPermission) c.border else c.warn),
                             )
                         }
                     }
 
-                    AsciiBox(title = "excluded folders (${state.excludedFolders.size})") {
+                    AsciiBox(title = "idx · excluded folders (${state.excludedFolders.size})") {
                         var newFolderInput by remember { mutableStateOf(TextFieldValue("")) }
                         AsciiTextField(
                             label = "skip folder name during indexing",
@@ -2306,96 +3102,171 @@ private fun PipeSettingsScreen(
                             },
                         )
                         Spacer(Modifier.height(6.dp))
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             state.excludedFolders.forEach { folderName ->
                                 AsciiButton(
                                     label = "$folderName x",
                                     onClick = { onRemoveExcludedFolder(folderName) },
+                                    modifier = Modifier.border(1.dp, c.border),
                                 )
                             }
                         }
                     }
                 }
+            }
 
-                // TAB 3: THEME & PALETTE (Standardized Dropdowns)
-                SettingsSection.THEME -> {
-                    AsciiBox(title = "theme & color palette") {
-                        AsciiDropdownRow(
-                            label = "theme mode",
-                            selectedValue = state.themeMode,
-                            options = listOf(
-                                ThemeMode.System to "System default",
-                                ThemeMode.Dark to "Dark mode",
-                                ThemeMode.Light to "Light mode",
-                            ),
-                            onSelect = onThemeModeChange,
-                        )
-                        AsciiDropdownRow(
-                            label = "color palette",
-                            selectedValue = state.paletteChoice,
-                            options = PaletteChoice.entries.map { it to it.palette.name },
-                            onSelect = onPaletteChoiceChange,
-                        )
-                    }
+            // SECTION 2: `thm` (Theme & Color Palette)
+            item(key = "sec_thm") {
+                AsciiBox(title = "thm · theme & color palette") {
+                    AsciiDropdownRow(
+                        label = "theme mode",
+                        selectedValue = state.themeMode,
+                        options = listOf(
+                            ThemeMode.System to "System default",
+                            ThemeMode.Dark to "Dark mode",
+                            ThemeMode.Light to "Light mode",
+                        ),
+                        onSelect = onThemeModeChange,
+                    )
+                    AsciiDropdownRow(
+                        label = "color palette",
+                        selectedValue = state.paletteChoice,
+                        options = PaletteChoice.entries.map { it to it.palette.name },
+                        onSelect = onPaletteChoiceChange,
+                    )
                 }
+            }
 
-                // TAB 4: DEFAULT BROWSER & ROUTING (Dropdown Menu!)
-                SettingsSection.ROUTING -> {
-                    AsciiBox(title = "browser & routing") {
-                        val browserOptions = remember(state.installedBrowsers) {
-                            listOf("auto" to "System Default (Auto)") +
-                                state.installedBrowsers.map { it.packageName to it.label }
-                        }
-                        AsciiDropdownRow(
-                            label = "default browser",
-                            subtitle = "opens web links & search pipes",
-                            selectedValue = state.preferredBrowserPackage,
-                            options = browserOptions,
-                            onSelect = onPreferredBrowserChange,
+            // SECTION 3: `rte` (Default Browser Dropdown & Routing)
+            item(key = "sec_rte") {
+                AsciiBox(title = "rte · browser & routing") {
+                    val browserOptions = remember(state.installedBrowsers) {
+                        listOf("auto" to "System Default (Auto)") +
+                            state.installedBrowsers.map { it.packageName to it.label }
+                    }
+                    AsciiDropdownRow(
+                        label = "default browser",
+                        subtitle = "opens web links & search pipes",
+                        selectedValue = state.preferredBrowserPackage,
+                        options = browserOptions,
+                        onSelect = onPreferredBrowserChange,
+                    )
+                    AsciiDropdownRow(
+                        label = "share text action",
+                        subtitle = "when sharing or selecting text",
+                        selectedValue = state.externalTextMode,
+                        options = listOf(
+                            ExternalTextMode.OPEN_OVERLAY to "Open floating overlay",
+                            ExternalTextMode.OPEN_PROMPT to "Open main prompt",
+                            ExternalTextMode.DIRECT_PIPE to "Pipe immediately",
+                        ),
+                        onSelect = onExternalTextModeChange,
+                    )
+                    AsciiToggleRow(
+                        label = "record local command history",
+                        checked = state.historyEnabled,
+                        onCheckedChange = onHistoryEnabledChange,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        AsciiButton(
+                            label = "default apps",
+                            onClick = onOpenDefaultAppsSettings,
+                            primary = true,
+                            modifier = Modifier.weight(1f).border(1.dp, c.accent),
                         )
-                        AsciiDropdownRow(
-                            label = "share text action",
-                            subtitle = "when sharing or selecting text",
-                            selectedValue = state.externalTextMode,
-                            options = listOf(
-                                ExternalTextMode.OPEN_OVERLAY to "Open floating overlay",
-                                ExternalTextMode.OPEN_PROMPT to "Open main prompt",
-                                ExternalTextMode.DIRECT_PIPE to "Pipe immediately",
-                            ),
-                            onSelect = onExternalTextModeChange,
-                        )
-                        AsciiToggleRow(
-                            label = "record local command history",
-                            checked = state.historyEnabled,
-                            onCheckedChange = onHistoryEnabledChange,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            AsciiButton("system default apps", onOpenDefaultAppsSettings, primary = true)
-                            AsciiButton("copy pipe:// url", {
+                        AsciiButton(
+                            label = "copy pipe:// url",
+                            onClick = {
                                 clipboard.setText(AnnotatedString("pipe://search?q=%s"))
                                 onSetJsonStatus("ok: copied pipe://search?q=%s")
-                            })
-                        }
+                            },
+                            modifier = Modifier.weight(1f).border(1.dp, c.border),
+                        )
                     }
                 }
+            }
 
-                // TAB 5: BACKUP, RESET & ABOUT
-                SettingsSection.BACKUP -> {
-                    AsciiBox(title = "json backup & reset") {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            AsciiButton("export file", onExportJsonToFile)
-                            AsciiButton("import file", onImportJsonFromFile)
-                            AsciiButton("copy json", onOpenJsonExportDialog)
-                            AsciiButton("paste json", onOpenJsonImportDialog)
-                            AsciiButton("reset pipes", onResetDefaults)
+            // SECTION 4: `bak` (2x2 JSON Backup Grid + Red-Bordered Danger Zone)
+            item(key = "sec_bak") {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    AsciiBox(title = "bak · json backup (2x2)") {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                AsciiButton(
+                                    label = "export file",
+                                    onClick = onExportJsonToFile,
+                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp).border(1.dp, c.border),
+                                )
+                                AsciiButton(
+                                    label = "import file",
+                                    onClick = onImportJsonFromFile,
+                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp).border(1.dp, c.border),
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                AsciiButton(
+                                    label = "copy json",
+                                    onClick = onOpenJsonExportDialog,
+                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp).border(1.dp, c.border),
+                                )
+                                AsciiButton(
+                                    label = "paste json",
+                                    onClick = onOpenJsonImportDialog,
+                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp).border(1.dp, c.border),
+                                )
+                            }
                         }
                         if (state.jsonStatusMessage != null) {
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(6.dp))
                             AsciiText(
                                 text = state.jsonStatusMessage,
                                 style = AsciiType.small,
                                 color = if (state.jsonStatusMessage.startsWith("!")) c.error else c.good,
+                            )
+                        }
+                    }
+
+                    // Separate Red-Bordered Danger Zone for `reset pipes`
+                    AsciiDangerBox(title = "danger zone") {
+                        AsciiText(
+                            text = "restores the 7 default search pipes (you can undo within 6s):",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        val src = remember { MutableInteractionSource() }
+                        val pressed by src.collectIsPressedAsState()
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .background(if (pressed) c.error else c.surface)
+                                .border(1.dp, c.error)
+                                .clickable(
+                                    interactionSource = src,
+                                    indication = null,
+                                    role = Role.Button,
+                                    onClick = onResetDefaults,
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            AsciiText(
+                                text = "[reset pipes]",
+                                style = AsciiType.title,
+                                color = if (pressed) c.bg else c.error,
                             )
                         }
                     }
@@ -2450,5 +3321,69 @@ private fun PipeSettingsScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * Launcher-style sample data preview for Step 1 (apps, contact, file, folder bookmark, search pipe).
+ */
+@Composable
+fun PipePromptStep1Preview() {
+    val sampleEngine = com.sujan.pipe.model.DefaultEngines.LIST.first { it.keyword == "gh" }
+    val sampleBookmark = com.sujan.pipe.model.PipeBookmark(
+        id = "bm_dl",
+        alias = "dl",
+        title = "Downloads",
+        target = "/storage/emulated/0/Download",
+        kind = BookmarkKind.FOLDER,
+    )
+    val sampleContact = ContactItem(
+        id = "c_1",
+        displayName = "Kalika Prasad",
+        phoneNumber = "9841234567",
+    )
+    val sampleFile = LocalFileItem(
+        name = "citizenship_scan.pdf",
+        absolutePath = "/storage/emulated/0/Documents/Legal/citizenship_scan.pdf",
+        isDirectory = false,
+        parentName = "Documents/Legal",
+        sizeBytes = 840_000L,
+    )
+    val sampleApp = com.sujan.pipe.model.InstalledAppItem(
+        label = "MiXplorer Silver",
+        packageName = "com.mixplorer.silver",
+    )
+    val sampleResults = listOf(
+        com.sujan.pipe.domain.PaletteItem.AppAction(sampleApp, "app:com.mixplorer.silver", 9500, 12),
+        com.sujan.pipe.domain.PaletteItem.ContactAction(sampleContact, com.sujan.pipe.model.ContactQuickAction.CALL, "contact:9841234567", 8800, 8),
+        com.sujan.pipe.domain.PaletteItem.BookmarkAction(sampleBookmark, "bm:bm_dl", 8200, 6),
+        com.sujan.pipe.domain.PaletteItem.FileAction(sampleFile, "file:/storage/emulated/0/Documents/Legal/citizenship_scan.pdf", 7600, 3),
+        com.sujan.pipe.domain.PaletteItem.EngineAction(sampleEngine, "compose", "https://github.com/search?q=compose", false, "eng:eng_github", 7000, 2),
+    )
+
+    PipeTheme(mode = ThemeMode.Dark, palette = PaletteChoice.MOSS.palette) {
+        AsciiRaycastPaletteWindow(
+            titlePath = "~/pipe",
+            searchInput = TextFieldValue(""),
+            onSearchInputChange = {},
+            parsedCommand = com.sujan.pipe.domain.ParsedPromptCommand(PromptIntentMode.ALL, ""),
+            results = sampleResults,
+            hasContactsPermission = true,
+            hasFilesPermission = true,
+            launchError = null,
+            focusRequester = remember { FocusRequester() },
+            headerRightActions = {
+                AsciiButton("+", {})
+                AsciiButton("lib", {})
+                AsciiButton("set", {})
+            },
+            onAliasPillClick = {},
+            onSubmitPrimary = {},
+            onExecuteItem = {},
+            onCallContact = {},
+            onSmsContact = {},
+            onWhatsAppContact = {},
+            onScopeIntoFolder = {},
+        )
     }
 }

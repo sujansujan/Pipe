@@ -1199,7 +1199,7 @@ object QueryRouter {
                         isBookmark = false,
                         targetId = h.id.toString(),
                         aliasOrKeyword = h.rawInput,
-                        displayTitle = "Delete History: \"${h.rawInput}\"",
+                        displayTitle = "Delete History: \\\"${h.rawInput}\\\"",
                         isHistory = true,
                     )
                 )
