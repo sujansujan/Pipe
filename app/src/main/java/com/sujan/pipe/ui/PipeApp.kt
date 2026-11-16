@@ -71,8 +71,10 @@ import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.ui.ascii.AsciiBox
 import com.sujan.pipe.ui.ascii.AsciiButton
 import com.sujan.pipe.ui.ascii.AsciiCheckbox
+import com.sujan.pipe.ui.ascii.AsciiDropdownRow
 import com.sujan.pipe.ui.ascii.AsciiPipePill
 import com.sujan.pipe.ui.ascii.AsciiRadio
+import com.sujan.pipe.ui.ascii.AsciiToggleRow
 import com.sujan.pipe.ui.ascii.AsciiText
 import com.sujan.pipe.ui.ascii.AsciiTextField
 import com.sujan.pipe.ui.ascii.AsciiTopHeader
@@ -389,11 +391,29 @@ private fun PipePromptScreen(
                 inlineQuickAdd = null
                 onQuickSavePipe(kw, name, url)
             },
+            existingBookmarks = state.bookmarks,
+            existingEngines = state.engines,
+            onQuickDeleteBookmark = { bm -> onQuickRemoveItem(true, bm.id) },
+            onQuickDeleteEngine = { eng -> onQuickRemoveItem(false, eng.id) },
+            onSetDefaultEngine = { id ->
+                // handled via quick pipe manager
+            },
             headerRightActions = {
-                AsciiButton("+add", { onAliasPillClick("add") }, spokenLabel = "quick add")
-                AsciiButton("ovl", onLaunchOverlay, spokenLabel = "overlay")
-                AsciiButton("bm", { onNavigate(PipeView.BOOKMARKS) }, spokenLabel = "bookmarks")
-                AsciiButton("pipes", { onNavigate(PipeView.ENGINES) }, spokenLabel = "engines")
+                AsciiButton("+", {
+                    if (inlineQuickAdd != null) {
+                        inlineQuickAdd = null
+                    } else {
+                        val raw = state.searchInput.text.trim().removePrefix("+").removePrefix("add").trim()
+                        inlineQuickAdd = com.sujan.pipe.domain.PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.BOOKMARK,
+                            title = "Quick Add",
+                            subtitle = "",
+                            isReadyToCommit = false,
+                            arg1 = raw,
+                        )
+                    }
+                }, primary = inlineQuickAdd != null, spokenLabel = "quick add or manage")
+                AsciiButton("ovl", onLaunchOverlay, spokenLabel = "floating overlay")
                 AsciiButton("set", { onNavigate(PipeView.SETTINGS) }, spokenLabel = "settings")
             },
             onAliasPillClick = { alias ->
@@ -488,6 +508,11 @@ fun AsciiRaycastPaletteWindow(
     onQuickSaveContact: (String, String) -> Unit = { _, _ -> },
     onQuickSaveBookmark: (String, String, String, BookmarkKind, String) -> Unit = { _, _, _, _, _ -> },
     onQuickSavePipe: (String, String, String) -> Unit = { _, _, _ -> },
+    existingBookmarks: List<PipeBookmark> = emptyList(),
+    existingEngines: List<SearchEngine> = emptyList(),
+    onQuickDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
+    onQuickDeleteEngine: ((SearchEngine) -> Unit)? = null,
+    onSetDefaultEngine: ((String) -> Unit)? = null,
     headerRightActions: @Composable () -> Unit,
     onAliasPillClick: (String) -> Unit,
     onSubmitPrimary: () -> Unit,
@@ -505,8 +530,8 @@ fun AsciiRaycastPaletteWindow(
 ) {
     val c = LocalAscii.current
     val scopeBadge = when (parsedCommand.mode) {
-        PromptIntentMode.SCOPED_FOLDER -> "${parsedCommand.scopedFolderBookmark?.alias ?: "dir"}:folder"
-        PromptIntentMode.ENGINE_ONLY -> "${parsedCommand.matchedEngine?.keyword ?: "web"}:pipe"
+        PromptIntentMode.SCOPED_FOLDER -> "b:${parsedCommand.scopedFolderBookmark?.alias ?: "folder"}"
+        PromptIntentMode.ENGINE_ONLY -> "s:${parsedCommand.matchedEngine?.keyword ?: "pipe"}"
         else -> parsedCommand.mode.scopeBadge
     }
 
@@ -638,23 +663,19 @@ fun AsciiRaycastPaletteWindow(
         if (inlineQuickAdd != null) {
             QuickAddInlineCard(
                 initialAction = inlineQuickAdd,
+                existingBookmarks = existingBookmarks,
+                existingEngines = existingEngines,
                 onSaveContact = onQuickSaveContact,
                 onSaveBookmark = onQuickSaveBookmark,
                 onSavePipe = onQuickSavePipe,
+                onDeleteBookmark = onQuickDeleteBookmark,
+                onDeleteEngine = onQuickDeleteEngine,
                 onCancel = onDismissInlineQuickAdd,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
             )
         }
 
-        // 3. ASCII Mid-Frame Divider (`├─ results (10 max · most used) ─────────────────┤`)
-        com.sujan.pipe.ui.ascii.AsciiFrameDivider(
-            leftLabel = if (parsedCommand.mode == PromptIntentMode.ALL && searchInput.text.isBlank()) {
-                "most used (${results.size}/10)"
-            } else {
-                "$scopeBadge (${results.size}/10)"
-            },
-            rightLabel = "rank: usage",
-        )
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
 
         // 4. Unified Raycast Results List (Max 10 rows)
         LazyColumn(
@@ -685,6 +706,8 @@ fun AsciiRaycastPaletteWindow(
                         onBookmarkFile = onBookmarkFile,
                         onShareFile = onShareFile,
                         onPreviewImage = onPreviewImage,
+                        onDeleteBookmark = onQuickDeleteBookmark,
+                        onDeleteEngine = if (existingEngines.size > 1) onQuickDeleteEngine else null,
                     )
                 }
             }
@@ -701,11 +724,11 @@ fun AsciiRaycastPaletteWindow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                AsciiButton("c:", { onAliasPillClick("c") }, spokenLabel = "contacts alias c")
-                AsciiButton("f:", { onAliasPillClick("f") }, spokenLabel = "files and folders alias f")
-                AsciiButton("app:", { onAliasPillClick("app") }, spokenLabel = "apps alias app")
-                AsciiButton("+add", { onAliasPillClick("add") }, spokenLabel = "quick add alias add")
-                AsciiButton("dl:", { onAliasPillClick("dl") }, spokenLabel = "downloads alias dl")
+                AsciiButton("c:", { onAliasPillClick("c") }, spokenLabel = "contacts scope c")
+                AsciiButton("f:", { onAliasPillClick("f") }, spokenLabel = "files scope f")
+                AsciiButton("b:", { onAliasPillClick("b") }, spokenLabel = "bookmarks scope b")
+                AsciiButton("s:", { onAliasPillClick("s") }, spokenLabel = "search pipes scope s")
+                AsciiButton("app:", { onAliasPillClick("app") }, spokenLabel = "apps scope app")
             }
             AsciiButton(
                 label = "RET ->",
@@ -773,58 +796,69 @@ fun QuickAddInlineCard(
     onSavePipe: (String, String, String) -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
+    existingBookmarks: List<PipeBookmark> = emptyList(),
+    existingEngines: List<SearchEngine> = emptyList(),
+    onDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
+    onDeleteEngine: ((SearchEngine) -> Unit)? = null,
 ) {
     val c = LocalAscii.current
     val clipboard = LocalClipboardManager.current
     val clipText = remember { clipboard.getText()?.text?.trim().orEmpty() }
 
-    var activeKind by remember(initialAction) { mutableStateOf(initialAction.kind) }
+    // Auto-parse if user typed something like "Ramesh 9841234567" before tapping [+]
+    val autoContact = remember(initialAction.arg1) {
+        QueryRouter.parseQuickAddContact(initialAction.arg1)
+    }
+    var activeKind by remember(initialAction) {
+        mutableStateOf(if (autoContact != null) QuickAddKind.CONTACT else initialAction.kind)
+    }
 
     // Contact fields
+    val initName = autoContact?.first ?: initialAction.arg1
+    val initPhone = autoContact?.second ?: initialAction.arg2.ifEmpty {
+        if (clipText.any { it.isDigit() } && clipText.length in 7..16 && !clipText.startsWith("http")) clipText else ""
+    }
     var contactName by remember(initialAction) {
-        mutableStateOf(TextFieldValue(initialAction.arg1, TextRange(initialAction.arg1.length)))
+        mutableStateOf(TextFieldValue(initName, TextRange(initName.length)))
     }
     var contactPhone by remember(initialAction) {
-        mutableStateOf(TextFieldValue(initialAction.arg2, TextRange(initialAction.arg2.length)))
+        mutableStateOf(TextFieldValue(initPhone, TextRange(initPhone.length)))
     }
 
-    // Bookmark fields
+    // Bookmark fields (auto-detects Link vs Folder vs File from target!)
     val initialBmTarget = initialAction.arg3.ifEmpty {
-        if (clipText.startsWith("http://") || clipText.startsWith("https://") || clipText.startsWith("/")) clipText else "https://"
+        if (clipText.startsWith("http://") || clipText.startsWith("https://") || clipText.startsWith("/")) clipText else ""
     }
-    var bmKind by remember(initialAction) {
-        mutableStateOf(
-            if (initialAction.arg3.startsWith("/")) initialAction.bookmarkKind
-            else if (initialBmTarget.startsWith("/")) BookmarkKind.FOLDER
-            else BookmarkKind.LINK
-        )
+    val initialBmAlias = initialAction.arg1.takeIf { !it.contains(' ') }.orEmpty()
+    val initialBmTitle = initialAction.arg2.ifEmpty {
+        if (initialBmTarget.isNotEmpty()) QueryRouter.inferTitleFromTarget(initialBmAlias, initialBmTarget) else ""
     }
     var bmAlias by remember(initialAction) {
-        mutableStateOf(TextFieldValue(initialAction.arg1, TextRange(initialAction.arg1.length)))
+        mutableStateOf(TextFieldValue(initialBmAlias, TextRange(initialBmAlias.length)))
     }
     var bmTitle by remember(initialAction) {
-        mutableStateOf(TextFieldValue(initialAction.arg2, TextRange(initialAction.arg2.length)))
+        mutableStateOf(TextFieldValue(initialBmTitle, TextRange(initialBmTitle.length)))
     }
     var bmTarget by remember(initialAction) {
         mutableStateOf(TextFieldValue(initialBmTarget, TextRange(initialBmTarget.length)))
     }
-    var bmTags by remember(initialAction) {
-        mutableStateOf(TextFieldValue(""))
-    }
 
-    // Pipe fields
+    // Pipe fields (auto-converts ?q=sample into ?q={query}!)
     val initialPipeUrl = initialAction.arg3.ifEmpty {
         if (clipText.startsWith("http://") || clipText.startsWith("https://")) {
             QueryRouter.normalizePipeUrlTemplate(clipText)
         } else {
-            "https://example.com/search?q={query}"
+            ""
         }
     }
+    val initialPipeTitle = initialAction.arg2.ifEmpty {
+        if (initialPipeUrl.isNotEmpty()) QueryRouter.inferTitleFromTarget(initialBmAlias, initialPipeUrl) else ""
+    }
     var pipeKeyword by remember(initialAction) {
-        mutableStateOf(TextFieldValue(initialAction.arg1, TextRange(initialAction.arg1.length)))
+        mutableStateOf(TextFieldValue(initialBmAlias, TextRange(initialBmAlias.length)))
     }
     var pipeName by remember(initialAction) {
-        mutableStateOf(TextFieldValue(initialAction.arg2, TextRange(initialAction.arg2.length)))
+        mutableStateOf(TextFieldValue(initialPipeTitle, TextRange(initialPipeTitle.length)))
     }
     var pipeUrl by remember(initialAction) {
         mutableStateOf(TextFieldValue(initialPipeUrl, TextRange(initialPipeUrl.length)))
@@ -839,20 +873,16 @@ fun QuickAddInlineCard(
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        // Standardized 3-tab header: `[+c Contact]  [+b Bookmark]  [+s Pipe]  [x]`
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AsciiText(
-                text = "+- quick add (${activeKind.label.lowercase()})",
-                style = AsciiType.title,
-                color = c.accent,
-            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 QuickAddKind.entries.forEach { k ->
                     AsciiButton(
-                        label = k.tag,
+                        label = "${k.tag} ${k.label.lowercase()}",
                         onClick = {
                             activeKind = k
                             errorMsg = null
@@ -860,128 +890,179 @@ fun QuickAddInlineCard(
                         primary = activeKind == k,
                     )
                 }
-                AsciiButton("x", onCancel)
             }
+            AsciiButton("x", onCancel)
         }
+
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
 
         when (activeKind) {
             QuickAddKind.CONTACT -> {
-                AsciiTextField(
-                    label = "contact name",
-                    promptPrefix = "@ ",
-                    value = contactName,
-                    onValueChange = { contactName = it; errorMsg = null },
-                    placeholder = "Ramesh Dai",
-                )
-                AsciiTextField(
-                    label = "phone number",
-                    promptPrefix = "# ",
-                    value = contactPhone,
-                    onValueChange = { contactPhone = it; errorMsg = null },
-                    placeholder = "9841234567",
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
-                )
-                if (errorMsg != null) {
-                    AsciiText(errorMsg!!, style = AsciiType.small, color = c.error)
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AsciiButton("cancel", onCancel)
-                    AsciiButton(
-                        label = "+ save contact",
-                        primary = true,
-                        onClick = {
-                            val n = contactName.text.trim()
-                            val p = contactPhone.text.trim()
-                            if (n.isEmpty() || p.isEmpty()) {
-                                errorMsg = "! both name and phone number are required"
-                            } else {
-                                onSaveContact(n, p)
-                            }
-                        },
-                    )
-                }
-            }
-
-            QuickAddKind.BOOKMARK -> {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    BookmarkKind.entries.forEach { k ->
-                        AsciiRadio(
-                            selected = bmKind == k,
-                            onClick = { bmKind = k },
-                            label = k.name.lowercase(),
-                        )
-                    }
-                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Box(Modifier.weight(0.38f)) {
+                    Box(Modifier.weight(0.52f)) {
                         AsciiTextField(
-                            label = "alias",
-                            promptPrefix = "| ",
-                            value = bmAlias,
-                            onValueChange = { bmAlias = it; errorMsg = null },
-                            placeholder = "hn",
+                            label = "name",
+                            promptPrefix = "@ ",
+                            value = contactName,
+                            onValueChange = { contactName = it; errorMsg = null },
+                            placeholder = "Ramesh Dai",
                         )
                     }
-                    Box(Modifier.weight(0.62f)) {
+                    Box(Modifier.weight(0.48f)) {
                         AsciiTextField(
-                            label = "title",
+                            label = "phone",
+                            promptPrefix = "# ",
+                            value = contactPhone,
+                            onValueChange = { contactPhone = it; errorMsg = null },
+                            placeholder = "9841234567",
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
+                        )
+                    }
+                }
+                if (errorMsg != null) {
+                    AsciiText(errorMsg!!, style = AsciiType.small, color = c.error)
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AsciiText("tip: or type `+ Name Phone`", style = AsciiType.small, color = c.dim)
+                    Row {
+                        AsciiButton("cancel", onCancel)
+                        AsciiButton(
+                            label = "+ save contact",
+                            primary = true,
+                            onClick = {
+                                val n = contactName.text.trim()
+                                val p = contactPhone.text.trim()
+                                if (n.isEmpty() || p.isEmpty()) {
+                                    errorMsg = "! enter both name and phone"
+                                } else {
+                                    onSaveContact(n, p)
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+
+            QuickAddKind.BOOKMARK -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Box(Modifier.weight(0.35f)) {
+                        AsciiTextField(
+                            label = "b alias",
+                            promptPrefix = "b ",
+                            value = bmAlias,
+                            onValueChange = { bmAlias = it; errorMsg = null },
+                            placeholder = "abb",
+                        )
+                    }
+                    Box(Modifier.weight(0.65f)) {
+                        AsciiTextField(
+                            label = "title (auto if blank)",
                             promptPrefix = "> ",
                             value = bmTitle,
                             onValueChange = { bmTitle = it; errorMsg = null },
-                            placeholder = "Hacker News",
+                            placeholder = "AudiobookBay",
                         )
                     }
                 }
                 AsciiTextField(
-                    label = if (bmKind == BookmarkKind.LINK) "url (https://...)" else "path (/storage/emulated/0/...)",
+                    label = "url or folder/file path (auto-detects type)",
                     promptPrefix = "> ",
                     value = bmTarget,
-                    onValueChange = { bmTarget = it; errorMsg = null },
-                    placeholder = if (bmKind == BookmarkKind.LINK) "https://news.ycombinator.com" else "/storage/emulated/0/Download",
-                )
-                AsciiTextField(
-                    label = "tags (optional, e.g. #work #news)",
-                    promptPrefix = "# ",
-                    value = bmTags,
-                    onValueChange = { bmTags = it },
-                    placeholder = "#quick",
+                    onValueChange = {
+                        bmTarget = it
+                        errorMsg = null
+                        if (bmTitle.text.isBlank() && it.text.length > 4) {
+                            val inferred = QueryRouter.inferTitleFromTarget(bmAlias.text, it.text)
+                            bmTitle = TextFieldValue(inferred, TextRange(inferred.length))
+                        }
+                    },
+                    placeholder = "https://... or /storage/emulated/0/...",
+                    trailingControl = if (clipText.isNotEmpty()) {
+                        {
+                            AsciiButton("paste", {
+                                bmTarget = TextFieldValue(clipText, TextRange(clipText.length))
+                                if (bmTitle.text.isBlank()) {
+                                    val inf = QueryRouter.inferTitleFromTarget(bmAlias.text, clipText)
+                                    bmTitle = TextFieldValue(inf, TextRange(inf.length))
+                                }
+                            })
+                        }
+                    } else null,
                 )
                 if (errorMsg != null) {
                     AsciiText(errorMsg!!, style = AsciiType.small, color = c.error)
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (clipText.isNotEmpty()) {
-                        AsciiButton("paste clip", {
-                            bmTarget = TextFieldValue(clipText, TextRange(clipText.length))
-                            bmKind = if (clipText.startsWith("/")) BookmarkKind.FOLDER else BookmarkKind.LINK
-                        })
+                    AsciiText("use via: `b ${bmAlias.text.ifBlank { "alias" }}`", style = AsciiType.small, color = c.accent2)
+                    Row {
+                        AsciiButton("cancel", onCancel)
+                        AsciiButton(
+                            label = "+ save b",
+                            primary = true,
+                            onClick = {
+                                val rawU = bmTarget.text.trim()
+                                val u = if (!rawU.startsWith("/") && !rawU.startsWith("http://") && !rawU.startsWith("https://") && rawU.contains('.')) {
+                                    "https://$rawU"
+                                } else rawU
+                                val a = bmAlias.text.trim().lowercase().ifEmpty {
+                                    QueryRouter.inferTitleFromTarget("bm", u).lowercase().take(6)
+                                }
+                                val t = bmTitle.text.trim().ifEmpty { QueryRouter.inferTitleFromTarget(a, u) }
+                                if (u.isEmpty()) {
+                                    errorMsg = "! enter or paste a url or file path"
+                                } else {
+                                    val detectedKind = when {
+                                        u.startsWith("http://") || u.startsWith("https://") -> BookmarkKind.LINK
+                                        u.substringAfterLast('/').contains('.') -> BookmarkKind.FILE
+                                        else -> BookmarkKind.FOLDER
+                                    }
+                                    onSaveBookmark(a, t, u, detectedKind, "")
+                                }
+                            },
+                        )
                     }
-                    AsciiButton("cancel", onCancel)
-                    AsciiButton(
-                        label = "+ save bm",
-                        primary = true,
-                        onClick = {
-                            val a = bmAlias.text.trim().lowercase()
-                            val t = bmTitle.text.trim().ifEmpty { a }
-                            val u = bmTarget.text.trim()
-                            if (t.isEmpty() || u.isEmpty()) {
-                                errorMsg = "! title and target url/path are required"
-                            } else {
-                                onSaveBookmark(a, t, u, bmKind, bmTags.text.trim())
+                }
+                if (existingBookmarks.isNotEmpty() && onDeleteBookmark != null) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                    AsciiText("saved bookmarks (tap [x] to delete):", style = AsciiType.small, color = c.dim)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 110.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        existingBookmarks.forEach { bm ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                AsciiText(
+                                    text = "[b ${bm.alias}] ${bm.title}",
+                                    style = AsciiType.small,
+                                    color = c.fg,
+                                    maxLines = 1,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                AsciiButton("x", { onDeleteBookmark(bm) })
                             }
-                        },
-                    )
+                        }
+                    }
                 }
             }
 
@@ -992,16 +1073,16 @@ fun QuickAddInlineCard(
                 ) {
                     Box(Modifier.weight(0.35f)) {
                         AsciiTextField(
-                            label = "keyword",
-                            promptPrefix = "| ",
+                            label = "s keyword",
+                            promptPrefix = "s ",
                             value = pipeKeyword,
                             onValueChange = { pipeKeyword = it; errorMsg = null },
-                            placeholder = "ab",
+                            placeholder = "abb",
                         )
                     }
                     Box(Modifier.weight(0.65f)) {
                         AsciiTextField(
-                            label = "engine name",
+                            label = "pipe name (auto if blank)",
                             promptPrefix = "> ",
                             value = pipeName,
                             onValueChange = { pipeName = it; errorMsg = null },
@@ -1010,41 +1091,89 @@ fun QuickAddInlineCard(
                     }
                 }
                 AsciiTextField(
-                    label = "search url or {query} template (auto-converts ?q=sample)",
+                    label = "search url (paste any ?q=test url; auto-converts to {query})",
                     promptPrefix = "> ",
                     value = pipeUrl,
-                    onValueChange = { pipeUrl = it; errorMsg = null },
-                    placeholder = "https://example.com/search?q={query}",
+                    onValueChange = {
+                        pipeUrl = it
+                        errorMsg = null
+                        if (pipeName.text.isBlank() && it.text.length > 4) {
+                            val inf = QueryRouter.inferTitleFromTarget(pipeKeyword.text, it.text)
+                            pipeName = TextFieldValue(inf, TextRange(inf.length))
+                        }
+                    },
+                    placeholder = "https://site.com/search?q={query}",
+                    trailingControl = if (clipText.isNotEmpty()) {
+                        {
+                            AsciiButton("paste", {
+                                val norm = QueryRouter.normalizePipeUrlTemplate(clipText)
+                                pipeUrl = TextFieldValue(norm, TextRange(norm.length))
+                                if (pipeName.text.isBlank()) {
+                                    val inf = QueryRouter.inferTitleFromTarget(pipeKeyword.text, norm)
+                                    pipeName = TextFieldValue(inf, TextRange(inf.length))
+                                }
+                            })
+                        }
+                    } else null,
                 )
                 if (errorMsg != null) {
                     AsciiText(errorMsg!!, style = AsciiType.small, color = c.error)
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (clipText.startsWith("http")) {
-                        AsciiButton("paste clip", {
-                            val norm = QueryRouter.normalizePipeUrlTemplate(clipText)
-                            pipeUrl = TextFieldValue(norm, TextRange(norm.length))
-                        })
+                    AsciiText("use via: `s ${pipeKeyword.text.ifBlank { "kw" }} <query>`", style = AsciiType.small, color = c.accent)
+                    Row {
+                        AsciiButton("cancel", onCancel)
+                        AsciiButton(
+                            label = "+ save s",
+                            primary = true,
+                            onClick = {
+                                val u = QueryRouter.normalizePipeUrlTemplate(pipeUrl.text)
+                                val k = pipeKeyword.text.trim().lowercase().ifEmpty {
+                                    QueryRouter.inferTitleFromTarget("s", u).lowercase().take(4)
+                                }
+                                val n = pipeName.text.trim().ifEmpty { QueryRouter.inferTitleFromTarget(k, u) }
+                                if (k.isEmpty() || u.isEmpty()) {
+                                    errorMsg = "! enter keyword and search url"
+                                } else {
+                                    onSavePipe(k, n, u)
+                                }
+                            },
+                        )
                     }
-                    AsciiButton("cancel", onCancel)
-                    AsciiButton(
-                        label = "+ save pipe",
-                        primary = true,
-                        onClick = {
-                            val k = pipeKeyword.text.trim().lowercase()
-                            val n = pipeName.text.trim().ifEmpty { k.uppercase() }
-                            val u = QueryRouter.normalizePipeUrlTemplate(pipeUrl.text)
-                            if (k.isEmpty() || u.isEmpty()) {
-                                errorMsg = "! keyword and search url are required"
-                            } else {
-                                onSavePipe(k, n, u)
+                }
+                if (existingEngines.isNotEmpty() && onDeleteEngine != null) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                    AsciiText("saved search pipes (tap [x] to delete):", style = AsciiType.small, color = c.dim)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 110.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        existingEngines.forEach { eng ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                AsciiText(
+                                    text = "[s ${eng.keyword}] ${eng.name}",
+                                    style = AsciiType.small,
+                                    color = if (eng.isDefault) c.accent else c.fg,
+                                    maxLines = 1,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (existingEngines.size > 1) {
+                                    AsciiButton("x", { onDeleteEngine(eng) })
+                                }
                             }
-                        },
-                    )
+                        }
+                    }
                 }
             }
         }
@@ -1155,6 +1284,8 @@ private fun AsciiRaycastRow(
     onBookmarkFile: ((LocalFileItem) -> Unit)?,
     onShareFile: ((LocalFileItem) -> Unit)? = null,
     onPreviewImage: ((LocalFileItem) -> Unit)? = null,
+    onDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
+    onDeleteEngine: ((SearchEngine) -> Unit)? = null,
 ) {
     val c = LocalAscii.current
     val clipboard = LocalClipboardManager.current
@@ -1209,9 +1340,9 @@ private fun AsciiRaycastRow(
         is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> {
             val bm = item.bookmark
             val badge = when (bm.kind) {
-                BookmarkKind.FOLDER -> "[d/]"
-                BookmarkKind.FILE -> "[f.]"
-                BookmarkKind.LINK -> "[bm]"
+                BookmarkKind.FOLDER -> "[b:d/]"
+                BookmarkKind.FILE -> "[b:f.]"
+                BookmarkKind.LINK -> "[b:bm]"
             }
             val badgeCol = when (bm.kind) {
                 BookmarkKind.FOLDER -> c.warn
@@ -1249,15 +1380,11 @@ private fun AsciiRaycastRow(
                     }
                 }
                 if (bm.kind == BookmarkKind.FOLDER && bm.alias.isNotBlank()) {
-                    AsciiButton("ls", { onScopeIntoFolder(bm.alias) })
+                    AsciiButton("ls", { onScopeIntoFolder("b ${bm.alias}") })
                 }
-                val meta = if (item.usageCount > 0) "${bm.kind.badge} #${item.usageCount}" else bm.kind.badge
-                AsciiText(
-                    text = " $meta",
-                    style = AsciiType.small,
-                    color = if (pressed) c.bg else c.dim,
-                    maxLines = 1,
-                )
+                if (onDeleteBookmark != null) {
+                    AsciiButton("x", { onDeleteBookmark(bm) }, spokenLabel = "delete bookmark ${bm.title}")
+                }
             }
         }
 
@@ -1365,7 +1492,7 @@ private fun AsciiRaycastRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 AsciiText(
-                    text = "$pointer [|${eng.keyword}] ",
+                    text = "$pointer [s:${eng.keyword}] ",
                     style = if (isTop) AsciiType.title else AsciiType.small,
                     color = if (pressed) c.bg else c.forRole(eng.colorRole),
                 )
@@ -1376,13 +1503,16 @@ private fun AsciiRaycastRow(
                     maxLines = 1,
                     modifier = Modifier.weight(1f),
                 )
-                val meta = if (item.usageCount > 0) "web #${item.usageCount}" else "web"
-                AsciiText(
-                    text = " $meta",
-                    style = AsciiType.small,
-                    color = if (pressed) c.bg else c.dim,
-                    maxLines = 1,
-                )
+                if (item.isHome && onDeleteEngine != null) {
+                    AsciiButton("x", { onDeleteEngine(eng) }, spokenLabel = "delete pipe ${eng.name}")
+                } else {
+                    AsciiText(
+                        text = " pipe",
+                        style = AsciiType.small,
+                        color = if (pressed) c.bg else c.dim,
+                        maxLines = 1,
+                    )
+                }
             }
         }
 
@@ -1878,7 +2008,7 @@ private fun PipeSettingsScreen(
             },
         )
 
-        // Separated Functional Sub-Tab Bar (`[1 ovl] [2 idx] [3 thm] [4 rte] [5 bak]`)
+        // Standardized Sub-Tab Bar (`[1 ovl] [2 idx] [3 thm] [4 rte] [5 bak]`)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1925,9 +2055,9 @@ private fun PipeSettingsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             when (section) {
-                // TAB 1: OVERLAY APPEARANCE & UBIKITOUCH
+                // TAB 1: OVERLAY & SEARCH BOX (Standardized Dropdowns + Toggles)
                 SettingsSection.OVERLAY -> {
-                    AsciiBox(title = "raycast overlay appearance") {
+                    AsciiBox(title = "floating overlay") {
                         val pct = (state.overlayOpacity * 100).toInt()
                         val dimPct = (state.overlayDimAmount * 100).toInt()
                         Row(
@@ -1952,94 +2082,90 @@ private fun PipeSettingsScreen(
                                 AsciiButton("+10%", { onOverlayDimChange(state.overlayDimAmount + 0.10f) })
                             }
                         }
-                        Spacer(Modifier.height(4.dp))
-                        AsciiText("soft corner radius:", style = AsciiType.small, color = c.dim)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(0 to "0dp", 10 to "10dp", 16 to "16dp", 24 to "24dp").forEach { (dpVal, label) ->
-                                AsciiRadio(
-                                    selected = state.overlayCornerRadiusDp == dpVal,
-                                    onClick = { onOverlayCornerChange(dpVal) },
-                                    label = label,
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        AsciiText("overlay position:", style = AsciiType.small, color = c.dim)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            AsciiRadio(!state.overlayBottomAnchored, { onOverlayBottomChange(false) }, "top")
-                            AsciiRadio(state.overlayBottomAnchored, { onOverlayBottomChange(true) }, "bottom (above keyboard)")
-                        }
-                        AsciiCheckbox(
+
+                        AsciiDropdownRow(
+                            label = "overlay position",
+                            selectedValue = state.overlayBottomAnchored,
+                            options = listOf(
+                                false to "Top of screen",
+                                true to "Bottom (above keyboard)",
+                            ),
+                            onSelect = onOverlayBottomChange,
+                        )
+
+                        AsciiDropdownRow(
+                            label = "corner radius",
+                            selectedValue = state.overlayCornerRadiusDp,
+                            options = listOf(
+                                0 to "0dp (Sharp ASCII)",
+                                10 to "10dp (Subtle)",
+                                16 to "16dp (Default)",
+                                24 to "24dp (Round)",
+                            ),
+                            onSelect = onOverlayCornerChange,
+                        )
+
+                        AsciiToggleRow(
+                            label = "force dark glass in overlay",
                             checked = state.overlayForceDark,
-                            onChange = onOverlayForceDarkChange,
-                            label = "force dark glass theme in overlay",
+                            onCheckedChange = onOverlayForceDarkChange,
                         )
-                        AsciiCheckbox(
+                        AsciiToggleRow(
+                            label = "show most-used items when idle",
                             checked = state.overlayShowIdleSuggestions,
-                            onChange = onOverlayIdleChange,
-                            label = "show top most-used items before typing",
+                            onCheckedChange = onOverlayIdleChange,
                         )
-                    }
 
-                    AsciiBox(title = "ubitouch & shortcut binding") {
-                        AsciiText(
-                            text = "bind in UbikiTouch via Shortcuts -> `pipe overlay` or Activities -> `PipeOverlayActivity`:",
-                            style = AsciiType.small,
-                            color = c.dim,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            AsciiButton("test overlay now", onLaunchOverlayPreview, primary = true)
-                            AsciiButton("+ pin ubitouch shortcut", onPinOverlayShortcut)
-                        }
-                        if (state.jsonStatusMessage != null) {
-                            Spacer(Modifier.height(4.dp))
-                            AsciiText(state.jsonStatusMessage, style = AsciiType.small, color = c.good)
+                        Spacer(Modifier.height(4.dp))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            AsciiButton("test overlay", onLaunchOverlayPreview, primary = true)
+                            AsciiButton("+ pin shortcut", onPinOverlayShortcut)
                         }
                     }
 
-                    // Search Box Customization (Prompt prefix, placeholder text, right-hand badges)
-                    AsciiBox(title = "search box customization") {
+                    AsciiBox(title = "search box appearance") {
                         var placeholderField by remember(state.searchBoxPlaceholder) {
                             mutableStateOf(TextFieldValue(state.searchBoxPlaceholder, TextRange(state.searchBoxPlaceholder.length)))
                         }
                         AsciiTextField(
-                            label = "custom placeholder text (leave empty for blank prompt)",
+                            label = "placeholder text (empty for blank prompt)",
                             promptPrefix = "> ",
                             value = placeholderField,
                             onValueChange = {
                                 placeholderField = it
                                 onSearchBoxPlaceholderChange(it.text)
                             },
-                            placeholder = "type anything or leave blank...",
+                            placeholder = "pipe (c, f, b, s, app)...",
                         )
-                        Spacer(Modifier.height(6.dp))
-                        AsciiText("prompt prefix symbol:", style = AsciiType.small, color = c.dim)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf("> " to ">", "$ " to "$", "| " to "|", "λ " to "λ", "" to "none").forEach { (prefVal, label) ->
-                                AsciiRadio(
-                                    selected = state.searchBoxPrefix == prefVal,
-                                    onClick = { onSearchBoxPrefixChange(prefVal) },
-                                    label = label,
-                                )
-                            }
-                        }
-                        AsciiCheckbox(
+                        Spacer(Modifier.height(4.dp))
+                        AsciiDropdownRow(
+                            label = "prompt prefix",
+                            selectedValue = state.searchBoxPrefix,
+                            options = listOf(
+                                "> " to "> (Arrow)",
+                                "$ " to "$ (Shell)",
+                                "| " to "| (Pipe)",
+                                "λ " to "λ (Lambda)",
+                                "" to "None (Blank)",
+                            ),
+                            onSelect = onSearchBoxPrefixChange,
+                        )
+                        AsciiToggleRow(
+                            label = "show [scope] badge in search box",
                             checked = state.showSearchBoxScopeBadge,
-                            onChange = onShowScopeBadgeChange,
-                            label = "show right-side [scope] indicator in search box",
+                            onCheckedChange = onShowScopeBadgeChange,
                         )
-                        AsciiCheckbox(
+                        AsciiToggleRow(
+                            label = "show [::] settings button in overlay",
                             checked = state.showSearchBoxMenuBtn,
-                            onChange = onShowMenuBtnChange,
-                            label = "show [::] quick-settings button in overlay search box",
+                            onCheckedChange = onShowMenuBtnChange,
                         )
                     }
                 }
 
                 // TAB 2: PERSISTENT STORAGE INDEX & PERMISSIONS
                 SettingsSection.INDEX -> {
-                    AsciiBox(title = "persistent local file & folder index") {
+                    AsciiBox(title = "local index & permissions") {
                         val ageText = if (state.lastIndexedTimestampMs <= 0L) {
                             "never indexed"
                         } else {
@@ -2047,72 +2173,44 @@ private fun PipeSettingsScreen(
                             if (mins == 0L) "just now" else "${mins}m ago"
                         }
                         AsciiText(
-                            text = "folders indexed : ${state.indexedFolderCount}",
+                            text = "folders: ${state.indexedFolderCount}  |  files: ${state.indexedFileCount}  |  contacts: ${state.contacts.size}",
                             style = AsciiType.body,
-                            color = c.warn,
+                            color = c.accent,
                         )
                         AsciiText(
-                            text = "files indexed   : ${state.indexedFileCount}",
-                            style = AsciiType.body,
-                            color = c.accent3,
-                        )
-                        AsciiText(
-                            text = "contacts cached : ${state.contacts.size}",
-                            style = AsciiType.body,
-                            color = c.good,
-                        )
-                        AsciiText(
-                            text = "last sync       : ${if (state.isIndexingInProgress) "indexing now..." else ageText}",
+                            text = "last sync: ${if (state.isIndexingInProgress) "indexing now..." else ageText}",
                             style = AsciiType.small,
                             color = c.dim,
                         )
-                        Spacer(Modifier.height(6.dp))
-                        AsciiCheckbox(
+                        AsciiToggleRow(
+                            label = "auto-index storage every 1 hour",
                             checked = state.hourlyAutoIndexEnabled,
-                            onChange = onHourlyAutoIndexChange,
-                            label = "auto-index storage every 1 hour in background",
+                            onCheckedChange = onHourlyAutoIndexChange,
                         )
-                        Spacer(Modifier.height(4.dp))
-                        AsciiButton(
-                            label = if (state.isIndexingInProgress) "indexing storage..." else "re-index storage & contacts now",
-                            onClick = onRebuildIndexNow,
-                            enabled = !state.isIndexingInProgress,
-                            primary = true,
-                        )
-                    }
-
-                    AsciiBox(title = "device permissions") {
-                        AsciiText(
-                            text = "grant All-Files Access (`MANAGE_EXTERNAL_STORAGE`) and Contacts (`READ_CONTACTS`) for instant search:",
-                            style = AsciiType.small,
-                            color = c.dim,
-                        )
-                        Spacer(Modifier.height(6.dp))
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             AsciiButton(
-                                label = if (state.hasFilesPermission) "all-files: granted [ok]" else "! grant all-files access",
+                                label = if (state.isIndexingInProgress) "indexing..." else "re-index now",
+                                onClick = onRebuildIndexNow,
+                                enabled = !state.isIndexingInProgress,
+                                primary = true,
+                            )
+                            AsciiButton(
+                                label = if (state.hasFilesPermission) "files: ok" else "! grant files",
                                 onClick = onRequestFilesPermission,
                                 primary = !state.hasFilesPermission,
                             )
                             AsciiButton(
-                                label = if (state.hasContactsPermission) "contacts: granted [ok]" else "! grant contacts access",
+                                label = if (state.hasContactsPermission) "contacts: ok" else "! grant contacts",
                                 onClick = onRequestContactsPermission,
                                 primary = !state.hasContactsPermission,
                             )
                         }
                     }
 
-                    // Custom Excluded Folders List
                     AsciiBox(title = "excluded folders (${state.excludedFolders.size})") {
                         var newFolderInput by remember { mutableStateOf(TextFieldValue("")) }
-                        AsciiText(
-                            text = "folders matching these names are skipped during storage indexing:",
-                            style = AsciiType.small,
-                            color = c.dim,
-                        )
-                        Spacer(Modifier.height(6.dp))
                         AsciiTextField(
-                            label = "add folder name to exclude",
+                            label = "skip folder name during indexing",
                             promptPrefix = "- ",
                             value = newFolderInput,
                             onValueChange = { newFolderInput = it },
@@ -2136,119 +2234,84 @@ private fun PipeSettingsScreen(
                                 AsciiButton(
                                     label = "$folderName x",
                                     onClick = { onRemoveExcludedFolder(folderName) },
-                                    spokenLabel = "remove $folderName from excluded folders",
                                 )
                             }
                         }
                     }
                 }
 
-                // TAB 3: THEME & PALETTE
+                // TAB 3: THEME & PALETTE (Standardized Dropdowns)
                 SettingsSection.THEME -> {
-                    AsciiBox(title = "theme mode") {
-                        AsciiText("mode (follows system by default):", style = AsciiType.small, color = c.dim)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            AsciiRadio(state.themeMode == ThemeMode.System, { onThemeModeChange(ThemeMode.System) }, "system")
-                            AsciiRadio(state.themeMode == ThemeMode.Light, { onThemeModeChange(ThemeMode.Light) }, "light")
-                            AsciiRadio(state.themeMode == ThemeMode.Dark, { onThemeModeChange(ThemeMode.Dark) }, "dark")
-                        }
-                    }
-
-                    AsciiBox(title = "terminal color palette") {
-                        AsciiText("select active dark/light color scheme:", style = AsciiType.small, color = c.dim)
-                        Column {
-                            PaletteChoice.entries.forEach { choice ->
-                                AsciiRadio(
-                                    selected = state.paletteChoice == choice,
-                                    onClick = { onPaletteChoiceChange(choice) },
-                                    label = choice.palette.name,
-                                )
-                            }
-                        }
+                    AsciiBox(title = "theme & color palette") {
+                        AsciiDropdownRow(
+                            label = "theme mode",
+                            selectedValue = state.themeMode,
+                            options = listOf(
+                                ThemeMode.System to "System default",
+                                ThemeMode.Dark to "Dark mode",
+                                ThemeMode.Light to "Light mode",
+                            ),
+                            onSelect = onThemeModeChange,
+                        )
+                        AsciiDropdownRow(
+                            label = "color palette",
+                            selectedValue = state.paletteChoice,
+                            options = PaletteChoice.entries.map { it to it.palette.name },
+                            onSelect = onPaletteChoiceChange,
+                        )
                     }
                 }
 
-                // TAB 4: DEFAULT BROWSER & ROUTING
+                // TAB 4: DEFAULT BROWSER & ROUTING (Dropdown Menu!)
                 SettingsSection.ROUTING -> {
-                    AsciiBox(title = "preferred browser for links & searches") {
-                        AsciiText(
-                            text = "choose which browser opens web links and searches (prevents forcing Chrome when pipe is Default Browser):",
-                            style = AsciiType.small,
-                            color = c.dim,
+                    AsciiBox(title = "browser & routing") {
+                        val browserOptions = remember(state.installedBrowsers) {
+                            listOf("auto" to "System Default (Auto)") +
+                                state.installedBrowsers.map { it.packageName to it.label }
+                        }
+                        AsciiDropdownRow(
+                            label = "default browser",
+                            subtitle = "opens web links & search pipes",
+                            selectedValue = state.preferredBrowserPackage,
+                            options = browserOptions,
+                            onSelect = onPreferredBrowserChange,
+                        )
+                        AsciiDropdownRow(
+                            label = "share text action",
+                            subtitle = "when sharing or selecting text",
+                            selectedValue = state.externalTextMode,
+                            options = listOf(
+                                ExternalTextMode.OPEN_OVERLAY to "Open floating overlay",
+                                ExternalTextMode.OPEN_PROMPT to "Open main prompt",
+                                ExternalTextMode.DIRECT_PIPE to "Pipe immediately",
+                            ),
+                            onSelect = onExternalTextModeChange,
+                        )
+                        AsciiToggleRow(
+                            label = "record local command history",
+                            checked = state.historyEnabled,
+                            onCheckedChange = onHistoryEnabledChange,
                         )
                         Spacer(Modifier.height(4.dp))
-                        AsciiRadio(
-                            selected = state.preferredBrowserPackage == "auto",
-                            onClick = { onPreferredBrowserChange("auto") },
-                            label = "system default browser (auto)",
-                        )
-                        state.installedBrowsers.forEach { browserApp ->
-                            AsciiRadio(
-                                selected = state.preferredBrowserPackage == browserApp.packageName,
-                                onClick = { onPreferredBrowserChange(browserApp.packageName) },
-                                label = "${browserApp.label} (${browserApp.packageName})",
-                            )
-                        }
-                    }
-                    AsciiBox(title = "default browser & system search") {
-                        AsciiText(
-                            text = "pipe is registered as a Browser so Android lets you select it under Default Apps -> Browser app (and Default Assist app).",
-                            style = AsciiType.small,
-                            color = c.fg,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        AsciiButton("open default apps settings", onOpenDefaultAppsSettings, primary = true)
-                        Spacer(Modifier.height(6.dp))
-                        AsciiText("custom browser search urls:", style = AsciiType.small, color = c.dim)
-                        AsciiText("  pipe://search?q=%s", style = AsciiType.small, color = c.accent)
-                        AsciiText("  https://pipe.local/search?q=%s", style = AsciiType.small, color = c.accent2)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            AsciiButton("copy pipe://", {
+                            AsciiButton("system default apps", onOpenDefaultAppsSettings, primary = true)
+                            AsciiButton("copy pipe:// url", {
                                 clipboard.setText(AnnotatedString("pipe://search?q=%s"))
                                 onSetJsonStatus("ok: copied pipe://search?q=%s")
                             })
-                            AsciiButton("copy https://", {
-                                clipboard.setText(AnnotatedString("https://pipe.local/search?q=%s"))
-                                onSetJsonStatus("ok: copied https://pipe.local/search?q=%s")
-                            })
                         }
-                    }
-
-                    AsciiBox(title = "share sheet & process text") {
-                        AsciiCheckbox(
-                            checked = state.historyEnabled,
-                            onChange = onHistoryEnabledChange,
-                            label = "record local command history",
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        AsciiText("when sharing or selecting text:", style = AsciiType.small, color = c.dim)
-                        AsciiRadio(
-                            selected = state.externalTextMode == ExternalTextMode.OPEN_OVERLAY,
-                            onClick = { onExternalTextModeChange(ExternalTextMode.OPEN_OVERLAY) },
-                            label = "open floating ~/pipe/overlay with text pre-filled",
-                        )
-                        AsciiRadio(
-                            selected = state.externalTextMode == ExternalTextMode.OPEN_PROMPT,
-                            onClick = { onExternalTextModeChange(ExternalTextMode.OPEN_PROMPT) },
-                            label = "open full ~/pipe prompt with text pre-filled",
-                        )
-                        AsciiRadio(
-                            selected = state.externalTextMode == ExternalTextMode.DIRECT_PIPE,
-                            onClick = { onExternalTextModeChange(ExternalTextMode.DIRECT_PIPE) },
-                            label = "pipe immediately to matched / default engine",
-                        )
                     }
                 }
 
                 // TAB 5: BACKUP, RESET & ABOUT
                 SettingsSection.BACKUP -> {
-                    AsciiBox(title = "json import / export & reset") {
+                    AsciiBox(title = "json backup & reset") {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            AsciiButton("export json file", onExportJsonToFile)
-                            AsciiButton("import json file", onImportJsonFromFile)
+                            AsciiButton("export file", onExportJsonToFile)
+                            AsciiButton("import file", onImportJsonFromFile)
                             AsciiButton("copy json", onOpenJsonExportDialog)
                             AsciiButton("paste json", onOpenJsonImportDialog)
-                            AsciiButton("reset default engines", onResetDefaults)
+                            AsciiButton("reset pipes", onResetDefaults)
                         }
                         if (state.jsonStatusMessage != null) {
                             Spacer(Modifier.height(4.dp))
@@ -2264,25 +2327,10 @@ private fun PipeSettingsScreen(
                         BoxWithConstraints(Modifier.fillMaxWidth()) {
                             val cols = rememberCols(AsciiType.small)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                if (cols >= 28) {
-                                    AsciiText(
-                                        text = frame(
-                                            title = "pipe v1.6 (release)",
-                                            lines = listOf(
-                                                "pipe queries, contacts, files & bookmarks.",
-                                                "index   : persistent cache + 1h auto-sync",
-                                                "overlay : raycast glass + soft corners",
-                                            ),
-                                            cols = cols,
-                                        ),
-                                        style = AsciiType.small,
-                                        color = c.accent,
-                                        softWrap = false,
-                                    )
-                                } else {
-                                    AsciiText("pipe v1.6 (release)", style = AsciiType.title, color = c.accent)
-                                }
+                                AsciiText("pipe v2.0 (release)", style = AsciiType.title, color = c.accent)
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
+                                AsciiText(leader("bookmarks", "b <alias>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
+                                AsciiText(leader("search pipes", "s <keyword> <query>", cols), style = AsciiType.small, color = c.accent, softWrap = false)
                             }
                         }
                     }
@@ -2327,4 +2375,3 @@ private fun PipeSettingsScreen(
         }
     }
 }
-

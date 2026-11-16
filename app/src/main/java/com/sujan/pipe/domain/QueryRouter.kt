@@ -16,34 +16,75 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
 /**
- * Fast, zero-dependency fuzzy matcher for contacts, bookmarks, folders, and files.
+ * Fast, display-aware fuzzy matcher for contacts, bookmarks, folders, apps, and files.
+ * Handles punctuation, parenthetical aliases (`Downloads (dl)`), emojis (`Kali budi`),
+ * hyphenated phone numbers (`986-0515496`), and multi-token queries without false-positive noise.
  */
 object FuzzyMatcher {
 
     /**
-     * Zero-allocation fuzzy scorer operating on pre-lowercased [q] and [c].
-     * Uses fast character-Boundary checks instead of `Regex.split` or `String.lowercase`.
+     * Normalizes text by lowercasing, turning separators (`-`, `_`, `/`, `.`, `(`, `)`, `[`, `]`)
+     * into spaces, stripping emojis/symbols, and collapsing whitespace.
+     */
+    fun normalizeForSearch(raw: String): String {
+        if (raw.isEmpty()) return ""
+        val sb = StringBuilder(raw.length)
+        var lastWasSpace = true
+        for (ch in raw) {
+            val lower = ch.lowercaseChar()
+            when {
+                lower in 'a'..'z' || lower in '0'..'9' || ch.isLetterOrDigit() -> {
+                    sb.append(lower)
+                    lastWasSpace = false
+                }
+                ch == ' ' || ch == '-' || ch == '_' || ch == '.' || ch == '/' ||
+                    ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == ':' -> {
+                    if (!lastWasSpace) {
+                        sb.append(' ')
+                        lastWasSpace = true
+                    }
+                }
+            }
+        }
+        return sb.toString().trim()
+    }
+
+    /**
+     * Zero-allocation / display-normalized fuzzy scorer operating on pre-lowercased [q] and [c].
      */
     fun scorePreLowered(q: String, c: String): Int {
         if (q.isEmpty()) return 1
         if (c.isEmpty()) return 0
 
         if (c == q) return 1000
-        if (c.startsWith(q)) return 850 - (c.length - q.length).coerceAtMost(100)
+        if (c.startsWith(q)) return 900 - (c.length - q.length).coerceAtMost(80)
 
-        // Fast early exit if single-token query's first character isn't even present in candidate
-        val hasSpace = q.indexOf(' ') >= 0
-        if (!hasSpace && c.indexOf(q[0]) < 0) return 0
-
-        // Word-boundary prefix check without allocating Regex or List<String>
+        // Word-boundary prefix check on raw lowered strings
         val wordMatch = checkWordBoundaryMatch(q, c)
         if (wordMatch > 0) return wordMatch
 
         // Contiguous substring match
         val subIdx = c.indexOf(q)
-        if (subIdx >= 0) return 600 - subIdx.coerceAtMost(80)
+        if (subIdx >= 0) return 680 - subIdx.coerceAtMost(60)
 
-        // Multi-word token check without Regex allocation
+        // Normalized comparison (handles `Kali budi❤️`, `Downloads (dl)`, `986-051`, `sasu_ama.jpg`)
+        val normQ = normalizeForSearch(q)
+        val normC = normalizeForSearch(c)
+        if (normQ.isNotEmpty() && normC.isNotEmpty()) {
+            if (normC == normQ) return 960
+            if (normC.startsWith(normQ)) return 870 - (normC.length - normQ.length).coerceAtMost(70)
+            val normWord = checkWordBoundaryMatch(normQ, normC)
+            if (normWord > 0) return normWord
+            val normSub = normC.indexOf(normQ)
+            if (normSub >= 0) return 650 - normSub.coerceAtMost(50)
+
+            if (normQ.indexOf(' ') >= 0) {
+                val multiScore = scoreMultiWordTokens(normQ, normC)
+                if (multiScore > 0) return multiScore
+            }
+        }
+
+        val hasSpace = q.indexOf(' ') >= 0
         if (hasSpace) {
             return scoreMultiWordTokens(q, c)
         }
@@ -58,7 +99,7 @@ object FuzzyMatcher {
     }
 
     private fun isWordSep(ch: Char): Boolean =
-        ch == ' ' || ch == '_' || ch == '-' || ch == '.' || ch == '/'
+        ch == ' ' || ch == '_' || ch == '-' || ch == '.' || ch == '/' || ch == '(' || ch == ')'
 
     private fun checkWordBoundaryMatch(q: String, c: String): Int {
         val qLen = q.length
@@ -69,7 +110,7 @@ object FuzzyMatcher {
             if (i == 0 || isWordSep(c[i - 1])) {
                 if (c.regionMatches(i, q, 0, qLen, ignoreCase = false)) {
                     val endIdx = i + qLen
-                    return if (endIdx == cLen || isWordSep(c[endIdx])) 780 else 700
+                    return if (endIdx == cLen || isWordSep(c[endIdx])) 820 else 750
                 }
             }
             i++
@@ -88,7 +129,7 @@ object FuzzyMatcher {
             var end = start
             while (end < len && q[end] != ' ') end++
             val token = q.substring(start, end)
-            val s = scoreSingleTokenSubsequence(token, c)
+            val s = scoreSingleWordInMulti(token, c)
             if (s <= 0) return 0
             total += s
             count++
@@ -97,25 +138,40 @@ object FuzzyMatcher {
         return if (count > 0) total / count else 0
     }
 
+    private fun scoreSingleWordInMulti(token: String, c: String): Int {
+        if (c == token) return 950
+        if (c.startsWith(token)) return 860
+        val wb = checkWordBoundaryMatch(token, c)
+        if (wb > 0) return wb
+        val sub = c.indexOf(token)
+        if (sub >= 0) return 640 - sub.coerceAtMost(50)
+        return scoreSingleTokenSubsequence(token, c)
+    }
+
     private fun scoreSingleTokenSubsequence(q: String, c: String): Int {
         val qLen = q.length
         val cLen = c.length
-        if (qLen > cLen) return 0
+        if (qLen < 2 || qLen > cLen) return 0
         val firstPos = c.indexOf(q[0])
-        if (firstPos < 0) return 0
-        if (cLen - firstPos < qLen) return 0
+        if (firstPos < 0 || cLen - firstPos < qLen) return 0
 
         var qIdx = 0
         var consecutive = 0
+        var maxConsecutive = 0
+        var boundaryHits = 0
         var bonus = 0
+        var lastMatchIdx = -1
 
         for (cIdx in firstPos until cLen) {
             if (qIdx < qLen && c[cIdx] == q[qIdx]) {
                 consecutive++
-                bonus += consecutive * 15
+                if (consecutive > maxConsecutive) maxConsecutive = consecutive
+                bonus += consecutive * 18
                 if (cIdx == 0 || isWordSep(c[cIdx - 1])) {
-                    bonus += 25
+                    boundaryHits++
+                    bonus += 30
                 }
+                lastMatchIdx = cIdx
                 qIdx++
                 if (qIdx == qLen) break
             } else {
@@ -123,9 +179,28 @@ object FuzzyMatcher {
             }
         }
         if (qIdx < qLen) return 0
-        val compactness = (200 - (cLen - qLen).coerceAtMost(150)).coerceAtLeast(10)
-        val startPenalty = firstPos.coerceAtMost(50)
-        return (150 + bonus + compactness - startPenalty).coerceAtLeast(1)
+        // Reject loose accidental scattered subsequences across long strings
+        val span = (lastMatchIdx - firstPos + 1).coerceAtLeast(qLen)
+        if (maxConsecutive < 2 && boundaryHits < qLen) return 0
+        if (span > qLen * 3 + 4 && boundaryHits < 2) return 0
+
+        val compactness = (160 - (span - qLen) * 12).coerceIn(10, 160)
+        val startPenalty = (firstPos * 4).coerceAtMost(60)
+        return (140 + bonus + compactness - startPenalty).coerceAtLeast(1)
+    }
+
+    fun scoreContact(rawQuery: String, item: ContactItem): Int {
+        val clean = rawQuery.trim().lowercase()
+        if (clean.isEmpty()) return 100
+        val nameScore = scorePreLowered(clean, item.nameLower)
+        val qDigits = clean.filter { it.isDigit() }
+        val phoneScore = if (qDigits.isNotEmpty()) {
+            maxOf(
+                scorePreLowered(qDigits, item.cleanPhone),
+                scorePreLowered(clean, item.phoneNumber.lowercase()),
+            )
+        } else 0
+        return maxOf(nameScore, phoneScore)
     }
 
     fun filterContacts(query: String, contacts: List<ContactItem>, limit: Int = 10): List<ContactItem> {
@@ -133,9 +208,7 @@ object FuzzyMatcher {
         if (clean.isEmpty()) return contacts.take(limit)
         return contacts
             .mapNotNull { item ->
-                val nameScore = scorePreLowered(clean, item.nameLower)
-                val phoneScore = if (clean[0].isDigit()) scorePreLowered(clean, item.cleanPhone) else 0
-                val best = maxOf(nameScore, phoneScore)
+                val best = scoreContact(clean, item)
                 if (best > 0) item to best else null
             }
             .sortedByDescending { it.second }
@@ -143,20 +216,30 @@ object FuzzyMatcher {
             .map { it.first }
     }
 
+    fun scoreBookmark(rawQuery: String, bm: PipeBookmark): Int {
+        val clean = rawQuery.trim().lowercase().removePrefix("#")
+        if (clean.isEmpty()) return 200
+        val aliasLower = bm.alias.lowercase()
+        val titleLower = bm.title.lowercase()
+        val combinedDisplay = if (aliasLower.isNotEmpty()) "$titleLower ($aliasLower)" else titleLower
+        val aliasScore = when {
+            aliasLower == clean -> 2200
+            aliasLower.startsWith(clean) -> 950
+            else -> scorePreLowered(clean, aliasLower)
+        }
+        val titleScore = scorePreLowered(clean, titleLower)
+        val displayScore = scorePreLowered(clean, combinedDisplay)
+        val pathScore = scorePreLowered(clean, bm.target.substringAfterLast('/').lowercase())
+        val tagScore = if (bm.tagsLower.isNotEmpty()) scorePreLowered(clean, bm.tagsLower) + 80 else 0
+        return maxOf(aliasScore, titleScore, displayScore, pathScore, tagScore)
+    }
+
     fun filterBookmarks(query: String, bookmarks: List<PipeBookmark>, limit: Int = 10): List<PipeBookmark> {
-        val clean = query.trim().lowercase()
+        val clean = query.trim()
         if (clean.isEmpty()) return bookmarks.take(limit)
         return bookmarks
             .mapNotNull { bm ->
-                val aliasScore = if (bm.alias.equals(clean, ignoreCase = true)) {
-                    2000
-                } else {
-                    scorePreLowered(clean, bm.alias.lowercase()) + 120
-                }
-                val titleScore = scorePreLowered(clean, bm.title.lowercase())
-                val pathScore = scorePreLowered(clean, bm.target.substringAfterLast('/').lowercase())
-                val tagScore = if (bm.tagsLower.isNotEmpty()) scorePreLowered(clean.removePrefix("#"), bm.tagsLower) + 80 else 0
-                val best = maxOf(aliasScore, titleScore, pathScore, tagScore)
+                val best = scoreBookmark(clean, bm)
                 if (best > 0) bm to best else null
             }
             .sortedByDescending { it.second }
@@ -165,17 +248,19 @@ object FuzzyMatcher {
     }
 
     /**
-     * Zero-allocation file/folder scorer using pre-lowercased fields (`nameLower`, `parentLower`, `pathLower`).
+     * Display-aware file/folder scorer using `nameLower`, `parentLower/nameLower`, and `pathLower`.
      */
     fun scoreFileItemPreLowered(cleanLowerQuery: String, item: LocalFileItem): Int {
         if (cleanLowerQuery.isEmpty()) return if (item.isDirectory) 220 else 100
         val nameScore = scorePreLowered(cleanLowerQuery, item.nameLower)
         val parentScore = scorePreLowered(cleanLowerQuery, item.parentLower)
-        val effectiveParentScore = if (parentScore >= 550) (parentScore - 80).coerceAtLeast(150) else 0
-        val pathScore = if (cleanLowerQuery.indexOf('/') >= 0) scorePreLowered(cleanLowerQuery, item.pathLower) else 0
-        val best = maxOf(nameScore, effectiveParentScore, pathScore)
+        val effectiveParentScore = if (parentScore >= 600) (parentScore - 80).coerceAtLeast(150) else 0
+        val combinedScore = if (cleanLowerQuery.indexOf(' ') >= 0 || cleanLowerQuery.indexOf('/') >= 0) {
+            scorePreLowered(cleanLowerQuery, "${item.parentLower}/${item.nameLower}")
+        } else 0
+        val best = maxOf(nameScore, effectiveParentScore, combinedScore)
         if (best <= 0) return 0
-        val dirBonus = if (item.isDirectory && nameScore > 0) 110 else 0
+        val dirBonus = if (item.isDirectory && nameScore > 0) 90 else 0
         return best + dirBonus
     }
 
@@ -215,22 +300,23 @@ data class RouteResolution(
 }
 
 enum class QuickAddKind(val tag: String, val label: String) {
-    CONTACT("+c", "Add Contact"),
-    BOOKMARK("+bm", "Add Bookmark"),
-    PIPE("+p", "Add Search Pipe"),
+    CONTACT("+c", "Contact"),
+    BOOKMARK("+b", "Bookmark"),
+    PIPE("+s", "Search Pipe"),
 }
 
 enum class PromptIntentMode(val scopeBadge: String) {
     ALL("all"),
     CONTACTS_ONLY("c:contacts"),
-    FILES_ONLY("f:files+dirs"),
+    FILES_ONLY("f:files"),
     DIRS_ONLY("d:folders"),
-    BOOKMARKS_ONLY("bm:bookmarks"),
+    BOOKMARKS_ONLY("b:bookmarks"),
+    PIPES_LIST("s:pipes"),
     APPS_ONLY("app:launcher"),
-    SCOPED_FOLDER("dir:scoped"),
-    ENGINE_ONLY("pipe:web"),
+    SCOPED_FOLDER("b:folder"),
+    ENGINE_ONLY("s:pipe"),
     ADD_COMMAND("+add"),
-    RM_COMMAND("-rm"),
+    RM_COMMAND("-del"),
 }
 
 data class ParsedPromptCommand(
@@ -244,7 +330,7 @@ data class ParsedPromptCommand(
 
 /**
  * Unified Raycast-style command palette row item.
- * Every item has a `usageKey` used to track and sort by "most used" (`usageCount`).
+ * Every item has a `usageKey` used to track usage frequency (`usageCount`) and `rankScore` for relevance.
  */
 sealed interface PaletteItem {
     val usageKey: String
@@ -302,6 +388,7 @@ sealed interface PaletteItem {
         val targetId: String,
         val aliasOrKeyword: String,
         val displayTitle: String,
+        val isHistory: Boolean = false,
         override val usageKey: String = "rm:$targetId",
         override val rankScore: Int = 9000,
         override val usageCount: Int = 0,
@@ -337,39 +424,111 @@ object QueryRouter {
     private val WHITESPACE_REGEX = Regex("\\s+")
 
     /**
-     * Parses the user's input to determine whether an explicit alias was typed:
-     * - `c` / `c <query>` -> `CONTACTS_ONLY`
-     * - `f` / `f <query>` -> `FILES_ONLY` (searches both folders and files)
-     * - `d` / `dir <query>` -> `DIRS_ONLY` (searches folders only)
-     * - `b` / `bm <query>` -> `BOOKMARKS_ONLY`
-     * - `<bookmark_alias>` / `<bookmark_alias> <subfilter>` -> `SCOPED_FOLDER` or exact bookmark
-     * - `<engine_keyword>` / `<engine_keyword> <query>` -> `ENGINE_ONLY`
-     * - Otherwise (no alias typed) -> `ALL` (shows all categories combined, max 10, ranked by most used!)
+     * Parses the user's input with strict prefix separation (`b` for Bookmarks, `s` for Search Pipes)
+     * and trailing-space locking so typing normal words (`g`, `docs`, `download`, `abb`) never hijacks
+     * the search before you press space!
+     *
+     * Supported scoped prefixes (activated after a space):
+     * - `b <query>` / `bm <query>` -> `BOOKMARKS_ONLY` (e.g. `b abb` matches ONLY the `abb` Bookmark; `b dl invoice` scopes into folder `dl`)
+     * - `s <kw> [query]` / `pipe <kw> [query]` -> `PIPES_LIST` or `ENGINE_ONLY` (e.g. `s abb` or `s abb dune` matches ONLY the `abb` Search Pipe)
+     * - `c <query> [wa|sms|call]` -> `CONTACTS_ONLY`
+     * - `f <query>` -> `FILES_ONLY`
+     * - `d <query>` -> `DIRS_ONLY`
+     * - `app <query>` -> `APPS_ONLY`
+     * - `+ [args]` / `add [args]` -> `ADD_COMMAND`
+     * - `- [args]` / `del [args]` / `rm [args]` -> `RM_COMMAND`
      */
     fun parsePromptCommand(
         rawInput: String,
         bookmarks: List<PipeBookmark>,
         engines: List<SearchEngine> = DefaultEngines.LIST,
     ): ParsedPromptCommand {
-        val trimmed = rawInput.trim()
+        val trimmedStart = rawInput.trimStart()
+        val trimmed = trimmedStart.trimEnd()
         if (trimmed.isEmpty()) {
             return ParsedPromptCommand(PromptIntentMode.ALL, "")
         }
-        val tokens = trimmed.split(WHITESPACE_REGEX, limit = 2)
-        val first = tokens[0].lowercase()
-        val hasSpace = rawInput.trimStart().length > first.length
-        val remainder = if (tokens.size > 1) tokens[1].trim() else ""
 
-        // 0. Quick Add (`add ...` or `+ ...`) and Quick Remove (`rm ...`) commands
-        if (first == "add" || first == "+") {
+        val firstToken = trimmedStart.takeWhile { !it.isWhitespace() }
+        val firstLower = firstToken.lowercase()
+        val hasSpaceAfterFirst = trimmedStart.length > firstToken.length
+        val remainder = if (hasSpaceAfterFirst) trimmedStart.substring(firstToken.length).trim() else ""
+
+        // 0. Quick Add (`+`, `+ ...`, `add`, `add ...`) and Quick Delete (`- ...`, `del`, `rm`)
+        if (firstLower == "+" || firstLower == "add") {
             return ParsedPromptCommand(PromptIntentMode.ADD_COMMAND, remainder)
         }
-        if (first == "rm" || first == "del" || first == "remove") {
+        if (firstLower.startsWith("+") && firstLower.length > 1) {
+            val inlineRem = (firstToken.drop(1) + (if (remainder.isNotEmpty()) " $remainder" else "")).trim()
+            return ParsedPromptCommand(PromptIntentMode.ADD_COMMAND, inlineRem)
+        }
+        if (firstLower == "del" || firstLower == "rm" || firstLower == "remove" || (firstLower == "-" && hasSpaceAfterFirst)) {
             return ParsedPromptCommand(PromptIntentMode.RM_COMMAND, remainder)
         }
 
-        // 1. Contact alias: `c <name>` with optional action chaining (`c kali wa`, `c kali sms`, `c kali call`)
-        if (first == "c" || first == "call" || first == "contact") {
+        // 1. Dedicated Bookmark Prefix: `b <query>` or `bm <query>` (requires space after `b` / `bm`)
+        if ((firstLower == "b" || firstLower == "bm") && hasSpaceAfterFirst) {
+            if (remainder.isNotEmpty()) {
+                val subTokens = remainder.split(WHITESPACE_REGEX, limit = 2)
+                val subFirst = subTokens[0].lowercase()
+                val subHasSpace = remainder.length > subTokens[0].length
+                val subRem = if (subTokens.size > 1) subTokens[1].trim() else ""
+                val folderBm = bookmarks.firstOrNull {
+                    it.kind == BookmarkKind.FOLDER && it.alias.equals(subFirst, ignoreCase = true)
+                }
+                if (folderBm != null && (subHasSpace || subRem.isNotEmpty())) {
+                    return ParsedPromptCommand(
+                        mode = PromptIntentMode.SCOPED_FOLDER,
+                        filterQuery = subRem,
+                        exactBookmark = if (subRem.isEmpty()) folderBm else null,
+                        scopedFolderBookmark = folderBm,
+                    )
+                }
+                val exactBm = bookmarks.firstOrNull { it.alias.equals(remainder, ignoreCase = true) }
+                return ParsedPromptCommand(
+                    mode = PromptIntentMode.BOOKMARKS_ONLY,
+                    filterQuery = remainder,
+                    exactBookmark = exactBm,
+                )
+            }
+            return ParsedPromptCommand(PromptIntentMode.BOOKMARKS_ONLY, "")
+        }
+
+        // 2. Dedicated Search Pipe Prefix: `s <keyword> [query]` or `pipe <keyword> [query]` (requires space after `s` / `pipe`)
+        if ((firstLower == "s" || firstLower == "pipe" || firstLower == "pipes") && hasSpaceAfterFirst) {
+            if (remainder.isEmpty()) {
+                return ParsedPromptCommand(PromptIntentMode.PIPES_LIST, "")
+            }
+            val subTokens = remainder.split(WHITESPACE_REGEX, limit = 2)
+            val subFirst = subTokens[0].lowercase()
+            val subHasSpace = remainder.length > subTokens[0].length
+            val subRem = if (subTokens.size > 1) subTokens[1].trim() else ""
+            val matchedEng = engines.firstOrNull { it.keyword.equals(subFirst, ignoreCase = true) }
+            if (matchedEng != null) {
+                return ParsedPromptCommand(
+                    mode = PromptIntentMode.ENGINE_ONLY,
+                    filterQuery = subRem,
+                    matchedEngine = matchedEng,
+                )
+            }
+            if (!subHasSpace) {
+                return ParsedPromptCommand(PromptIntentMode.PIPES_LIST, subFirst)
+            }
+            val fallbackEng = engines.firstOrNull {
+                it.keyword.lowercase().startsWith(subFirst) || it.name.lowercase().startsWith(subFirst)
+            }
+            if (fallbackEng != null) {
+                return ParsedPromptCommand(
+                    mode = PromptIntentMode.ENGINE_ONLY,
+                    filterQuery = subRem,
+                    matchedEngine = fallbackEng,
+                )
+            }
+            return ParsedPromptCommand(PromptIntentMode.PIPES_LIST, remainder)
+        }
+
+        // 3. Contact alias: `c <name>` (requires space after `c`, with optional `wa` / `sms` / `call` chaining)
+        if ((firstLower == "c" || firstLower == "call" || firstLower == "contact") && hasSpaceAfterFirst) {
             val subTokens = remainder.trim().split(WHITESPACE_REGEX)
             if (subTokens.size >= 2) {
                 val lastToken = subTokens.last().lowercase()
@@ -391,68 +550,70 @@ object QueryRouter {
             return ParsedPromptCommand(PromptIntentMode.CONTACTS_ONLY, remainder, contactAction = ContactQuickAction.CALL)
         }
 
-        // 1b. Direct App Launcher alias: `app <query>` or `ap <query>`
-        if (first == "app" || first == "apps" || first == "ap") {
+        // 4. Direct App Launcher alias: `app <query>` (requires space)
+        if ((firstLower == "app" || firstLower == "apps" || firstLower == "ap") && hasSpaceAfterFirst) {
             return ParsedPromptCommand(PromptIntentMode.APPS_ONLY, remainder)
         }
 
-        // 2. File + Folder search alias: `f` or `file` or `files`
-        if (first == "f" || first == "file" || first == "files") {
+        // 5. File + Folder search alias: `f <query>` (requires space)
+        if ((firstLower == "f" || firstLower == "file" || firstLower == "files") && hasSpaceAfterFirst) {
             return ParsedPromptCommand(PromptIntentMode.FILES_ONLY, remainder)
         }
 
-        // 3. Directory-only alias: `d` or `dir` or `folder`
-        if (first == "d" || first == "dir" || first == "folder" || first == "folders") {
+        // 6. Directory-only alias: `d <query>` (requires space)
+        if ((firstLower == "d" || firstLower == "dir" || firstLower == "folder" || firstLower == "folders") && hasSpaceAfterFirst) {
             return ParsedPromptCommand(PromptIntentMode.DIRS_ONLY, remainder)
         }
 
-        // 4. Bookmark search alias: `b` or `bm`
-        if (first == "b" || first == "bm") {
-            return ParsedPromptCommand(PromptIntentMode.BOOKMARKS_ONLY, remainder)
-        }
+        // 7. Direct Folder Bookmark or Engine Keyword when followed by a space (e.g. `dl invoice`, `yt lofi`, `abb dune`)
+        if (hasSpaceAfterFirst) {
+            val matchedBookmark = bookmarks.firstOrNull {
+                it.alias.isNotBlank() && it.alias.equals(firstLower, ignoreCase = true)
+            }
+            val matchedEngine = engines.firstOrNull {
+                it.keyword.equals(firstLower, ignoreCase = true)
+            }
 
-        // 5. Bookmark alias match (e.g. `dl`, `docs`, `pic`, `dcim`, `sd`, or `dl invoice`)
-        val matchedBookmark = bookmarks.firstOrNull {
-            it.alias.isNotBlank() && it.alias.equals(first, ignoreCase = true)
-        }
-        if (matchedBookmark != null) {
-            return if (matchedBookmark.kind == BookmarkKind.FOLDER) {
-                ParsedPromptCommand(
+            // If BOTH a Bookmark and a Search Pipe have the same name (e.g. `abb`):
+            // - If the user typed a search query (`abb dune`) and the bookmark is NOT a folder, route to the Search Pipe `abb`!
+            // - If the user only typed `abb ` (trailing space, no query yet), keep in `ALL` mode so both `[bm] abb` and `[|abb]` appear side-by-side!
+            if (matchedBookmark != null && matchedEngine != null) {
+                return when {
+                    remainder.isNotEmpty() && matchedBookmark.kind != BookmarkKind.FOLDER ->
+                        ParsedPromptCommand(PromptIntentMode.ENGINE_ONLY, remainder, matchedEngine = matchedEngine)
+                    remainder.isNotEmpty() && matchedBookmark.kind == BookmarkKind.FOLDER ->
+                        ParsedPromptCommand(PromptIntentMode.SCOPED_FOLDER, remainder, scopedFolderBookmark = matchedBookmark)
+                    else ->
+                        ParsedPromptCommand(PromptIntentMode.ALL, firstLower)
+                }
+            }
+
+            if (matchedBookmark != null && matchedBookmark.kind == BookmarkKind.FOLDER) {
+                return ParsedPromptCommand(
                     mode = PromptIntentMode.SCOPED_FOLDER,
                     filterQuery = remainder,
                     exactBookmark = if (remainder.isEmpty()) matchedBookmark else null,
                     scopedFolderBookmark = matchedBookmark,
                 )
-            } else if (remainder.isEmpty()) {
-                ParsedPromptCommand(
-                    mode = PromptIntentMode.BOOKMARKS_ONLY,
-                    filterQuery = first,
-                    exactBookmark = matchedBookmark,
-                )
-            } else {
-                ParsedPromptCommand(PromptIntentMode.ALL, trimmed)
             }
-        }
 
-        // 6. Search engine keyword match (e.g. `yt lofi`, `g phones`, or `yt` with space)
-        val matchedEngine = engines.firstOrNull {
-            it.keyword.equals(first, ignoreCase = true)
-        }
-        if (matchedEngine != null && (hasSpace || remainder.isNotEmpty() || trimmed.equals(matchedEngine.keyword, ignoreCase = true))) {
-            return ParsedPromptCommand(
-                mode = PromptIntentMode.ENGINE_ONLY,
-                filterQuery = remainder,
-                matchedEngine = matchedEngine,
-            )
+            if (matchedEngine != null) {
+                return ParsedPromptCommand(
+                    mode = PromptIntentMode.ENGINE_ONLY,
+                    filterQuery = remainder,
+                    matchedEngine = matchedEngine,
+                )
+            }
         }
 
         return ParsedPromptCommand(PromptIntentMode.ALL, trimmed)
     }
 
     /**
-     * Builds the unified Raycast-style command list (strictly capped at [MAX_PALETTE_RESULTS] = 10),
-     * scoped to the active alias if one was typed, or combining all categories when no alias is typed,
-     * and ranked by `usageCount` (most used) + fuzzy match quality.
+     * Builds the unified Raycast-style command list (strictly capped at [MAX_PALETTE_RESULTS] = 10).
+     * - Deduplicates `storageFiles` against bookmarked paths so `Downloads (dl)` and `Download` never repeat.
+     * - When idle (`q.isEmpty()`): ranks by `usageCount` first.
+     * - When searching (`q.isNotEmpty()`): ranks strictly by `rankScore` (match quality) first!
      */
     fun buildPaletteResults(
         rawInput: String,
@@ -468,181 +629,32 @@ object QueryRouter {
     ): List<PaletteItem> {
         val cmd = parsePromptCommand(rawInput, bookmarks, engines)
         fun usageOf(key: String): Int = usageMap[key] ?: 0
-        fun usageBonus(key: String): Int = (usageMap[key] ?: 0) * 180
+        fun usageBonus(key: String): Int = (usageMap[key] ?: 0) * 35
 
         return when (cmd.mode) {
-            PromptIntentMode.ADD_COMMAND -> {
-                val sub = cmd.filterQuery.trim()
-                val subTokens = sub.split(WHITESPACE_REGEX, limit = 2)
-                val subType = subTokens.firstOrNull()?.lowercase().orEmpty()
-                val subArgs = if (subTokens.size > 1) subTokens[1].trim() else ""
+            PromptIntentMode.ADD_COMMAND -> buildQuickAddSuggestions(cmd.filterQuery, clipboardText)
 
-                when (subType) {
-                    "c", "contact", "call" -> {
-                        val parsed = parseQuickAddContact(subArgs)
-                        if (parsed != null) {
-                            listOf(
-                                PaletteItem.QuickAddAction(
-                                    kind = QuickAddKind.CONTACT,
-                                    title = "Save Contact: \"${parsed.first}\"",
-                                    subtitle = "phone: ${parsed.second} (tap or press RET to save)",
-                                    isReadyToCommit = true,
-                                    arg1 = parsed.first,
-                                    arg2 = parsed.second,
-                                )
-                            )
-                        } else {
-                            listOf(
-                                PaletteItem.QuickAddAction(
-                                    kind = QuickAddKind.CONTACT,
-                                    title = "Add Contact (tap to open form)",
-                                    subtitle = "or type: add c <Name> <Phone>",
-                                    isReadyToCommit = false,
-                                    arg1 = subArgs,
-                                )
-                            )
-                        }
-                    }
-                    "bm", "b", "bookmark" -> {
-                        val parsed = parseQuickAddBookmark(subArgs, clipboardText)
-                        if (parsed != null) {
-                            listOf(
-                                PaletteItem.QuickAddAction(
-                                    kind = QuickAddKind.BOOKMARK,
-                                    title = "Save Bookmark [${parsed.first}]: \"${parsed.second}\"",
-                                    subtitle = "${parsed.third.second.badge} -> ${parsed.third.first}",
-                                    isReadyToCommit = true,
-                                    arg1 = parsed.first,
-                                    arg2 = parsed.second,
-                                    arg3 = parsed.third.first,
-                                    bookmarkKind = parsed.third.second,
-                                )
-                            )
-                        } else {
-                            listOf(
-                                PaletteItem.QuickAddAction(
-                                    kind = QuickAddKind.BOOKMARK,
-                                    title = "Add Bookmark (tap to open form)",
-                                    subtitle = "or type: add bm <alias> <Title> [url/path]",
-                                    isReadyToCommit = false,
-                                    arg1 = subArgs,
-                                    arg3 = clipboardText,
-                                )
-                            )
-                        }
-                    }
-                    "p", "pipe", "eng", "engine" -> {
-                        val parsed = parseQuickAddPipe(subArgs, clipboardText)
-                        if (parsed != null) {
-                            listOf(
-                                PaletteItem.QuickAddAction(
-                                    kind = QuickAddKind.PIPE,
-                                    title = "Save Search Pipe [|${parsed.first}]: \"${parsed.second}\"",
-                                    subtitle = "template: ${parsed.third}",
-                                    isReadyToCommit = true,
-                                    arg1 = parsed.first,
-                                    arg2 = parsed.second,
-                                    arg3 = parsed.third,
-                                )
-                            )
-                        } else {
-                            listOf(
-                                PaletteItem.QuickAddAction(
-                                    kind = QuickAddKind.PIPE,
-                                    title = "Add Search Pipe (tap to open form)",
-                                    subtitle = "or type: add pipe <kw> <Name> <url>",
-                                    isReadyToCommit = false,
-                                    arg1 = subArgs,
-                                    arg3 = clipboardText,
-                                )
-                            )
-                        }
-                    }
-                    else -> {
-                        listOf(
-                            PaletteItem.QuickAddAction(
-                                kind = QuickAddKind.CONTACT,
-                                title = "Add New Contact",
-                                subtitle = "tap for form  |  add c <Name> <Phone>",
-                                isReadyToCommit = false,
-                            ),
-                            PaletteItem.QuickAddAction(
-                                kind = QuickAddKind.BOOKMARK,
-                                title = "Add New Bookmark (Link / Folder / File)",
-                                subtitle = "tap for form  |  add bm <alias> <Title> [url/path]",
-                                isReadyToCommit = false,
-                                arg3 = clipboardText,
-                            ),
-                            PaletteItem.QuickAddAction(
-                                kind = QuickAddKind.PIPE,
-                                title = "Add New Search Pipe Engine",
-                                subtitle = "tap for form  |  add pipe <kw> <Name> <url>",
-                                isReadyToCommit = false,
-                                arg3 = clipboardText,
-                            ),
-                        )
-                    }
-                }
-            }
-
-            PromptIntentMode.RM_COMMAND -> {
-                val sub = cmd.filterQuery.trim().lowercase()
-                val tokens = sub.split(WHITESPACE_REGEX)
-                val targetToken = when {
-                    tokens.size >= 2 && tokens[0] in setOf("bm", "b", "p", "pipe") -> tokens[1]
-                    tokens.isNotEmpty() -> tokens[0]
-                    else -> ""
-                }
-                val out = mutableListOf<PaletteItem>()
-                bookmarks.filter {
-                    targetToken.isEmpty() || it.alias.lowercase().contains(targetToken) || it.title.lowercase().contains(targetToken)
-                }.forEach { bm ->
-                    out.add(
-                        PaletteItem.QuickRemoveAction(
-                            isBookmark = true,
-                            targetId = bm.id,
-                            aliasOrKeyword = bm.alias,
-                            displayTitle = "Remove Bookmark [${bm.alias}] ${bm.title}",
-                        )
-                    )
-                }
-                if (engines.size > 1) {
-                    engines.filter {
-                        targetToken.isEmpty() || it.keyword.lowercase().contains(targetToken) || it.name.lowercase().contains(targetToken)
-                    }.forEach { eng ->
-                        out.add(
-                            PaletteItem.QuickRemoveAction(
-                                isBookmark = false,
-                                targetId = eng.id,
-                                aliasOrKeyword = eng.keyword,
-                                displayTitle = "Remove Search Pipe [|${eng.keyword}] ${eng.name}",
-                            )
-                        )
-                    }
-                }
-                out.take(MAX_PALETTE_RESULTS)
-            }
+            PromptIntentMode.RM_COMMAND -> buildQuickRemoveSuggestions(cmd.filterQuery, bookmarks, engines, history)
 
             PromptIntentMode.CONTACTS_ONLY -> {
-                val q = cmd.filterQuery.trim().lowercase()
+                val q = cmd.filterQuery.trim()
                 contacts.mapNotNull { c ->
                     val uKey = "contact:${c.cleanPhone}"
                     val uCount = usageOf(uKey)
-                    val fScore = if (q.isEmpty()) 100 else maxOf(
-                        FuzzyMatcher.scorePreLowered(q, c.nameLower),
-                        if (q[0].isDigit()) FuzzyMatcher.scorePreLowered(q, c.cleanPhone) else 0,
-                    )
+                    val fScore = FuzzyMatcher.scoreContact(q, c)
                     if (fScore > 0) {
                         PaletteItem.ContactAction(
                             contact = c,
                             preferredAction = cmd.contactAction,
                             usageKey = uKey,
-                            rankScore = fScore + usageBonus(uKey),
+                            rankScore = fScore * 10 + usageBonus(uKey),
                             usageCount = uCount,
                         )
                     } else null
-                }.sortedWith(compareByDescending<PaletteItem.ContactAction> { it.rankScore }.thenByDescending { it.usageCount })
-                    .take(MAX_PALETTE_RESULTS)
+                }.sortedWith(
+                    if (q.isEmpty()) compareByDescending<PaletteItem.ContactAction> { it.usageCount }.thenByDescending { it.rankScore }
+                    else compareByDescending<PaletteItem.ContactAction> { it.rankScore }.thenByDescending { it.usageCount }
+                ).take(MAX_PALETTE_RESULTS)
             }
 
             PromptIntentMode.APPS_ONLY -> {
@@ -655,37 +667,42 @@ object QueryRouter {
                         FuzzyMatcher.scorePreLowered(q, app.pkgLower.substringAfterLast('.')),
                     )
                     if (fScore > 0) {
-                        PaletteItem.AppAction(app, uKey, fScore + usageBonus(uKey), uCount)
+                        PaletteItem.AppAction(app, uKey, fScore * 10 + usageBonus(uKey), uCount)
                     } else null
-                }.sortedWith(compareByDescending<PaletteItem.AppAction> { it.rankScore }.thenByDescending { it.usageCount })
-                    .take(MAX_PALETTE_RESULTS)
+                }.sortedWith(
+                    if (q.isEmpty()) compareByDescending<PaletteItem.AppAction> { it.usageCount }.thenByDescending { it.rankScore }
+                    else compareByDescending<PaletteItem.AppAction> { it.rankScore }.thenByDescending { it.usageCount }
+                ).take(MAX_PALETTE_RESULTS)
             }
 
             PromptIntentMode.FILES_ONLY -> {
-                val q = cmd.filterQuery.trim()
+                val q = cmd.filterQuery.trim().lowercase()
                 storageFiles.mapNotNull { f ->
                     val uKey = "file:${f.absolutePath}"
                     val uCount = usageOf(uKey)
-                    val fScore = FuzzyMatcher.scoreFileItemPreLowered(q.lowercase(), f)
+                    val fScore = FuzzyMatcher.scoreFileItemPreLowered(q, f)
                     if (fScore > 0) {
-                        PaletteItem.FileAction(f, uKey, fScore + usageBonus(uKey), uCount)
+                        PaletteItem.FileAction(f, uKey, fScore * 10 + usageBonus(uKey), uCount)
                     } else null
-                }.sortedWith(compareByDescending<PaletteItem.FileAction> { it.rankScore }.thenByDescending { it.usageCount })
-                    .take(MAX_PALETTE_RESULTS)
+                }.sortedWith(
+                    if (q.isEmpty()) compareByDescending<PaletteItem.FileAction> { it.usageCount }.thenByDescending { it.rankScore }
+                    else compareByDescending<PaletteItem.FileAction> { it.rankScore }.thenByDescending { it.usageCount }
+                ).take(MAX_PALETTE_RESULTS)
             }
 
             PromptIntentMode.DIRS_ONLY -> {
-                val q = cmd.filterQuery.trim()
+                val q = cmd.filterQuery.trim().lowercase()
                 storageFiles.asSequence().filter { it.isDirectory }.mapNotNull { f ->
                     val uKey = "file:${f.absolutePath}"
                     val uCount = usageOf(uKey)
-                    val fScore = if (q.isEmpty()) 200 else FuzzyMatcher.scorePreLowered(q.lowercase(), f.nameLower)
+                    val fScore = if (q.isEmpty()) 200 else FuzzyMatcher.scoreFileItemPreLowered(q, f)
                     if (fScore > 0) {
-                        PaletteItem.FileAction(f, uKey, fScore + usageBonus(uKey), uCount)
+                        PaletteItem.FileAction(f, uKey, fScore * 10 + usageBonus(uKey), uCount)
                     } else null
-                }.sortedWith(compareByDescending<PaletteItem.FileAction> { it.rankScore }.thenByDescending { it.usageCount })
-                    .take(MAX_PALETTE_RESULTS)
-                    .toList()
+                }.sortedWith(
+                    if (q.isEmpty()) compareByDescending<PaletteItem.FileAction> { it.usageCount }.thenByDescending { it.rankScore }
+                    else compareByDescending<PaletteItem.FileAction> { it.rankScore }.thenByDescending { it.usageCount }
+                ).take(MAX_PALETTE_RESULTS).toList()
             }
 
             PromptIntentMode.BOOKMARKS_ONLY -> {
@@ -693,40 +710,68 @@ object QueryRouter {
                 bookmarks.mapNotNull { bm ->
                     val uKey = "bm:${bm.id}"
                     val uCount = usageOf(uKey)
-                    val qClean = q.removePrefix("#").lowercase()
-                    val fScore = if (qClean.isEmpty()) 200 else maxOf(
-                        if (bm.alias.equals(qClean, ignoreCase = true)) 2000 else FuzzyMatcher.score(qClean, bm.alias) + 120,
-                        FuzzyMatcher.score(qClean, bm.title),
-                        FuzzyMatcher.score(qClean, bm.target.substringAfterLast('/')),
-                        if (bm.tagsLower.isNotEmpty()) FuzzyMatcher.scorePreLowered(qClean, bm.tagsLower) + 100 else 0,
-                    )
+                    val fScore = FuzzyMatcher.scoreBookmark(q, bm)
                     if (fScore > 0) {
-                        PaletteItem.BookmarkAction(bm, uKey, fScore + usageBonus(uKey), uCount)
+                        PaletteItem.BookmarkAction(bm, uKey, fScore * 10 + usageBonus(uKey), uCount)
                     } else null
-                }.sortedWith(compareByDescending<PaletteItem.BookmarkAction> { it.rankScore }.thenByDescending { it.usageCount })
-                    .take(MAX_PALETTE_RESULTS)
+                }.sortedWith(
+                    if (q.isEmpty()) compareByDescending<PaletteItem.BookmarkAction> { it.usageCount }.thenByDescending { it.rankScore }
+                    else compareByDescending<PaletteItem.BookmarkAction> { it.rankScore }.thenByDescending { it.usageCount }
+                ).take(MAX_PALETTE_RESULTS)
+            }
+
+            PromptIntentMode.PIPES_LIST -> {
+                val q = cmd.filterQuery.trim().lowercase()
+                engines.mapNotNull { eng ->
+                    val uKey = "eng:${eng.id}"
+                    val uCount = usageOf(uKey)
+                    val fScore = if (q.isEmpty()) {
+                        if (eng.isDefault) 300 else 200
+                    } else {
+                        val kwScore = if (eng.keyword.equals(q, ignoreCase = true)) 2200 else FuzzyMatcher.scorePreLowered(q, eng.keyword.lowercase())
+                        val nameScore = FuzzyMatcher.scorePreLowered(q, eng.name.lowercase())
+                        maxOf(kwScore, nameScore)
+                    }
+                    if (fScore > 0) {
+                        PaletteItem.EngineAction(
+                            engine = eng,
+                            query = "",
+                            targetUrl = eng.homeUrl,
+                            isHome = true,
+                            usageKey = uKey,
+                            rankScore = fScore * 10 + usageBonus(uKey),
+                            usageCount = uCount,
+                        )
+                    } else null
+                }.sortedWith(
+                    if (q.isEmpty()) compareByDescending<PaletteItem.EngineAction> { it.usageCount }.thenByDescending { it.rankScore }
+                    else compareByDescending<PaletteItem.EngineAction> { it.rankScore }.thenByDescending { it.usageCount }
+                ).take(MAX_PALETTE_RESULTS)
             }
 
             PromptIntentMode.SCOPED_FOLDER -> {
                 val folderBm = cmd.scopedFolderBookmark
-                val q = cmd.filterQuery.trim()
+                val q = cmd.filterQuery.trim().lowercase()
                 val out = mutableListOf<PaletteItem>()
                 if (folderBm != null && q.isEmpty()) {
                     val uKey = "bm:${folderBm.id}"
-                    out.add(PaletteItem.BookmarkAction(folderBm, uKey, 5000 + usageBonus(uKey), usageOf(uKey)))
+                    out.add(PaletteItem.BookmarkAction(folderBm, uKey, 50_000, usageOf(uKey)))
                 }
                 val fileMatches = scopedFolderFiles.mapNotNull { f ->
                     val uKey = "file:${f.absolutePath}"
                     val uCount = usageOf(uKey)
-                    val dirBoost = if (f.isDirectory) 120 else 0
-                    val fScore = if (q.isEmpty()) (100 + dirBoost) else {
-                        val s = FuzzyMatcher.scorePreLowered(q.lowercase(), f.nameLower)
-                        if (s > 0) s + dirBoost else 0
+                    val fScore = if (q.isEmpty()) {
+                        if (f.isDirectory) 220 else 100
+                    } else {
+                        FuzzyMatcher.scoreFileItemPreLowered(q, f)
                     }
                     if (fScore > 0) {
-                        PaletteItem.FileAction(f, uKey, fScore + usageBonus(uKey), uCount)
+                        PaletteItem.FileAction(f, uKey, fScore * 10 + usageBonus(uKey), uCount)
                     } else null
-                }.sortedWith(compareByDescending<PaletteItem.FileAction> { it.rankScore }.thenByDescending { it.usageCount })
+                }.sortedWith(
+                    if (q.isEmpty()) compareByDescending<PaletteItem.FileAction> { it.usageCount }.thenByDescending { it.rankScore }
+                    else compareByDescending<PaletteItem.FileAction> { it.rankScore }.thenByDescending { it.usageCount }
+                )
 
                 out.addAll(fileMatches.take(MAX_PALETTE_RESULTS - out.size))
                 out.take(MAX_PALETTE_RESULTS)
@@ -744,7 +789,7 @@ object QueryRouter {
                     targetUrl = targetUrl,
                     isHome = q.isEmpty(),
                     usageKey = uKey,
-                    rankScore = 10_000 + usageBonus(uKey),
+                    rankScore = 100_000,
                     usageCount = uCount,
                 )
                 val relatedHistory = history
@@ -753,7 +798,7 @@ object QueryRouter {
                         val hKey = "hist:${h.rawInput.lowercase()}"
                         val hScore = if (q.isEmpty()) 200 else FuzzyMatcher.score(q, h.queryText)
                         if (hScore > 0) {
-                            PaletteItem.HistoryAction(h, hKey, hScore + usageBonus(hKey), usageOf(hKey))
+                            PaletteItem.HistoryAction(h, hKey, hScore * 10 + usageBonus(hKey), usageOf(hKey))
                         } else null
                     }
                     .sortedByDescending { it.rankScore }
@@ -764,13 +809,18 @@ object QueryRouter {
             PromptIntentMode.ALL -> {
                 val q = cmd.filterQuery.trim()
                 val pool = mutableListOf<PaletteItem>()
+                // Deduplicate raw storage folders/files that are already represented as Bookmarks
+                val bookmarkedPaths = bookmarks
+                    .filter { it.kind != BookmarkKind.LINK }
+                    .map { it.target.trimEnd('/').lowercase() }
+                    .toSet()
 
                 if (q.isEmpty()) {
-                    // Empty input: show all categories ranked by MOST USED (`usageCount`)!
+                    // Empty input (idle): show top items ranked by MOST USED (`usageCount`) without duplicate folders!
                     bookmarks.forEachIndexed { idx, bm ->
                         val uKey = "bm:${bm.id}"
                         val uCount = usageOf(uKey)
-                        pool.add(PaletteItem.BookmarkAction(bm, uKey, 90 - idx + usageBonus(uKey), uCount))
+                        pool.add(PaletteItem.BookmarkAction(bm, uKey, 90 - idx + uCount * 180, uCount))
                     }
                     engines.forEachIndexed { idx, eng ->
                         val uKey = "eng:${eng.id}"
@@ -782,7 +832,7 @@ object QueryRouter {
                                 targetUrl = eng.homeUrl,
                                 isHome = true,
                                 usageKey = uKey,
-                                rankScore = (if (eng.isDefault) 95 else 80 - idx) + usageBonus(uKey),
+                                rankScore = (if (eng.isDefault) 95 else 80 - idx) + uCount * 180,
                                 usageCount = uCount,
                             )
                         )
@@ -791,21 +841,23 @@ object QueryRouter {
                         val uKey = "contact:${c.cleanPhone}"
                         val uCount = usageOf(uKey)
                         if (uCount > 0) {
-                            pool.add(PaletteItem.ContactAction(c, ContactQuickAction.CALL, uKey, 70 + usageBonus(uKey), uCount))
+                            pool.add(PaletteItem.ContactAction(c, ContactQuickAction.CALL, uKey, 70 + uCount * 180, uCount))
                         }
                     }
                     installedApps.forEach { app ->
                         val uKey = "app:${app.packageName}"
                         val uCount = usageOf(uKey)
                         if (uCount > 0) {
-                            pool.add(PaletteItem.AppAction(app, uKey, 72 + usageBonus(uKey), uCount))
+                            pool.add(PaletteItem.AppAction(app, uKey, 72 + uCount * 180, uCount))
                         }
                     }
                     storageFiles.forEach { f ->
-                        val uKey = "file:${f.absolutePath}"
-                        val uCount = usageOf(uKey)
-                        if (uCount > 0) {
-                            pool.add(PaletteItem.FileAction(f, uKey, 75 + usageBonus(uKey), uCount))
+                        if (f.pathLower.trimEnd('/') !in bookmarkedPaths) {
+                            val uKey = "file:${f.absolutePath}"
+                            val uCount = usageOf(uKey)
+                            if (uCount > 0) {
+                                pool.add(PaletteItem.FileAction(f, uKey, 75 + uCount * 180, uCount))
+                            }
                         }
                     }
                     history.take(10).forEachIndexed { idx, h ->
@@ -813,63 +865,75 @@ object QueryRouter {
                         val uCount = usageOf(hKey).coerceAtLeast(1)
                         pool.add(PaletteItem.HistoryAction(h, hKey, 60 - idx + uCount * 180, uCount))
                     }
+
+                    pool.sortedWith(
+                        compareByDescending<PaletteItem> { it.usageCount }
+                            .thenByDescending { it.rankScore }
+                    ).take(MAX_PALETTE_RESULTS)
                 } else {
-                    // Non-empty query without alias: fuzzy search ALL categories + include default web search fallback!
+                    // Active search: sort strictly by relevance (`rankScore`) first so what you type ALWAYS appears at #1!
                     val qLower = q.lowercase()
-                    val qTag = qLower.removePrefix("#")
                     bookmarks.forEach { bm ->
-                        val s = maxOf(
-                            FuzzyMatcher.score(qTag, bm.alias),
-                            FuzzyMatcher.score(qTag, bm.title),
-                            if (bm.tagsLower.isNotEmpty()) FuzzyMatcher.scorePreLowered(qTag, bm.tagsLower) + 80 else 0,
-                        )
+                        val s = FuzzyMatcher.scoreBookmark(q, bm)
                         if (s > 0) {
                             val uKey = "bm:${bm.id}"
-                            pool.add(PaletteItem.BookmarkAction(bm, uKey, s + 60 + usageBonus(uKey), usageOf(uKey)))
-                        }
-                    }
-                    contacts.forEach { c ->
-                        val s = maxOf(
-                            FuzzyMatcher.scorePreLowered(qLower, c.nameLower),
-                            if (qLower[0].isDigit()) FuzzyMatcher.scorePreLowered(qLower, c.cleanPhone) else 0,
-                        )
-                        if (s > 0) {
-                            val uKey = "contact:${c.cleanPhone}"
-                            pool.add(PaletteItem.ContactAction(c, ContactQuickAction.CALL, uKey, s + 40 + usageBonus(uKey), usageOf(uKey)))
-                        }
-                    }
-                    installedApps.forEach { app ->
-                        val s = FuzzyMatcher.scorePreLowered(qLower, app.labelLower)
-                        if (s > 0) {
-                            val uKey = "app:${app.packageName}"
-                            pool.add(PaletteItem.AppAction(app, uKey, s + 45 + usageBonus(uKey), usageOf(uKey)))
-                        }
-                    }
-                    storageFiles.forEach { f ->
-                        val s = FuzzyMatcher.scoreFileItemPreLowered(q.lowercase(), f)
-                        if (s > 0) {
-                            val uKey = "file:${f.absolutePath}"
-                            pool.add(PaletteItem.FileAction(f, uKey, s + usageBonus(uKey), usageOf(uKey)))
+                            val tieBonus = if (s >= 500) usageBonus(uKey) else 0
+                            pool.add(PaletteItem.BookmarkAction(bm, uKey, s * 10 + 40 + tieBonus, usageOf(uKey)))
                         }
                     }
                     engines.forEach { eng ->
-                        val s = maxOf(FuzzyMatcher.score(q, eng.keyword), FuzzyMatcher.score(q, eng.name))
+                        val isExactKw = eng.keyword.equals(qLower, ignoreCase = true)
+                        val s = if (isExactKw) 2150 else maxOf(
+                            FuzzyMatcher.scorePreLowered(qLower, eng.keyword.lowercase()),
+                            FuzzyMatcher.scorePreLowered(qLower, eng.name.lowercase()),
+                        )
                         if (s > 0) {
                             val uKey = "eng:${eng.id}"
+                            val tieBonus = if (s >= 500) usageBonus(uKey) else 0
                             pool.add(
                                 PaletteItem.EngineAction(
                                     engine = eng,
-                                    query = q,
-                                    targetUrl = buildSearchUrl(eng.urlTemplate, q),
-                                    isHome = false,
+                                    query = if (isExactKw) "" else q,
+                                    targetUrl = if (isExactKw) eng.homeUrl else buildSearchUrl(eng.urlTemplate, q),
+                                    isHome = isExactKw,
                                     usageKey = uKey,
-                                    rankScore = s + usageBonus(uKey),
+                                    rankScore = s * 10 + tieBonus,
                                     usageCount = usageOf(uKey),
                                 )
                             )
                         }
                     }
-                    // Always include the default fallback web search so pressing Enter can web-search any query
+                    contacts.forEach { c ->
+                        val s = FuzzyMatcher.scoreContact(qLower, c)
+                        if (s > 0) {
+                            val uKey = "contact:${c.cleanPhone}"
+                            val tieBonus = if (s >= 500) usageBonus(uKey) else 0
+                            pool.add(PaletteItem.ContactAction(c, ContactQuickAction.CALL, uKey, s * 10 + 30 + tieBonus, usageOf(uKey)))
+                        }
+                    }
+                    installedApps.forEach { app ->
+                        val s = maxOf(
+                            FuzzyMatcher.scorePreLowered(qLower, app.labelLower),
+                            FuzzyMatcher.scorePreLowered(qLower, app.pkgLower.substringAfterLast('.')),
+                        )
+                        if (s > 0) {
+                            val uKey = "app:${app.packageName}"
+                            val tieBonus = if (s >= 500) usageBonus(uKey) else 0
+                            pool.add(PaletteItem.AppAction(app, uKey, s * 10 + 25 + tieBonus, usageOf(uKey)))
+                        }
+                    }
+                    storageFiles.forEach { f ->
+                        if (f.pathLower.trimEnd('/') !in bookmarkedPaths) {
+                            val s = FuzzyMatcher.scoreFileItemPreLowered(qLower, f)
+                            if (s > 0) {
+                                val uKey = "file:${f.absolutePath}"
+                                val tieBonus = if (s >= 500) usageBonus(uKey) else 0
+                                pool.add(PaletteItem.FileAction(f, uKey, s * 10 + tieBonus, usageOf(uKey)))
+                            }
+                        }
+                    }
+
+                    // Always include the default fallback web search at the bottom if not already matched
                     val defEng = engines.firstOrNull { it.isDefault } ?: DefaultEngines.LIST.first()
                     if (pool.none { it is PaletteItem.EngineAction && it.engine.id == defEng.id }) {
                         val uKey = "eng:${defEng.id}"
@@ -880,19 +944,267 @@ object QueryRouter {
                                 targetUrl = buildSearchUrl(defEng.urlTemplate, q),
                                 isHome = false,
                                 usageKey = uKey,
-                                rankScore = 300 + usageBonus(uKey),
+                                rankScore = 100,
                                 usageCount = usageOf(uKey),
                             )
                         )
                     }
-                }
 
-                pool.sortedWith(
-                    compareByDescending<PaletteItem> { it.usageCount }
-                        .thenByDescending { it.rankScore }
-                ).take(MAX_PALETTE_RESULTS)
+                    pool.sortedWith(
+                        compareByDescending<PaletteItem> { it.rankScore }
+                            .thenByDescending { it.usageCount }
+                    ).take(MAX_PALETTE_RESULTS)
+                }
             }
         }
+    }
+
+    private fun buildQuickAddSuggestions(rawSub: String, clipboardText: String): List<PaletteItem> {
+        val sub = rawSub.trim()
+        if (sub.isEmpty()) {
+            return listOf(
+                PaletteItem.QuickAddAction(
+                    kind = QuickAddKind.CONTACT,
+                    title = "Add Contact",
+                    subtitle = "tap for form  |  + Name Phone",
+                    isReadyToCommit = false,
+                ),
+                PaletteItem.QuickAddAction(
+                    kind = QuickAddKind.BOOKMARK,
+                    title = "Add Bookmark (b)",
+                    subtitle = "tap for form  |  + b <alias> <url/path>",
+                    isReadyToCommit = false,
+                    arg3 = clipboardText,
+                ),
+                PaletteItem.QuickAddAction(
+                    kind = QuickAddKind.PIPE,
+                    title = "Add Search Pipe (s)",
+                    subtitle = "tap for form  |  + s <keyword> <search-url>",
+                    isReadyToCommit = false,
+                    arg3 = clipboardText,
+                ),
+            )
+        }
+
+        val subTokens = sub.split(WHITESPACE_REGEX, limit = 2)
+        val subType = subTokens[0].lowercase()
+        val subArgs = if (subTokens.size > 1) subTokens[1].trim() else ""
+
+        return when (subType) {
+            "c", "contact", "call" -> {
+                val parsed = parseQuickAddContact(subArgs)
+                if (parsed != null) {
+                    listOf(
+                        PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.CONTACT,
+                            title = "Save Contact: \"${parsed.first}\"",
+                            subtitle = "phone: ${parsed.second} (tap or press RET)",
+                            isReadyToCommit = true,
+                            arg1 = parsed.first,
+                            arg2 = parsed.second,
+                        )
+                    )
+                } else {
+                    listOf(
+                        PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.CONTACT,
+                            title = "Add Contact (tap for form)",
+                            subtitle = "+ c <Name> <Phone>",
+                            isReadyToCommit = false,
+                            arg1 = subArgs,
+                        )
+                    )
+                }
+            }
+            "b", "bm", "bookmark" -> {
+                val parsed = parseQuickAddBookmark(subArgs, clipboardText)
+                if (parsed != null) {
+                    listOf(
+                        PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.BOOKMARK,
+                            title = "Save Bookmark [b ${parsed.first}]: \"${parsed.second}\"",
+                            subtitle = "${parsed.third.second.badge} -> ${parsed.third.first}",
+                            isReadyToCommit = true,
+                            arg1 = parsed.first,
+                            arg2 = parsed.second,
+                            arg3 = parsed.third.first,
+                            bookmarkKind = parsed.third.second,
+                        )
+                    )
+                } else {
+                    listOf(
+                        PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.BOOKMARK,
+                            title = "Add Bookmark (tap for form)",
+                            subtitle = "+ b <alias> [Title] <url/path>",
+                            isReadyToCommit = false,
+                            arg1 = subArgs,
+                            arg3 = clipboardText,
+                        )
+                    )
+                }
+            }
+            "s", "p", "pipe", "eng", "engine" -> {
+                val parsed = parseQuickAddPipe(subArgs, clipboardText)
+                if (parsed != null) {
+                    listOf(
+                        PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.PIPE,
+                            title = "Save Search Pipe [s ${parsed.first}]: \"${parsed.second}\"",
+                            subtitle = "template: ${parsed.third}",
+                            isReadyToCommit = true,
+                            arg1 = parsed.first,
+                            arg2 = parsed.second,
+                            arg3 = parsed.third,
+                        )
+                    )
+                } else {
+                    listOf(
+                        PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.PIPE,
+                            title = "Add Search Pipe (tap for form)",
+                            subtitle = "+ s <keyword> [Name] <search-url>",
+                            isReadyToCommit = false,
+                            arg1 = subArgs,
+                            arg3 = clipboardText,
+                        )
+                    )
+                }
+            }
+            else -> {
+                // Zero-syntax smart auto-detection (`+ Ramesh 9841234567`, `+ abb audiobookbay.lu`, `+ abb audiobookbay.lu/?s=dune`)
+                val out = mutableListOf<PaletteItem>()
+                val autoContact = parseQuickAddContact(sub)
+                if (autoContact != null && !sub.contains("http") && !sub.contains('/') && !sub.contains('.')) {
+                    out.add(
+                        PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.CONTACT,
+                            title = "Save Contact: \"${autoContact.first}\"",
+                            subtitle = "phone: ${autoContact.second} (tap or press RET)",
+                            isReadyToCommit = true,
+                            arg1 = autoContact.first,
+                            arg2 = autoContact.second,
+                        )
+                    )
+                }
+                val autoPipe = parseQuickAddPipe(sub, clipboardText)
+                val autoBm = parseQuickAddBookmark(sub, clipboardText)
+                val looksLikeSearchUrl = sub.contains("{query}") || sub.contains("?") || sub.contains("=")
+                if (looksLikeSearchUrl && autoPipe != null) {
+                    out.add(
+                        PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.PIPE,
+                            title = "Save Search Pipe [s ${autoPipe.first}]: \"${autoPipe.second}\"",
+                            subtitle = "template: ${autoPipe.third}",
+                            isReadyToCommit = true,
+                            arg1 = autoPipe.first,
+                            arg2 = autoPipe.second,
+                            arg3 = autoPipe.third,
+                        )
+                    )
+                }
+                if (autoBm != null) {
+                    out.add(
+                        PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.BOOKMARK,
+                            title = "Save Bookmark [b ${autoBm.first}]: \"${autoBm.second}\"",
+                            subtitle = "${autoBm.third.second.badge} -> ${autoBm.third.first}",
+                            isReadyToCommit = true,
+                            arg1 = autoBm.first,
+                            arg2 = autoBm.second,
+                            arg3 = autoBm.third.first,
+                            bookmarkKind = autoBm.third.second,
+                        )
+                    )
+                }
+                if (!looksLikeSearchUrl && autoPipe != null) {
+                    out.add(
+                        PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.PIPE,
+                            title = "Save Search Pipe [s ${autoPipe.first}]: \"${autoPipe.second}\"",
+                            subtitle = "template: ${autoPipe.third}",
+                            isReadyToCommit = true,
+                            arg1 = autoPipe.first,
+                            arg2 = autoPipe.second,
+                            arg3 = autoPipe.third,
+                        )
+                    )
+                }
+                if (out.isEmpty()) {
+                    out.add(
+                        PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.CONTACT,
+                            title = "Open Quick Add Form for \"$sub\"",
+                            subtitle = "tap to choose Contact, Bookmark (b), or Pipe (s)",
+                            isReadyToCommit = false,
+                            arg1 = sub,
+                            arg3 = clipboardText,
+                        )
+                    )
+                }
+                out
+            }
+        }
+    }
+
+    private fun buildQuickRemoveSuggestions(
+        rawSub: String,
+        bookmarks: List<PipeBookmark>,
+        engines: List<SearchEngine>,
+        history: List<SearchHistoryEntry>,
+    ): List<PaletteItem> {
+        val sub = rawSub.trim().lowercase()
+        val tokens = sub.split(WHITESPACE_REGEX, limit = 2)
+        val first = tokens.firstOrNull().orEmpty()
+        val onlyBookmarks = first == "b" || first == "bm"
+        val onlyPipes = first == "s" || first == "p" || first == "pipe"
+        val targetToken = if ((onlyBookmarks || onlyPipes) && tokens.size > 1) tokens[1].trim() else if (onlyBookmarks || onlyPipes) "" else sub
+
+        val out = mutableListOf<PaletteItem>()
+        if (!onlyPipes) {
+            bookmarks.filter {
+                targetToken.isEmpty() || it.alias.lowercase().contains(targetToken) || it.title.lowercase().contains(targetToken)
+            }.forEach { bm ->
+                out.add(
+                    PaletteItem.QuickRemoveAction(
+                        isBookmark = true,
+                        targetId = bm.id,
+                        aliasOrKeyword = bm.alias,
+                        displayTitle = "Delete Bookmark [b ${bm.alias}] ${bm.title}",
+                    )
+                )
+            }
+        }
+        if (!onlyBookmarks && engines.size > 1) {
+            engines.filter {
+                targetToken.isEmpty() || it.keyword.lowercase().contains(targetToken) || it.name.lowercase().contains(targetToken)
+            }.forEach { eng ->
+                out.add(
+                    PaletteItem.QuickRemoveAction(
+                        isBookmark = false,
+                        targetId = eng.id,
+                        aliasOrKeyword = eng.keyword,
+                        displayTitle = "Delete Search Pipe [s ${eng.keyword}] ${eng.name}",
+                    )
+                )
+            }
+        }
+        if (!onlyBookmarks && !onlyPipes) {
+            history.filter {
+                targetToken.isEmpty() || it.rawInput.lowercase().contains(targetToken)
+            }.take(4).forEach { h ->
+                out.add(
+                    PaletteItem.QuickRemoveAction(
+                        isBookmark = false,
+                        targetId = h.id.toString(),
+                        aliasOrKeyword = h.rawInput,
+                        displayTitle = "Delete History: \"${h.rawInput}\"",
+                        isHistory = true,
+                    )
+                )
+            }
+        }
+        return out.take(MAX_PALETTE_RESULTS)
     }
 
     /**
@@ -916,7 +1228,29 @@ object QueryRouter {
     }
 
     /**
-     * Parses `add c <Name> <Phone>` into `(name, phone)`.
+     * Infers a clean title from a URL or file path when the user only types `+ b abb https://audiobookbay.lu`.
+     */
+    fun inferTitleFromTarget(alias: String, target: String): String {
+        val cleanTarget = target.trim().trimEnd('/')
+        if (cleanTarget.startsWith("/")) {
+            return cleanTarget.substringAfterLast('/').ifEmpty { alias.uppercase() }
+        }
+        val host = cleanTarget
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .removePrefix("www.")
+            .substringBefore('/')
+            .substringBefore('?')
+        val domainMain = host.substringBefore('.')
+        return if (domainMain.length >= 2) {
+            domainMain.replaceFirstChar { it.uppercaseChar() }
+        } else {
+            alias.uppercase()
+        }
+    }
+
+    /**
+     * Parses `add c <Name> <Phone>` or `+ <Name> <Phone>` into `(name, phone)`.
      */
     fun parseQuickAddContact(rawArgs: String): Pair<String, String>? {
         val trimmed = rawArgs.trim()
@@ -932,7 +1266,7 @@ object QueryRouter {
     }
 
     /**
-     * Parses `add bm <alias> <Title> [target]` (falling back to [clipboardText] if target is omitted).
+     * Parses `+ b <alias> [Title] [target]` (falling back to [clipboardText] if target is omitted).
      */
     fun parseQuickAddBookmark(rawArgs: String, clipboardText: String = ""): Triple<String, String, Pair<String, BookmarkKind>>? {
         val trimmed = rawArgs.trim()
@@ -943,18 +1277,24 @@ object QueryRouter {
         val lastLooksLikeTarget = lastToken.startsWith("http://") ||
             lastToken.startsWith("https://") ||
             lastToken.startsWith("/storage/") ||
-            lastToken.startsWith("/sdcard/")
+            lastToken.startsWith("/sdcard/") ||
+            (lastToken.contains('.') && !lastToken.startsWith("."))
 
-        val target = when {
+        val rawTarget = when {
             lastLooksLikeTarget -> lastToken
             clipboardText.trim().let { it.startsWith("http://") || it.startsWith("https://") || it.startsWith("/") } ->
                 clipboardText.trim()
             else -> ""
         }
-        if (target.isEmpty()) return null
+        if (rawTarget.isEmpty()) return null
+        val target = if (!rawTarget.startsWith("/") && !rawTarget.startsWith("http://") && !rawTarget.startsWith("https://")) {
+            "https://$rawTarget"
+        } else {
+            rawTarget
+        }
 
-        val titleTokens = if (lastLooksLikeTarget) tokens.drop(1).dropLast(1) else tokens.drop(1)
-        val title = titleTokens.joinToString(" ").trim().ifEmpty { alias }
+        val titleTokens = if (lastLooksLikeTarget && tokens.size >= 3) tokens.drop(1).dropLast(1) else if (!lastLooksLikeTarget) tokens.drop(1) else emptyList()
+        val title = titleTokens.joinToString(" ").trim().ifEmpty { inferTitleFromTarget(alias, target) }
         val kind = when {
             target.startsWith("http://") || target.startsWith("https://") -> BookmarkKind.LINK
             target.substringAfterLast('/').contains('.') -> BookmarkKind.FILE
@@ -964,7 +1304,7 @@ object QueryRouter {
     }
 
     /**
-     * Parses `add pipe <keyword> <Name> [url]` (falling back to [clipboardText] if url is omitted).
+     * Parses `+ s <keyword> [Name] [url]` (falling back to [clipboardText] if url is omitted).
      */
     fun parseQuickAddPipe(rawArgs: String, clipboardText: String = ""): Triple<String, String, String>? {
         val trimmed = rawArgs.trim()
@@ -981,8 +1321,8 @@ object QueryRouter {
         }
         if (rawUrl.isEmpty()) return null
         val urlTemplate = normalizePipeUrlTemplate(rawUrl)
-        val nameTokens = if (lastLooksLikeUrl && tokens.size >= 3) tokens.drop(1).dropLast(1) else tokens.drop(1)
-        val name = nameTokens.joinToString(" ").trim().ifEmpty { keyword.uppercase() }
+        val nameTokens = if (lastLooksLikeUrl && tokens.size >= 3) tokens.drop(1).dropLast(1) else if (!lastLooksLikeUrl) tokens.drop(1) else emptyList()
+        val name = nameTokens.joinToString(" ").trim().ifEmpty { inferTitleFromTarget(keyword, urlTemplate) }
         return Triple(keyword, name, urlTemplate)
     }
 
@@ -1012,6 +1352,28 @@ object QueryRouter {
         val tokens = trimmed.split(WHITESPACE_REGEX, limit = 2)
         val firstWord = tokens[0]
         val remainder = if (tokens.size > 1) tokens[1].trim().replace(WHITESPACE_REGEX, " ") else ""
+
+        // Support `s <keyword> [query]` in `resolve()` as well!
+        if ((firstWord.equals("s", ignoreCase = true) || firstWord.equals("pipe", ignoreCase = true)) && remainder.isNotEmpty()) {
+            val subTokens = remainder.split(WHITESPACE_REGEX, limit = 2)
+            val subKw = subTokens[0]
+            val subQuery = if (subTokens.size > 1) subTokens[1].trim().replace(WHITESPACE_REGEX, " ") else ""
+            val subEng = activeEngines.firstOrNull { it.keyword.equals(subKw, ignoreCase = true) }
+            if (subEng != null) {
+                return if (subQuery.isEmpty()) {
+                    RouteResolution(subEng, true, subEng.keyword.lowercase(), "", subEng.homeUrl, true)
+                } else {
+                    RouteResolution(
+                        engine = subEng,
+                        matchedByKeyword = true,
+                        extractedKeyword = subEng.keyword.lowercase(),
+                        query = subQuery,
+                        targetUrl = buildSearchUrl(subEng.urlTemplate, subQuery),
+                        isHomeLaunch = false,
+                    )
+                }
+            }
+        }
 
         val matchedEngine = activeEngines.firstOrNull { it.keyword.equals(firstWord, ignoreCase = true) }
 

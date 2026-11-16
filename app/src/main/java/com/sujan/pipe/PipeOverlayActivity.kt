@@ -579,6 +579,27 @@ private fun SleekRaycastOverlay(
                     )
                 }
 
+                AsciiButton(
+                    label = "+",
+                    primary = inlineQuickAdd != null,
+                    onClick = {
+                        if (inlineQuickAdd != null) {
+                            inlineQuickAdd = null
+                        } else {
+                            val raw = input.text.trim().removePrefix("+").removePrefix("add").trim()
+                            inlineQuickAdd = PaletteItem.QuickAddAction(
+                                kind = QuickAddKind.BOOKMARK,
+                                title = "Quick Add",
+                                subtitle = "",
+                                isReadyToCommit = false,
+                                arg1 = raw,
+                                arg3 = clipText,
+                            )
+                        }
+                    },
+                    spokenLabel = "quick add or manage",
+                )
+
                 if (input.text.isNotEmpty()) {
                     AsciiButton(
                         label = "x",
@@ -615,9 +636,25 @@ private fun SleekRaycastOverlay(
                 Spacer(Modifier.height(4.dp))
                 QuickAddInlineCard(
                     initialAction = inlineQuickAdd!!,
+                    existingBookmarks = activeBookmarks,
+                    existingEngines = activeEngines,
                     onSaveContact = commitNewContact,
                     onSaveBookmark = commitNewBookmark,
                     onSavePipe = commitNewPipe,
+                    onDeleteBookmark = { bm ->
+                        val updated = activeBookmarks.filterNot { it.id == bm.id }
+                        activeBookmarks = updated
+                        onSaveBookmarksList(updated)
+                        statusMsg = "ok: deleted bookmark [b ${bm.alias}]"
+                    },
+                    onDeleteEngine = { eng ->
+                        if (activeEngines.size > 1) {
+                            val updated = activeEngines.filterNot { it.id == eng.id }
+                            activeEngines = updated
+                            onSaveEnginesList(updated)
+                            statusMsg = "ok: deleted pipe [s ${eng.keyword}]"
+                        }
+                    },
                     onCancel = { inlineQuickAdd = null },
                 )
             }
@@ -667,6 +704,20 @@ private fun SleekRaycastOverlay(
                                     bookmarkKind = if (f.isDirectory) BookmarkKind.FOLDER else BookmarkKind.FILE,
                                 )
                             },
+                            onDeleteBookmark = { bm ->
+                                val updated = activeBookmarks.filterNot { it.id == bm.id }
+                                activeBookmarks = updated
+                                onSaveBookmarksList(updated)
+                                statusMsg = "ok: deleted [b ${bm.alias}]"
+                            },
+                            onDeleteEngine = if (activeEngines.size > 1) {
+                                { eng ->
+                                    val updated = activeEngines.filterNot { it.id == eng.id }
+                                    activeEngines = updated
+                                    onSaveEnginesList(updated)
+                                    statusMsg = "ok: deleted [s ${eng.keyword}]"
+                                }
+                            } else null,
                             onCallContact = onCallContact,
                             onSmsContact = onSmsContact,
                             onWhatsAppContact = onWhatsAppContact,
@@ -708,6 +759,8 @@ private fun SleekOverlayRow(
     onShareFile: (LocalFileItem) -> Unit,
     onPreviewImage: (LocalFileItem) -> Unit,
     onBookmarkFile: (LocalFileItem) -> Unit,
+    onDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
+    onDeleteEngine: ((SearchEngine) -> Unit)? = null,
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
@@ -868,9 +921,9 @@ private fun SleekOverlayRow(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     val badge = when (bm.kind) {
-                        BookmarkKind.FOLDER -> "[d/]"
-                        BookmarkKind.FILE -> "[f.]"
-                        BookmarkKind.LINK -> "[bm]"
+                        BookmarkKind.FOLDER -> "[b:d/]"
+                        BookmarkKind.FILE -> "[b:f.]"
+                        BookmarkKind.LINK -> "[b:bm]"
                     }
                     AsciiText("$ptr $badge ", style = AsciiType.small, color = if (pressed) c.bg else c.warn)
                     Column(modifier = Modifier.weight(1f)) {
@@ -890,6 +943,9 @@ private fun SleekOverlayRow(
                             onClick = { onToggleFolderPeek(bm.target) },
                             spokenLabel = "peek inside ${bm.title}",
                         )
+                    }
+                    if (onDeleteBookmark != null) {
+                        AsciiButton("x", { onDeleteBookmark(bm) })
                     }
                 }
                 if (isExpanded) {
@@ -961,9 +1017,13 @@ private fun SleekOverlayRow(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText("$ptr [|${eng.keyword}] ", style = AsciiType.small, color = if (pressed) c.bg else c.forRole(eng.colorRole))
+                AsciiText("$ptr [s:${eng.keyword}] ", style = AsciiType.small, color = if (pressed) c.bg else c.forRole(eng.colorRole))
                 AsciiText(desc, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
-                AsciiText("web", style = AsciiType.small, color = if (pressed) c.bg else c.dim)
+                if (item.isHome && onDeleteEngine != null) {
+                    AsciiButton("x", { onDeleteEngine(eng) })
+                } else {
+                    AsciiText("pipe", style = AsciiType.small, color = if (pressed) c.bg else c.dim)
+                }
             }
         }
 

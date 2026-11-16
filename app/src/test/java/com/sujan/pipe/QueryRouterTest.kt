@@ -248,11 +248,11 @@ class QueryRouterTest {
             QueryRouter.normalizePipeUrlTemplate("https://audiobookbay.lu/?s=dune"),
         )
 
-        // Verify v1.9 `add` and `rm` prompt command modes
-        val cmdAdd = QueryRouter.parsePromptCommand("add c Ramesh Dai 9841234567", bookmarks, engines)
+        // Verify v1.9/v2.0 `add` (`+`) and `del` (`-`) prompt command modes
+        val cmdAdd = QueryRouter.parsePromptCommand("+ Ramesh Dai 9841234567", bookmarks, engines)
         assertEquals(PromptIntentMode.ADD_COMMAND, cmdAdd.mode)
         val addResults = QueryRouter.buildPaletteResults(
-            rawInput = "add c Ramesh Dai 9841234567",
+            rawInput = "+ Ramesh Dai 9841234567",
             engines = engines,
             bookmarks = bookmarks,
             contacts = contacts,
@@ -261,7 +261,50 @@ class QueryRouterTest {
             history = emptyList(),
             usageMap = usage,
         )
-        assertEquals(1, addResults.size)
+        assertTrue(addResults.isNotEmpty())
         assertTrue((addResults.first() as com.sujan.pipe.domain.PaletteItem.QuickAddAction).isReadyToCommit)
+
+        // Verify v2.0 `b <alias>` (Bookmark) vs `s <keyword>` (Search Pipe) separation with identical name `abb`
+        val customBookmarks = bookmarks + com.sujan.pipe.model.PipeBookmark(
+            id = "bm_abb",
+            alias = "abb",
+            title = "AudiobookBay Home",
+            target = "https://audiobookbay.lu",
+            kind = com.sujan.pipe.model.BookmarkKind.LINK,
+        )
+        val customEngines = engines + com.sujan.pipe.model.SearchEngine(
+            id = "eng_abb",
+            name = "AudiobookBay Search",
+            keyword = "abb",
+            urlTemplate = "https://audiobookbay.lu/?s={query}",
+        )
+
+        val bAbb = QueryRouter.buildPaletteResults(
+            rawInput = "b abb",
+            engines = customEngines,
+            bookmarks = customBookmarks,
+            contacts = contacts,
+            storageFiles = sampleItems,
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = usage,
+        )
+        assertTrue(bAbb.all { it is com.sujan.pipe.domain.PaletteItem.BookmarkAction })
+        assertEquals("abb", (bAbb.first() as com.sujan.pipe.domain.PaletteItem.BookmarkAction).bookmark.alias)
+
+        val sAbb = QueryRouter.buildPaletteResults(
+            rawInput = "s abb dune",
+            engines = customEngines,
+            bookmarks = customBookmarks,
+            contacts = contacts,
+            storageFiles = sampleItems,
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = usage,
+        )
+        val topEngineAction = sAbb.first() as com.sujan.pipe.domain.PaletteItem.EngineAction
+        assertEquals("abb", topEngineAction.engine.keyword)
+        assertEquals("dune", topEngineAction.query)
+        assertEquals("https://audiobookbay.lu/?s=dune", topEngineAction.targetUrl)
     }
 }

@@ -89,7 +89,7 @@ data class PipeUiState(
     val preferredBrowserPackage: String = "auto",
     val excludedFolders: List<String> = listOf(".Statuses", ".thumbnails"),
     val searchBoxPrefix: String = "> ",
-    val searchBoxPlaceholder: String = "pipe (c, f, d, app, dl, yt)...",
+    val searchBoxPlaceholder: String = "pipe (c, f, b, s, app)...",
     val showSearchBoxScopeBadge: Boolean = true,
     val showSearchBoxMenuBtn: Boolean = true,
     val previewImageFile: LocalFileItem? = null,
@@ -124,7 +124,7 @@ data class PipeUiState(
     val jsonStatusMessage: String? = null,
 ) {
     val parsedCommand: ParsedPromptCommand
-        get() = QueryRouter.parsePromptCommand(searchInput.text, bookmarks)
+        get() = QueryRouter.parsePromptCommand(searchInput.text, bookmarks, engines)
 
     val liveResolution: RouteResolution
         get() = QueryRouter.resolve(searchInput.text, engines)
@@ -596,17 +596,26 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         recomputePaletteAsync()
     }
 
-    fun quickRemoveById(isBookmark: Boolean, targetId: String) {
-        if (isBookmark) {
-            val bm = _uiState.value.bookmarks.firstOrNull { it.id == targetId } ?: return
-            deleteBookmark(bm)
-            _uiState.update { it.copy(searchInput = TextFieldValue(""), launchError = null) }
-            recomputePaletteAsync()
-        } else {
-            val eng = _uiState.value.engines.firstOrNull { it.id == targetId } ?: return
-            deleteEngine(eng)
-            _uiState.update { it.copy(searchInput = TextFieldValue(""), launchError = null) }
-            recomputePaletteAsync()
+    fun quickRemoveById(isBookmark: Boolean, targetId: String, isHistory: Boolean = false) {
+        when {
+            isHistory -> {
+                val h = _uiState.value.history.firstOrNull { it.id.toString() == targetId } ?: return
+                deleteHistoryItem(h)
+                _uiState.update { it.copy(searchInput = TextFieldValue(""), launchError = null) }
+                recomputePaletteAsync()
+            }
+            isBookmark -> {
+                val bm = _uiState.value.bookmarks.firstOrNull { it.id == targetId } ?: return
+                deleteBookmark(bm)
+                _uiState.update { it.copy(searchInput = TextFieldValue(""), launchError = null) }
+                recomputePaletteAsync()
+            }
+            else -> {
+                val eng = _uiState.value.engines.firstOrNull { it.id == targetId } ?: return
+                deleteEngine(eng)
+                _uiState.update { it.copy(searchInput = TextFieldValue(""), launchError = null) }
+                recomputePaletteAsync()
+            }
         }
     }
 

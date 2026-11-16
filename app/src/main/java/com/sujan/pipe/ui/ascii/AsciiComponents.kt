@@ -32,7 +32,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -119,6 +121,168 @@ fun AsciiPipePill(
                 contentDescription = "pipe to ${name ?: keyword}, keyword $keyword"
             },
         )
+    }
+}
+
+/**
+ * Standardized full-width ASCII toggle switch row (`label ................ [ON ]` / `[OFF]`).
+ * Used for every boolean setting across the entire app so toggles and switches are 100% uniform.
+ */
+@Composable
+fun AsciiToggleRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+) {
+    val c = LocalAscii.current
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 46.dp)
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+                interactionSource = src,
+                indication = null,
+            )
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+            AsciiText(
+                text = label,
+                style = AsciiType.body,
+                color = if (pressed) c.accent else c.fg,
+            )
+            if (!subtitle.isNullOrBlank()) {
+                AsciiText(
+                    text = subtitle,
+                    style = AsciiType.small,
+                    color = c.dim,
+                )
+            }
+        }
+        Box(
+            modifier = Modifier
+                .background(if (checked) c.accent else c.surface)
+                .border(1.dp, if (checked) c.accent else c.border)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            AsciiText(
+                text = if (checked) "ON " else "OFF",
+                style = AsciiType.title,
+                color = if (checked) c.bg else c.dim,
+            )
+        }
+    }
+}
+
+/**
+ * Standardized collapsible ASCII dropdown selector (`label   [ Selected Option v ]`).
+ * Replaces sprawling radio lists (e.g. Default/Preferred Browser, Theme Mode, Palette, Corner Radius).
+ */
+@Composable
+fun <T> AsciiDropdownRow(
+    label: String,
+    selectedValue: T,
+    options: List<Pair<T, String>>,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+) {
+    val c = LocalAscii.current
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = options.firstOrNull { it.first == selectedValue }?.second
+        ?: options.firstOrNull()?.second.orEmpty()
+
+    Column(modifier = modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 46.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    role = Role.DropdownList,
+                    onClick = { expanded = !expanded },
+                ),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(0.45f).padding(end = 8.dp)) {
+                AsciiText(text = label, style = AsciiType.body, color = c.fg)
+                if (!subtitle.isNullOrBlank()) {
+                    AsciiText(text = subtitle, style = AsciiType.small, color = c.dim)
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .weight(0.55f)
+                    .background(c.surface)
+                    .border(1.dp, if (expanded) c.accent else c.border)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText(
+                    text = selectedLabel,
+                    style = AsciiType.body,
+                    color = c.accent,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                AsciiText(
+                    text = if (expanded) " ^" else " v",
+                    style = AsciiType.title,
+                    color = c.accent2,
+                )
+            }
+        }
+
+        if (expanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .background(c.surface)
+                    .border(1.dp, c.accent)
+                    .padding(vertical = 4.dp),
+            ) {
+                options.forEach { (optVal, optLabel) ->
+                    val isSel = optVal == selectedValue
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 40.dp)
+                            .background(if (isSel) c.bg else Color.Transparent)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {
+                                    expanded = false
+                                    onSelect(optVal)
+                                },
+                            )
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AsciiText(
+                            text = if (isSel) "> $optLabel" else "  $optLabel",
+                            style = if (isSel) AsciiType.title else AsciiType.body,
+                            color = if (isSel) c.accent else c.fg,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
