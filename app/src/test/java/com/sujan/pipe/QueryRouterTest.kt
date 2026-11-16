@@ -1,11 +1,14 @@
 package com.sujan.pipe
 
 import com.sujan.pipe.domain.FuzzyMatcher
+import com.sujan.pipe.domain.PaletteItem
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.DefaultBookmarks
 import com.sujan.pipe.model.DefaultEngines
+import com.sujan.pipe.model.DictionaryEntry
+import com.sujan.pipe.model.FullBackupBundle
 import com.sujan.pipe.model.PrefixConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -52,7 +55,7 @@ class QueryRouterTest {
     }
 
     @Test
-    fun `custom PrefixConfig routes custom files, pipes, bookmarks, apps, and history prefixes`() {
+    fun `custom PrefixConfig routes custom files, pipes, bookmarks, apps, history, dictionary, and clipboard prefixes`() {
         val customPrefixes = PrefixConfig(
             files = "fl",
             pipes = "sp",
@@ -60,6 +63,8 @@ class QueryRouterTest {
             apps = "la",
             history = "hs",
             contacts = "ct",
+            dictionary = "dict",
+            clipboard = "cp",
         )
         assertEquals(PromptIntentMode.FILES_ONLY, QueryRouter.parsePromptCommand("fl report", bookmarks, engines, customPrefixes).mode)
         assertEquals(PromptIntentMode.ENGINE_ONLY, QueryRouter.parsePromptCommand("sp yt music", bookmarks, engines, customPrefixes).mode)
@@ -67,6 +72,92 @@ class QueryRouterTest {
         assertEquals(PromptIntentMode.APPS_ONLY, QueryRouter.parsePromptCommand("la mix", bookmarks, engines, customPrefixes).mode)
         assertEquals(PromptIntentMode.HISTORY_ONLY, QueryRouter.parsePromptCommand("hs compose", bookmarks, engines, customPrefixes).mode)
         assertEquals(PromptIntentMode.CONTACTS_ONLY, QueryRouter.parsePromptCommand("ct kalika", bookmarks, engines, customPrefixes).mode)
+        assertEquals(PromptIntentMode.DICTIONARY_ONLY, QueryRouter.parsePromptCommand("dict serendipity", bookmarks, engines, customPrefixes).mode)
+        assertEquals(PromptIntentMode.CLIPBOARD_ONLY, QueryRouter.parsePromptCommand("cp", bookmarks, engines, customPrefixes).mode)
+    }
+
+    @Test
+    fun `detectDirectUrl recognizes bare domains, http URLs, localhost, and local IPs with ports`() {
+        assertEquals("https://audiobookbay.lu", QueryRouter.detectDirectUrl("audiobookbay.lu"))
+        assertEquals("https://github.com/sujansujan/Pipe", QueryRouter.detectDirectUrl("github.com/sujansujan/Pipe"))
+        assertEquals("http://192.168.1.1:8080/admin", QueryRouter.detectDirectUrl("192.168.1.1:8080/admin"))
+        assertEquals("http://localhost:3000", QueryRouter.detectDirectUrl("localhost:3000"))
+        assertNull(QueryRouter.detectDirectUrl("yt lofi music"))
+        assertNull(QueryRouter.detectDirectUrl("citizenship.pdf"))
+    }
+
+    @Test
+    fun `stripTrackingParams removes utm, fbclid, igsh, and si query parameters`() {
+        val dirty = "https://example.com/article?id=42&utm_source=twitter&utm_medium=social&fbclid=IwAR123"
+        val clean = QueryRouter.stripTrackingParams(dirty)
+        assertEquals("https://example.com/article?id=42", clean)
+
+        val allDirty = "https://youtu.be/dQw4w9WgXcQ?si=abc123xyz&utm_campaign=share"
+        assertEquals("https://youtu.be/dQw4w9WgXcQ", QueryRouter.stripTrackingParams(allDirty))
+    }
+
+    @Test
+    fun `on-demand dictionary results only surface in DICTIONARY_ONLY mode`() {
+        val sampleDict = listOf(
+            DictionaryEntry(
+                word = "serendipity",
+                partOfSpeech = "noun",
+                definition = "The occurrence and development of events by chance in a happy or beneficial way.",
+                synonyms = "chance, fluke",
+            )
+        )
+        val normalAll = QueryRouter.buildPaletteResults(
+            rawInput = "serendipity",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = emptyList(),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+            dictionaryMatches = sampleDict,
+            isDictionaryInstalled = true,
+        )
+        assertFalse(normalAll.any { it is PaletteItem.DictionaryAction })
+
+        val dictScoped = QueryRouter.buildPaletteResults(
+            rawInput = "def serendipity",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = emptyList(),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+            dictionaryMatches = sampleDict,
+            isDictionaryInstalled = true,
+        )
+        assertTrue(dictScoped.first() is PaletteItem.DictionaryAction)
+        val firstDict = dictScoped.first() as PaletteItem.DictionaryAction
+        assertEquals("serendipity", firstDict.entry?.word)
+    }
+
+    @Test
+    fun `full v2 backup export and import round-trip preserves engines, bookmarks, prefixes, and excluded folders`() {
+        val customPrefixes = PrefixConfig(files = "fl", dictionary = "d", clipboard = "cl")
+        val bundle = FullBackupBundle(
+            version = 2,
+            engines = engines,
+            bookmarks = bookmarks,
+            prefixes = customPrefixes,
+            excludedFolders = listOf("Telegram", "WhatsApp"),
+            usageCounts = mapOf("bm:bm_dl" to 9),
+        )
+        val json = QueryRouter.exportFullBackupToJson(bundle)
+        val restored = QueryRouter.importFullBackupFromJson(json)
+        assertEquals(2, restored.version)
+        assertEquals(engines.size, restored.engines.size)
+        assertEquals(bookmarks.size, restored.bookmarks.size)
+        assertEquals("fl", restored.prefixes?.files)
+        assertEquals("d", restored.prefixes?.dictionary)
+        assertEquals("cl", restored.prefixes?.clipboard)
+        assertEquals(listOf("Telegram", "WhatsApp"), restored.excludedFolders)
+        assertEquals(9, restored.usageCounts?.get("bm:bm_dl"))
     }
 
     @Test

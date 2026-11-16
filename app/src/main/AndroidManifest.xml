@@ -5,8 +5,8 @@
     <!--
       Personal Sideloaded Build Permissions (Not restricted by Play Store policy):
       1. READ_CONTACTS: Live contact fuzzy search (`c kali` -> call, sms, whatsapp).
-      2. MANAGE_EXTERNAL_STORAGE + READ/WRITE_EXTERNAL_STORAGE: Full file & folder fuzzy search and bookmarking (`dl`, `docs`, etc.).
-      3. QUERY_ALL_PACKAGES: Detect installed browsers & native apps so `pipe` can act as Default Browser without self-looping.
+      2. MANAGE_EXTERNAL_STORAGE + READ/WRITE_EXTERNAL_STORAGE: Full file & folder fuzzy search, bookmarking, and external dictionary file loading.
+      3. QUERY_ALL_PACKAGES + REQUEST_DELETE_PACKAGES: Detect installed browsers & native apps and allow direct app uninstallation.
       4. Zero android.permission.INTERNET (100% offline local privacy).
     -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
@@ -23,6 +23,7 @@
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
 
     <queries>
         <intent>
@@ -56,7 +57,6 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Pipe">
 
-        <!-- FileProvider for opening local bookmarked or fuzzy-searched files/folders -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -107,7 +107,7 @@
             </intent-filter>
         </activity>
 
-        <!-- 3. UbikiTouch / Launcher Shortcut Creator (`ACTION_CREATE_SHORTCUT` -> "pipe overlay") -->
+        <!-- 3. UbikiTouch / Launcher Shortcut Creator -->
         <activity
             android:name=".OverlayShortcutCreatorActivity"
             android:exported="true"
@@ -120,22 +120,13 @@
             </intent-filter>
         </activity>
 
-        <!--
-          4. Default Browser & Default Search Engine Receiver (`WebSearchReceiverActivity`):
-             - Registered as a full Browser (`http` and `https` with `CATEGORY_BROWSABLE` + `CATEGORY_DEFAULT`)
-               so Android lists `pipe` in Settings -> Apps -> Default Apps -> Browser app!
-             - Intercepts search engine URLs (e.g. Google/Bing/DuckDuckGo `?q=yt+lofi` from home-screen widgets
-               or system search), parses the keyword prefix (`yt`), and forwards to the target app/browser
-               via `BrowserDispatcher` (excluding `com.sujan.pipe` so it never loops).
-             - Also handles `ACTION_WEB_SEARCH`, `ACTION_SEARCH`, and `pipe://search?q=%s`.
-        -->
+        <!-- 4. Default Browser & Default Search Engine Receiver -->
         <activity
             android:name=".WebSearchReceiverActivity"
             android:excludeFromRecents="true"
             android:exported="true"
             android:label="@string/search_engine_label"
             android:theme="@android:style/Theme.NoDisplay">
-            <!-- Browser Detection Filter (makes Android recognize `pipe` as a selectable Default Browser) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -165,7 +156,7 @@
                 android:resource="@xml/searchable" />
         </activity>
 
-        <!-- 5. Share Sheet (`ACTION_SEND`) & Text Selection (`ACTION_PROCESS_TEXT`) Router -->
+        <!-- 5. Share Sheet & Text Selection Router -->
         <activity
             android:name=".TextPipeActivity"
             android:exported="true"

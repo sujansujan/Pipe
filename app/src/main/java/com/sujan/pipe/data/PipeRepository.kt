@@ -7,6 +7,7 @@ import com.sujan.pipe.domain.RouteResolution
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.DefaultBookmarks
 import com.sujan.pipe.model.DefaultEngines
+import com.sujan.pipe.model.FullBackupBundle
 import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
@@ -68,6 +69,8 @@ class PipeRepository(context: Context) {
             apps = prefs.getString("prefix_apps_v1", "app")?.trim()?.ifEmpty { "app" } ?: "app",
             history = prefs.getString("prefix_history_v1", "hist")?.trim()?.ifEmpty { "hist" } ?: "hist",
             contacts = prefs.getString("prefix_contacts_v1", "c")?.trim()?.ifEmpty { "c" } ?: "c",
+            dictionary = prefs.getString("prefix_dictionary_v1", "def")?.trim()?.ifEmpty { "def" } ?: "def",
+            clipboard = prefs.getString("prefix_clipboard_v1", "clip")?.trim()?.ifEmpty { "clip" } ?: "clip",
         )
     }
 
@@ -79,7 +82,45 @@ class PipeRepository(context: Context) {
             .putString("prefix_apps_v1", config.appsClean)
             .putString("prefix_history_v1", config.historyClean)
             .putString("prefix_contacts_v1", config.contactsClean)
+            .putString("prefix_dictionary_v1", config.dictionaryClean)
+            .putString("prefix_clipboard_v1", config.clipboardClean)
             .apply()
+    }
+
+    fun loadDictionaryWordCount(): Int = prefs.getInt("dict_word_count_v1", 0)
+    fun loadDictionarySourceName(): String = prefs.getString("dict_source_name_v1", "not linked") ?: "not linked"
+
+    fun saveDictionaryMetadata(wordCount: Int, sourceName: String) {
+        prefs.edit()
+            .putInt("dict_word_count_v1", wordCount)
+            .putString("dict_source_name_v1", sourceName)
+            .apply()
+    }
+
+    fun buildFullBackupBundle(): FullBackupBundle = FullBackupBundle(
+        engines = loadEngines(),
+        bookmarks = loadBookmarks(),
+        prefixes = loadPrefixConfig(),
+        excludedFolders = loadExcludedFolders(),
+        usageCounts = loadUsageCounts(),
+    )
+
+    fun applyFullBackupBundle(bundle: FullBackupBundle) {
+        saveEngines(bundle.engines)
+        if (bundle.bookmarks.isNotEmpty()) {
+            saveBookmarks(bundle.bookmarks)
+        }
+        if (bundle.prefixes != null) {
+            savePrefixConfig(bundle.prefixes)
+        }
+        if (bundle.excludedFolders.isNotEmpty()) {
+            saveExcludedFolders(bundle.excludedFolders)
+        }
+        if (bundle.usageCounts.isNotEmpty()) {
+            val obj = JSONObject()
+            bundle.usageCounts.forEach { (k, v) -> obj.put(k, v) }
+            prefs.edit().putString("usage_counts_json_v1", obj.toString()).apply()
+        }
     }
 
     fun loadBookmarks(): List<PipeBookmark> {
@@ -243,15 +284,12 @@ class PipeRepository(context: Context) {
     fun loadOverlayDimAmount(): Float = prefs.getFloat("overlay_dim_v1", 0.35f).coerceIn(0.0f, 0.85f)
     fun saveOverlayDimAmount(dim: Float) = prefs.edit().putFloat("overlay_dim_v1", dim.coerceIn(0.0f, 0.85f)).apply()
 
-    // Default 10dp corner radius as requested
     fun loadOverlayCornerRadiusDp(): Int = prefs.getInt("overlay_corner_dp_v2", 10).coerceIn(0, 28)
     fun saveOverlayCornerRadiusDp(dp: Int) = prefs.edit().putInt("overlay_corner_dp_v2", dp.coerceIn(0, 28)).apply()
 
-    // Default bottom overlay as requested
     fun loadOverlayBottomAnchored(): Boolean = prefs.getBoolean("overlay_bottom_v2", true)
     fun saveOverlayBottomAnchored(bottom: Boolean) = prefs.edit().putBoolean("overlay_bottom_v2", bottom).apply()
 
-    // Default false so overlay theme matches app theme automatically
     fun loadOverlayForceDark(): Boolean = prefs.getBoolean("overlay_force_dark_v2", false)
     fun saveOverlayForceDark(forceDark: Boolean) = prefs.edit().putBoolean("overlay_force_dark_v2", forceDark).apply()
 
@@ -273,7 +311,6 @@ class PipeRepository(context: Context) {
     fun loadSearchBoxPrefix(): String = prefs.getString("search_box_prefix_v1", "> ") ?: "> "
     fun saveSearchBoxPrefix(prefix: String) = prefs.edit().putString("search_box_prefix_v1", prefix).apply()
 
-    // Default "pipe for???" placeholder as requested
     fun loadSearchBoxPlaceholder(): String = prefs.getString("search_box_placeholder_v2", "pipe for???") ?: "pipe for???"
     fun saveSearchBoxPlaceholder(hint: String) = prefs.edit().putString("search_box_placeholder_v2", hint).apply()
 

@@ -52,7 +52,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.sujan.pipe.data.DeviceIntegrationManager
+import com.sujan.pipe.data.OfflineDictionaryManager
 import com.sujan.pipe.data.PipeRepository
+import com.sujan.pipe.domain.ClipActionKind
 import com.sujan.pipe.domain.PaletteItem
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
@@ -60,6 +62,7 @@ import com.sujan.pipe.domain.QuickAddKind
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.ContactQuickAction
+import com.sujan.pipe.model.DictionaryEntry
 import com.sujan.pipe.model.EngineColorRole
 import com.sujan.pipe.model.InstalledAppItem
 import com.sujan.pipe.model.LocalFileItem
@@ -68,6 +71,7 @@ import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.ui.AsciiContactAvatar
+import com.sujan.pipe.ui.AsciiDictionaryDetailDialog
 import com.sujan.pipe.ui.AsciiImagePreviewDialog
 import com.sujan.pipe.ui.AsciiThumbnailBadge
 import com.sujan.pipe.ui.QuickAddInlineCard
@@ -103,7 +107,6 @@ class PipeOverlayActivity : ComponentActivity() {
         val history = repository.loadHistory()
         val initialUsage = repository.loadUsageCounts()
 
-        // Match app theme by default (`forceDark` defaults to false)
         val forceDark = repository.loadOverlayForceDark()
         val resolvedMode = if (forceDark) ThemeMode.Dark else repository.loadThemeMode()
         val palette = repository.loadPaletteChoice().palette
@@ -139,6 +142,12 @@ class PipeOverlayActivity : ComponentActivity() {
                     showMenuBtn = showMenuBtn,
                     initialCachedFiles = DeviceIntegrationManager.peekMemoryStorageFiles(),
                     initialCachedApps = DeviceIntegrationManager.peekMemoryInstalledApps(),
+                    isDictionaryInstalled = { OfflineDictionaryManager.isDictionaryInstalled(applicationContext) },
+                    searchDictionaryOnDemand = { q ->
+                        withContext(Dispatchers.IO) {
+                            OfflineDictionaryManager.searchOnDemand(applicationContext, q, limit = 10)
+                        }
+                    },
                     loadContacts = {
                         withContext(Dispatchers.IO) {
                             DeviceIntegrationManager.getCachedOrLoadContacts(applicationContext)
@@ -183,6 +192,12 @@ class PipeOverlayActivity : ComponentActivity() {
                     onLaunchApp = { pkg ->
                         if (DeviceIntegrationManager.launchInstalledApp(this, pkg)) finish()
                     },
+                    onAppInfoApp = { pkg ->
+                        if (DeviceIntegrationManager.openAppInfoSettings(this, pkg)) finish()
+                    },
+                    onUninstallApp = { pkg ->
+                        if (DeviceIntegrationManager.uninstallInstalledApp(this, pkg)) finish()
+                    },
                     onCallContact = { contact ->
                         repository.incrementUsage("contact:${contact.cleanPhone}")
                         if (DeviceIntegrationManager.dialContact(this, contact.phoneNumber)) finish()
@@ -194,6 +209,13 @@ class PipeOverlayActivity : ComponentActivity() {
                     onWhatsAppContact = { contact ->
                         repository.incrementUsage("contact:${contact.cleanPhone}")
                         val digits = QueryRouter.normalizeWhatsAppPhone(contact.phoneNumber)
+                        if (DeviceIntegrationManager.whatsAppContact(this, digits)) finish()
+                    },
+                    onDialNumber = { phone ->
+                        if (DeviceIntegrationManager.dialContact(this, phone)) finish()
+                    },
+                    onWhatsAppNumber = { phone ->
+                        val digits = QueryRouter.normalizeWhatsAppPhone(phone)
                         if (DeviceIntegrationManager.whatsAppContact(this, digits)) finish()
                     },
                     onSaveNewContact = { name, phone ->
@@ -247,6 +269,8 @@ private fun SleekRaycastOverlay(
     showMenuBtn: Boolean,
     initialCachedFiles: List<LocalFileItem>,
     initialCachedApps: List<InstalledAppItem>,
+    isDictionaryInstalled: () -> Boolean,
+    searchDictionaryOnDemand: suspend (String) -> List<DictionaryEntry>,
     loadContacts: suspend () -> List<ContactItem>,
     loadApps: suspend () -> List<InstalledAppItem>,
     loadFiles: suspend (String?) -> List<LocalFileItem>,
@@ -255,9 +279,13 @@ private fun SleekRaycastOverlay(
     onOpenPath: (String) -> Boolean,
     onShareFile: (String) -> Unit,
     onLaunchApp: (String) -> Unit,
+    onAppInfoApp: (String) -> Unit,
+    onUninstallApp: (String) -> Unit,
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
+    onDialNumber: (String) -> Unit,
+    onWhatsAppNumber: (String) -> Unit,
     onSaveNewContact: (String, String) -> Boolean,
     onSaveBookmarksList: (List<PipeBookmark>) -> Unit,
     onSaveEnginesList: (List<SearchEngine>) -> Unit,
@@ -282,14 +310,26 @@ private fun SleekRaycastOverlay(
     var installedApps by remember { mutableStateOf(initialCachedApps) }
     var storageFiles by remember { mutableStateOf(initialCachedFiles) }
     var scopedFiles by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
+    var dictionaryMatches by remember { mutableStateOf<List<DictionaryEntry>>(emptyList()) }
+    var activeDictEntry by remember { mutableStateOf<DictionaryEntry?>(null) }
     var expandedFolderPath by remember { mutableStateOf<String?>(null) }
     var expandedFolderChildren by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
     var previewImageFile by remember { mutableStateOf<LocalFileItem?>(null) }
 
     val clipText = remember(input.text) { clipboard.getText()?.text?.trim().orEmpty() }
+    val dictInstalled = remember(input.text) { isDictionaryInstalled() }
 
     val parsedCommand = remember(input.text, activeBookmarks, activeEngines, prefixes) {
         QueryRouter.parsePromptCommand(input.text, activeBookmarks, activeEngines, prefixes)
+    }
+
+    // Strictly on-demand dictionary seek only when `def <word>` is active
+    LaunchedEffect(parsedCommand.mode, parsedCommand.filterQuery, dictInstalled) {
+        if (parsedCommand.mode == PromptIntentMode.DICTIONARY_ONLY && dictInstalled) {
+            dictionaryMatches = searchDictionaryOnDemand(parsedCommand.filterQuery)
+        } else if (parsedCommand.mode != PromptIntentMode.DICTIONARY_ONLY && dictionaryMatches.isNotEmpty()) {
+            dictionaryMatches = emptyList()
+        }
     }
 
     var results by remember {
@@ -306,11 +346,13 @@ private fun SleekRaycastOverlay(
                 installedApps = initialCachedApps,
                 clipboardText = clipText,
                 prefixes = prefixes,
+                dictionaryMatches = emptyList(),
+                isDictionaryInstalled = dictInstalled,
             )
         )
     }
 
-    LaunchedEffect(input.text, activeEngines, activeBookmarks, contacts, installedApps, storageFiles, scopedFiles, history, usageMap, clipText, prefixes) {
+    LaunchedEffect(input.text, activeEngines, activeBookmarks, contacts, installedApps, storageFiles, scopedFiles, history, usageMap, clipText, prefixes, dictionaryMatches, dictInstalled) {
         val computed = withContext(Dispatchers.Default) {
             QueryRouter.buildPaletteResults(
                 rawInput = input.text,
@@ -324,6 +366,8 @@ private fun SleekRaycastOverlay(
                 installedApps = installedApps,
                 clipboardText = clipText,
                 prefixes = prefixes,
+                dictionaryMatches = dictionaryMatches,
+                isDictionaryInstalled = dictInstalled,
             )
         }
         results = computed
@@ -436,6 +480,54 @@ private fun SleekRaycastOverlay(
     val executeItem: (PaletteItem) -> Unit = { item ->
         usageMap = onRecordUsage(item.usageKey)
         when (item) {
+            is PaletteItem.DirectUrlAction -> {
+                if (!onDispatchUrl(item.displayHost, item.targetUrl)) errorMsg = "! no browser found"
+            }
+            is PaletteItem.DictionaryAction -> {
+                if (item.isSetupPrompt) {
+                    onOpenFullApp(input.text)
+                } else if (item.entry != null) {
+                    activeDictEntry = item.entry
+                }
+            }
+            is PaletteItem.ClipboardAction -> {
+                when (item.kind) {
+                    ClipActionKind.OPEN_URL -> if (!onDispatchUrl(item.payloadText, item.payloadText)) errorMsg = "! no browser found"
+                    ClipActionKind.COPY_CLEAN_URL -> {
+                        clipboard.setText(AnnotatedString(item.payloadText))
+                        statusMsg = "ok: copied clean URL"
+                    }
+                    ClipActionKind.SAVE_BOOKMARK -> {
+                        val inferred = QueryRouter.inferTitleFromTarget("bm", item.payloadText)
+                        inlineQuickAdd = PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.BOOKMARK,
+                            title = "Save Bookmark",
+                            subtitle = item.payloadText,
+                            isReadyToCommit = false,
+                            arg1 = inferred.lowercase().take(5),
+                            arg2 = inferred,
+                            arg3 = item.payloadText,
+                        )
+                    }
+                    ClipActionKind.CALL_NUMBER -> onDialNumber(item.payloadText)
+                    ClipActionKind.WA_NUMBER -> onWhatsAppNumber(item.payloadText)
+                    ClipActionKind.SAVE_CONTACT -> {
+                        inlineQuickAdd = PaletteItem.QuickAddAction(
+                            kind = QuickAddKind.CONTACT,
+                            title = "Save Contact",
+                            subtitle = item.payloadText,
+                            isReadyToCommit = false,
+                            arg2 = item.payloadText,
+                        )
+                    }
+                    ClipActionKind.COPY_TEXT -> {
+                        if (item.payloadText.isNotEmpty()) {
+                            clipboard.setText(AnnotatedString(item.payloadText))
+                            statusMsg = "ok: copied \"${item.payloadText.take(28)}\""
+                        }
+                    }
+                }
+            }
             is PaletteItem.EngineAction -> {
                 val raw = if (item.query.isNotEmpty()) "${item.engine.keyword} ${item.query}" else item.engine.keyword
                 if (!onDispatchUrl(raw, item.targetUrl)) errorMsg = "! no browser found"
@@ -501,6 +593,8 @@ private fun SleekRaycastOverlay(
         PromptIntentMode.PIPES_LIST -> "${prefixes.pipesClean}:pipes"
         PromptIntentMode.APPS_ONLY -> "${prefixes.appsClean}:launcher"
         PromptIntentMode.HISTORY_ONLY -> "${prefixes.historyClean}:history"
+        PromptIntentMode.DICTIONARY_ONLY -> "${prefixes.dictionaryClean}:dict"
+        PromptIntentMode.CLIPBOARD_ONLY -> "${prefixes.clipboardClean}:tools"
         else -> parsedCommand.mode.scopeBadge
     }
     val shouldShowList = input.text.isNotBlank() || showIdleSuggestions
@@ -764,6 +858,8 @@ private fun SleekRaycastOverlay(
                                     statusMsg = "ok: deleted [${prefixes.pipesClean} ${eng.keyword}]"
                                 }
                             } else null,
+                            onAppInfo = { pkg -> onAppInfoApp(pkg) },
+                            onUninstallApp = { pkg -> onUninstallApp(pkg) },
                             onCallContact = onCallContact,
                             onSmsContact = onSmsContact,
                             onWhatsAppContact = onWhatsAppContact,
@@ -772,6 +868,24 @@ private fun SleekRaycastOverlay(
                 }
             }
         }
+    }
+
+    if (activeDictEntry != null) {
+        val entry = activeDictEntry!!
+        AsciiDictionaryDetailDialog(
+            entry = entry,
+            onCopy = {
+                clipboard.setText(AnnotatedString("${entry.word} (${entry.partOfSpeech}): ${entry.definition}"))
+                statusMsg = "ok: copied ${entry.word}"
+                activeDictEntry = null
+            },
+            onPipeToWiki = {
+                val url = "https://en.wikipedia.org/w/index.php?search=${java.net.URLEncoder.encode(entry.word, "UTF-8")}"
+                activeDictEntry = null
+                onDispatchUrl("w ${entry.word}", url)
+            },
+            onDismiss = { activeDictEntry = null },
+        )
     }
 
     if (previewImageFile != null) {
@@ -811,6 +925,8 @@ private fun SleekOverlayRow(
     onEditEngine: ((SearchEngine) -> Unit)? = null,
     onDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
     onDeleteEngine: ((SearchEngine) -> Unit)? = null,
+    onAppInfo: (String) -> Unit = {},
+    onUninstallApp: (String) -> Unit = {},
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
@@ -828,6 +944,82 @@ private fun SleekOverlayRow(
     val ptr = if (isTop) ">" else " "
 
     when (item) {
+        is PaletteItem.DirectUrlAction -> {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr [url] ", style = AsciiType.small, color = if (pressed) c.bg else c.good)
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText("Open ${item.displayHost}", style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
+                    AsciiText(item.targetUrl, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                }
+                AsciiButton("open", onExecute, primary = isTop)
+            }
+        }
+
+        is PaletteItem.DictionaryAction -> {
+            val d = item.entry
+            val titleText = if (item.isSetupPrompt || d == null) {
+                "Link Offline Dictionary (.tsv / .json / .gz)"
+            } else {
+                "${d.word} (${d.partOfSpeech})"
+            }
+            val subText = if (item.isSetupPrompt || d == null) {
+                "tap to open Settings & select downloaded dictionary file"
+            } else {
+                d.definition
+            }
+            val titleAnn = remember(titleText, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+                buildFzfHighlightedText(titleText, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr [${prefixes.dictionaryClean}] ", style = AsciiType.small, color = if (pressed) c.bg else c.accent3)
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
+                    AsciiText(subText, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                }
+                if (d != null) {
+                    AsciiButton("cp", { clipboard.setText(AnnotatedString("${d.word}: ${d.definition}")) })
+                }
+            }
+        }
+
+        is PaletteItem.ClipboardAction -> {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr [${prefixes.clipboardClean}] ", style = AsciiType.small, color = if (pressed) c.bg else c.accent2)
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(item.title, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
+                    AsciiText(item.subtitle, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                }
+                AsciiButton("run", onExecute, primary = isTop)
+            }
+        }
+
         is PaletteItem.ContactAction -> {
             val contact = item.contact
             val pref = item.preferredAction
@@ -1057,6 +1249,7 @@ private fun SleekOverlayRow(
             }
         }
 
+        // Feature #7: App Management Actions (`[info]` and `[unin]`) directly on App rows in the simple overlay!
         is PaletteItem.AppAction -> {
             val app = item.app
             val titleAnn = remember(app.label, highlightQuery, pressed, c.fg, c.accent, c.bg) {
@@ -1074,7 +1267,8 @@ private fun SleekOverlayRow(
             ) {
                 AsciiText("$ptr [${prefixes.appsClean}] ", style = AsciiType.small, color = if (pressed) c.bg else c.accent)
                 AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
-                AsciiText(prefixes.appsClean, style = AsciiType.small, color = if (pressed) c.bg else c.dim)
+                AsciiButton("info", { onAppInfo(app.packageName) }, spokenLabel = "app info for ${app.label}")
+                AsciiButton("unin", { onUninstallApp(app.packageName) }, spokenLabel = "uninstall ${app.label}")
             }
         }
 

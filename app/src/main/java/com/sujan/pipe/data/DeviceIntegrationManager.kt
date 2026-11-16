@@ -443,6 +443,34 @@ object DeviceIntegrationManager {
         }.getOrDefault(false)
     }
 
+    fun openAppInfoSettings(context: Context, packageName: String): Boolean {
+        if (packageName.isBlank()) return false
+        return runCatching {
+            val intent = Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:$packageName"),
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
+    }
+
+    fun uninstallInstalledApp(context: Context, packageName: String): Boolean {
+        if (packageName.isBlank()) return false
+        return runCatching {
+            val intent = Intent(
+                Intent.ACTION_DELETE,
+                Uri.parse("package:$packageName"),
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
+    }
+
     fun listInstalledBrowsers(context: Context): List<com.sujan.pipe.model.InstalledAppItem> {
         val pm = context.packageManager
         val selfPkg = context.packageName

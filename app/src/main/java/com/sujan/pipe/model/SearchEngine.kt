@@ -19,7 +19,7 @@ object EngineGlyphs {
 }
 
 /**
- * User-customizable command prefixes and row badge tags for `f`, `s`, `b`, `app`, `hist`, and `c`.
+ * User-customizable command prefixes and row badge tags for `f`, `s`, `b`, `app`, `hist`, `c`, `def`, and `clip`.
  */
 data class PrefixConfig(
     val files: String = "f",
@@ -28,6 +28,8 @@ data class PrefixConfig(
     val apps: String = "app",
     val history: String = "hist",
     val contacts: String = "c",
+    val dictionary: String = "def",
+    val clipboard: String = "clip",
 ) {
     val filesClean: String get() = files.trim().lowercase().ifEmpty { "f" }
     val pipesClean: String get() = pipes.trim().lowercase().ifEmpty { "s" }
@@ -35,7 +37,33 @@ data class PrefixConfig(
     val appsClean: String get() = apps.trim().lowercase().ifEmpty { "app" }
     val historyClean: String get() = history.trim().lowercase().ifEmpty { "hist" }
     val contactsClean: String get() = contacts.trim().lowercase().ifEmpty { "c" }
+    val dictionaryClean: String get() = dictionary.trim().lowercase().ifEmpty { "def" }
+    val clipboardClean: String get() = clipboard.trim().lowercase().ifEmpty { "clip" }
 }
+
+/**
+ * Offline dictionary entry retrieved on demand via `OfflineDictionaryManager.searchOnDemand()`.
+ */
+data class DictionaryEntry(
+    val word: String,
+    val partOfSpeech: String = "def",
+    val definition: String,
+    val synonyms: String = "",
+    val example: String = "",
+) {
+    val wordLower: String = word.trim().lowercase()
+}
+
+/**
+ * Full v2 JSON backup bundle containing search pipes, bookmarks, custom prefixes, excluded folders, and usage counts.
+ */
+data class FullBackupBundle(
+    val engines: List<SearchEngine>,
+    val bookmarks: List<PipeBookmark> = emptyList(),
+    val prefixes: PrefixConfig? = null,
+    val excludedFolders: List<String> = emptyList(),
+    val usageCounts: Map<String, Int> = emptyMap(),
+)
 
 data class SearchEngine(
     val id: String,
@@ -185,7 +213,7 @@ object DefaultEngines {
         SearchEngine("eng_google", "Google", "g", "https://www.google.com/search?q={query}", "|", EngineColorRole.ACCENT, isDefault = true),
         SearchEngine("eng_youtube", "YouTube", "yt", "https://www.youtube.com/results?search_query={query}", "|", EngineColorRole.ACCENT2),
     ) + YT_TIME_PIPES + listOf(
-        SearchEngine("eng_wikipedia", "Wikipedia", "w", "https://en.wikipedia.com/w/index.php?search={query}".replace("wikipedia.com", "wikipedia.org"), "|", EngineColorRole.FG),
+        SearchEngine("eng_wikipedia", "Wikipedia", "w", "https://en.wikipedia.org/w/index.php?search={query}", "|", EngineColorRole.FG),
         SearchEngine("eng_maps", "Maps", "maps", "https://www.google.com/maps/search/{query}", "|", EngineColorRole.GOOD),
         SearchEngine("eng_github", "GitHub", "gh", "https://github.com/search?q={query}", "|", EngineColorRole.ACCENT3),
         SearchEngine("eng_amazon", "Amazon", "a", "https://www.amazon.com/s?k={query}", "|", EngineColorRole.WARN),

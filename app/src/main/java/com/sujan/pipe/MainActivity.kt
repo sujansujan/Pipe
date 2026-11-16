@@ -21,9 +21,14 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.lifecycleScope
 import com.sujan.pipe.data.DeviceIntegrationManager
+import com.sujan.pipe.data.OfflineDictionaryManager
 import com.sujan.pipe.data.PipeRepository
+import com.sujan.pipe.domain.ClipActionKind
+import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.PipeBookmark
@@ -48,9 +53,32 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val state by viewModel.uiState.collectAsState()
+            val clipboard = LocalClipboardManager.current
 
             BackHandler(enabled = state.activeView != PipeView.PROMPT) {
                 viewModel.navigateTo(PipeView.PROMPT)
+            }
+
+            // Keep clipboard text synced when user enters `clip` mode
+            val cmdMode = state.parsedCommand.mode
+            val filterQ = state.parsedCommand.filterQuery
+            LaunchedEffect(cmdMode) {
+                if (cmdMode == PromptIntentMode.CLIPBOARD_ONLY || cmdMode == PromptIntentMode.ADD_COMMAND) {
+                    val clip = clipboard.getText()?.text?.trim().orEmpty()
+                    viewModel.updateClipboardPreviewText(clip)
+                }
+            }
+
+            // Feature #1: Strictly On-Demand Dictionary Seek (0 MB idle RAM; only runs in DICTIONARY_ONLY mode)
+            LaunchedEffect(cmdMode, filterQ, state.isDictionaryInstalled) {
+                if (cmdMode == PromptIntentMode.DICTIONARY_ONLY && state.isDictionaryInstalled) {
+                    val matches = withContext(Dispatchers.IO) {
+                        OfflineDictionaryManager.searchOnDemand(applicationContext, filterQ, limit = 10)
+                    }
+                    viewModel.updateDictionaryMatches(matches)
+                } else if (cmdMode != PromptIntentMode.DICTIONARY_ONLY && state.dictionaryMatches.isNotEmpty()) {
+                    viewModel.updateDictionaryMatches(emptyList())
+                }
             }
 
             val scopedTarget = state.parsedCommand.scopedFolderBookmark?.target
@@ -87,7 +115,7 @@ class MainActivity : ComponentActivity() {
                         contentResolver.openOutputStream(uri)?.use {
                             it.write(viewModel.exportJsonString().toByteArray(Charsets.UTF_8))
                         }
-                        viewModel.setJsonStatusMessage("ok: exported pipes to json file")
+                        viewModel.setJsonStatusMessage("ok: exported full v2 backup to json file")
                     }.onFailure { viewModel.setJsonStatusMessage("! failed to write json file") }
                 }
             }
@@ -105,6 +133,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val dictImportLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.OpenDocument(),
+            ) { uri: Uri? ->
+                if (uri != null) {
+                    importDictionaryUriAsync(uri)
+                }
+            }
+
             PipeApp(
                 state = state,
                 onNavigate = viewModel::navigateTo,
@@ -114,6 +150,21 @@ class MainActivity : ComponentActivity() {
                 onSubmitPrimaryAction = {
                     val top = state.paletteResults.firstOrNull()
                     when (top) {
+                        is com.sujan.pipe.domain.PaletteItem.DirectUrlAction -> {
+                            viewModel.recordItemUsage(top.usageKey)
+                            DeviceIntegrationManager.openUrlExcludingSelf(this, top.targetUrl)
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.DictionaryAction -> {
+                            if (top.isSetupPrompt) {
+                                handleSetupDictionaryClick { dictImportLauncher.launch(arrayOf("*/*")) }
+                            } else if (top.entry != null) {
+                                clipboard.setText(AnnotatedString("${top.entry.word} (${top.entry.partOfSpeech}): ${top.entry.definition}"))
+                                viewModel.setJsonStatusMessage("ok: copied definition for ${top.entry.word}")
+                            }
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.ClipboardAction -> {
+                            handleClipboardAction(top, clipboard::setText)
+                        }
                         is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> {
                             viewModel.recordItemUsage(top.usageKey)
                             handleOpenBookmark(top.bookmark)
@@ -181,6 +232,29 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 },
+                onOpenDirectUrl = { url ->
+                    viewModel.recordItemUsage("url:$url")
+                    DeviceIntegrationManager.openUrlExcludingSelf(this, url)
+                },
+                onSelectDictionaryItem = { dictAction ->
+                    if (dictAction.isSetupPrompt) {
+                        handleSetupDictionaryClick { dictImportLauncher.launch(arrayOf("*/*")) }
+                    } else if (dictAction.entry != null) {
+                        viewModel.setActiveDictionaryEntry(dictAction.entry)
+                    }
+                },
+                onDismissDictionaryDialog = { viewModel.setActiveDictionaryEntry(null) },
+                onImportDictionaryFileClick = { dictImportLauncher.launch(arrayOf("*/*")) },
+                onAutoDetectDownloadsDictionary = ::autoDetectDownloadsDictionary,
+                onRemoveDictionaryClick = {
+                    OfflineDictionaryManager.removeDictionary(applicationContext)
+                    repository.saveDictionaryMetadata(0, "not linked")
+                    viewModel.syncDictionaryState(false, 0, "not linked")
+                    viewModel.setJsonStatusMessage("ok: unlinked offline dictionary file")
+                },
+                onExecuteClipboardAction = { action ->
+                    handleClipboardAction(action, clipboard::setText)
+                },
                 onOpenBookmark = { bm -> viewModel.recordItemUsage("bm:${bm.id}"); handleOpenBookmark(bm) },
                 onOpenLocalFile = { fileItem ->
                     viewModel.recordItemUsage("file:${fileItem.absolutePath}")
@@ -196,6 +270,12 @@ class MainActivity : ComponentActivity() {
                 onLaunchInstalledApp = { app ->
                     viewModel.recordItemUsage("app:${app.packageName}")
                     DeviceIntegrationManager.launchInstalledApp(this, app.packageName)
+                },
+                onAppInfoInstalledApp = { app ->
+                    DeviceIntegrationManager.openAppInfoSettings(this, app.packageName)
+                },
+                onUninstallInstalledApp = { app ->
+                    DeviceIntegrationManager.uninstallInstalledApp(this, app.packageName)
                 },
                 onBookmarkLocalFile = { fileItem ->
                     viewModel.openAddBookmarkForm(
@@ -281,7 +361,7 @@ class MainActivity : ComponentActivity() {
                 onResetDefaults = viewModel::resetEnginesToDefault,
                 onOpenJsonExportDialog = { viewModel.openJsonDialog(JsonDialogMode.EXPORT) },
                 onOpenJsonImportDialog = { viewModel.openJsonDialog(JsonDialogMode.IMPORT) },
-                onExportJsonToFile = { exportLauncher.launch("pipe-engines.json") },
+                onExportJsonToFile = { exportLauncher.launch("pipe-backup-v2.json") },
                 onImportJsonFromFile = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                 onCloseJsonDialog = viewModel::closeJsonDialog,
                 onExportJsonString = viewModel::exportJsonString,
@@ -323,6 +403,100 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun handleClipboardAction(
+        action: com.sujan.pipe.domain.PaletteItem.ClipboardAction,
+        copyToClipboard: (AnnotatedString) -> Unit,
+    ) {
+        when (action.kind) {
+            ClipActionKind.OPEN_URL -> DeviceIntegrationManager.openUrlExcludingSelf(this, action.payloadText)
+            ClipActionKind.COPY_CLEAN_URL -> {
+                copyToClipboard(AnnotatedString(action.payloadText))
+                viewModel.setJsonStatusMessage("ok: copied clean URL without tracking params")
+            }
+            ClipActionKind.SAVE_BOOKMARK -> {
+                val inferred = QueryRouter.inferTitleFromTarget("bm", action.payloadText)
+                viewModel.openAddBookmarkForm(
+                    prefillTitle = inferred,
+                    prefillTarget = action.payloadText,
+                    prefillKind = BookmarkKind.LINK,
+                )
+                viewModel.navigateTo(PipeView.BOOKMARKS)
+            }
+            ClipActionKind.CALL_NUMBER -> DeviceIntegrationManager.dialContact(this, action.payloadText)
+            ClipActionKind.WA_NUMBER -> {
+                val digits = QueryRouter.normalizeWhatsAppPhone(action.payloadText)
+                DeviceIntegrationManager.whatsAppContact(this, digits)
+            }
+            ClipActionKind.SAVE_CONTACT -> {
+                val next = "+ c Name ${action.payloadText}"
+                viewModel.setSearchTextFromExternal(next)
+            }
+            ClipActionKind.COPY_TEXT -> {
+                if (action.payloadText.isNotEmpty()) {
+                    copyToClipboard(AnnotatedString(action.payloadText))
+                    viewModel.setJsonStatusMessage("ok: copied \"${action.payloadText.take(28)}\"")
+                }
+            }
+        }
+    }
+
+    private fun handleSetupDictionaryClick(launchPicker: () -> Unit) {
+        val candidate = OfflineDictionaryManager.findCandidateInDownloads()
+        if (candidate != null) {
+            autoDetectDownloadsDictionary()
+        } else {
+            launchPicker()
+        }
+    }
+
+    private fun importDictionaryUriAsync(uri: Uri) {
+        viewModel.syncDictionaryState(
+            installed = OfflineDictionaryManager.isDictionaryInstalled(applicationContext),
+            isIndexing = true,
+        )
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching {
+                val nameHint = uri.lastPathSegment?.substringAfterLast('/') ?: "dictionary_file"
+                val count = OfflineDictionaryManager.importDictionaryFromUri(applicationContext, uri, nameHint)
+                repository.saveDictionaryMetadata(count, nameHint)
+                viewModel.syncDictionaryState(installed = true, wordCount = count, sourceName = nameHint, isIndexing = false)
+                viewModel.setJsonStatusMessage("ok: indexed $count words from $nameHint (on-demand seek ready)")
+            }.onFailure { err ->
+                viewModel.syncDictionaryState(
+                    installed = OfflineDictionaryManager.isDictionaryInstalled(applicationContext),
+                    isIndexing = false,
+                )
+                viewModel.setJsonStatusMessage(err.message ?: "! failed to import dictionary file")
+            }
+        }
+    }
+
+    private fun autoDetectDownloadsDictionary() {
+        val candidate = OfflineDictionaryManager.findCandidateInDownloads()
+        if (candidate == null) {
+            viewModel.setJsonStatusMessage("! no dictionary file found in Download/ (use [pick dictionary file])")
+            return
+        }
+        viewModel.syncDictionaryState(
+            installed = OfflineDictionaryManager.isDictionaryInstalled(applicationContext),
+            isIndexing = true,
+        )
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching {
+                val count = OfflineDictionaryManager.importDictionaryFromFile(applicationContext, candidate)
+                repository.saveDictionaryMetadata(count, candidate.name)
+                viewModel.syncDictionaryState(installed = true, wordCount = count, sourceName = candidate.name, isIndexing = false)
+                viewModel.setJsonStatusMessage("ok: linked ${candidate.name} ($count words)")
+            }.onFailure { err ->
+                viewModel.syncDictionaryState(
+                    installed = OfflineDictionaryManager.isDictionaryInstalled(applicationContext),
+                    isIndexing = false,
+                )
+                viewModel.setJsonStatusMessage(err.message ?: "! could not index ${candidate.name}")
+            }
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         refreshDeviceDataAsync()
@@ -338,6 +512,8 @@ class MainActivity : ComponentActivity() {
         val hasContacts = DeviceIntegrationManager.hasContactsPermission(this)
         val hasFiles = DeviceIntegrationManager.hasAllFilesPermission(this)
         val currentBookmarks = viewModel.uiState.value.bookmarks
+        val dictInstalled = OfflineDictionaryManager.isDictionaryInstalled(applicationContext)
+        viewModel.syncDictionaryState(installed = dictInstalled)
         DeviceIntegrationManager.syncHourlyIndexSchedule(this, repository.loadHourlyAutoIndexEnabled())
 
         lifecycleScope.launch(Dispatchers.IO) {
@@ -356,6 +532,18 @@ class MainActivity : ComponentActivity() {
                 browsers = browsers,
                 isIndexing = needsRebuild,
             )
+
+            // Auto-link dictionary from Download/ if present and not yet linked
+            if (!dictInstalled && hasFiles) {
+                val dlDict = OfflineDictionaryManager.findCandidateInDownloads()
+                if (dlDict != null) {
+                    runCatching {
+                        val count = OfflineDictionaryManager.importDictionaryFromFile(applicationContext, dlDict)
+                        repository.saveDictionaryMetadata(count, dlDict.name)
+                        viewModel.syncDictionaryState(installed = true, wordCount = count, sourceName = dlDict.name, isIndexing = false)
+                    }
+                }
+            }
 
             if (needsRebuild) {
                 val freshContacts = if (hasContacts) DeviceIntegrationManager.loadDeviceContacts(applicationContext) else contacts

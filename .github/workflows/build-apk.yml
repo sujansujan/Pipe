@@ -35,7 +35,12 @@ jobs:
       - name: Ensure release keystore exists
         run: |
           if [ ! -f app/release-keystore.jks ]; then
-            keytool -genkeypair -v               -keystore app/release-keystore.jks               -keyalg RSA -keysize 2048 -validity 10000               -alias pipe_release               -storepass pipe123456 -keypass pipe123456               -dname "CN=Sujan Devkota, OU=Pipe, O=Sujan, L=Kathmandu, S=Bagmati, C=NP"
+            keytool -genkeypair -v \
+              -keystore app/release-keystore.jks \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -alias pipe_release \
+              -storepass pipe123456 -keypass pipe123456 \
+              -dname "CN=Sujan Devkota, OU=Pipe, O=Sujan, L=Kathmandu, S=Bagmati, C=NP"
           fi
 
       - name: Run unit tests
@@ -44,8 +49,40 @@ jobs:
       - name: Assemble Signed Release APK
         run: ./gradlew assembleRelease --stacktrace
 
+      - name: Build Separate On-Demand Dictionary Pack (pipe-dict.tsv)
+        run: |
+          python3 - << 'EOF'
+          import json, urllib.request, os
+
+          os.makedirs("dict_out", exist_ok=True)
+          url = "https://raw.githubusercontent.com/matthewreagan/WebstersEnglishDictionary/master/dictionary_compact.json"
+          try:
+              req = urllib.request.urlopen(url, timeout=30)
+              data = json.loads(req.read().decode("utf-8", errors="ignore"))
+              entries = []
+              for word, defn in data.items():
+                  w = str(word).strip().lower()
+                  d = " ".join(str(defn).replace("\t", " ").splitlines()).strip()
+                  if w and d:
+                      entries.append((w, "def", d[:420]))
+              entries.sort(key=lambda x: x[0])
+              with open("dict_out/pipe-dict.tsv", "w", encoding="utf-8") as f:
+                  for w, pos, d in entries:
+                      f.write(f"{w}\t{pos}\t{d}\n")
+              print(f"Built pipe-dict.tsv with {len(entries)} words")
+          except Exception as e:
+              print("Dictionary download warning:", e)
+          EOF
+
       - name: Upload Signed Release APK
         uses: actions/upload-artifact@v4
         with:
           name: pipe-release-apk
           path: app/build/outputs/apk/release/*.apk
+
+      - name: Upload Separate Offline Dictionary Pack (pipe-dict.tsv)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipe-dictionary-pack
+          path: dict_out/pipe-dict.tsv

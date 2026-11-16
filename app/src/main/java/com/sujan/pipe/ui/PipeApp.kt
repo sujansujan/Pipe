@@ -79,7 +79,9 @@ import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.domain.QuickAddKind
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
+import com.sujan.pipe.model.DictionaryEntry
 import com.sujan.pipe.model.EngineColorRole
+import com.sujan.pipe.model.InstalledAppItem
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.PrefixConfig
@@ -159,11 +161,20 @@ fun PipeApp(
     onChipClick: (SearchEngine) -> Unit,
     onAliasPillClick: (String) -> Unit,
     onSubmitPrimaryAction: () -> Unit,
+    onOpenDirectUrl: (String) -> Unit = {},
+    onSelectDictionaryItem: (com.sujan.pipe.domain.PaletteItem.DictionaryAction) -> Unit = {},
+    onDismissDictionaryDialog: () -> Unit = {},
+    onImportDictionaryFileClick: () -> Unit = {},
+    onAutoDetectDownloadsDictionary: () -> Unit = {},
+    onRemoveDictionaryClick: () -> Unit = {},
+    onExecuteClipboardAction: (com.sujan.pipe.domain.PaletteItem.ClipboardAction) -> Unit = {},
     onOpenBookmark: (PipeBookmark) -> Unit,
     onOpenLocalFile: (LocalFileItem) -> Unit,
     onShareLocalFile: (LocalFileItem) -> Unit = {},
     onPreviewImageFile: (LocalFileItem?) -> Unit = {},
-    onLaunchInstalledApp: (com.sujan.pipe.model.InstalledAppItem) -> Unit = {},
+    onLaunchInstalledApp: (InstalledAppItem) -> Unit = {},
+    onAppInfoInstalledApp: (InstalledAppItem) -> Unit = {},
+    onUninstallInstalledApp: (InstalledAppItem) -> Unit = {},
     onBookmarkLocalFile: (LocalFileItem) -> Unit,
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
@@ -240,6 +251,7 @@ fun PipeApp(
 ) {
     PipeTheme(mode = state.themeMode, palette = state.paletteChoice.palette) {
         val c = LocalAscii.current
+        val clipboard = LocalClipboardManager.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -256,11 +268,16 @@ fun PipeApp(
                         onChipClick = onChipClick,
                         onAliasPillClick = onAliasPillClick,
                         onSubmitPrimaryAction = onSubmitPrimaryAction,
+                        onOpenDirectUrl = onOpenDirectUrl,
+                        onSelectDictionaryItem = onSelectDictionaryItem,
+                        onExecuteClipboardAction = onExecuteClipboardAction,
                         onOpenBookmark = onOpenBookmark,
                         onOpenLocalFile = onOpenLocalFile,
                         onShareLocalFile = onShareLocalFile,
                         onPreviewImageFile = onPreviewImageFile,
                         onLaunchInstalledApp = onLaunchInstalledApp,
+                        onAppInfoInstalledApp = onAppInfoInstalledApp,
+                        onUninstallInstalledApp = onUninstallInstalledApp,
                         onBookmarkLocalFile = onBookmarkLocalFile,
                         onCallContact = onCallContact,
                         onSmsContact = onSmsContact,
@@ -352,6 +369,9 @@ fun PipeApp(
                         onShowMenuBtnChange = onShowMenuBtnChange,
                         onPrefixConfigChange = onPrefixConfigChange,
                         onResetPrefixConfig = onResetPrefixConfig,
+                        onImportDictionaryFileClick = onImportDictionaryFileClick,
+                        onAutoDetectDownloadsDictionary = onAutoDetectDownloadsDictionary,
+                        onRemoveDictionaryClick = onRemoveDictionaryClick,
                         onLaunchOverlayPreview = onLaunchOverlayPreview,
                         onPinOverlayShortcut = onPinOverlayShortcut,
                         onOpenDefaultAppsSettings = onOpenDefaultAppsSettings,
@@ -359,6 +379,24 @@ fun PipeApp(
                         onRequestFilesPermission = onRequestFilesPermission,
                     )
                 }
+            }
+
+            if (state.activeDictionaryEntry != null) {
+                val entry = state.activeDictionaryEntry
+                AsciiDictionaryDetailDialog(
+                    entry = entry,
+                    onCopy = {
+                        clipboard.setText(AnnotatedString("${entry.word} (${entry.partOfSpeech}): ${entry.definition}"))
+                        onSetJsonStatus("ok: copied definition for ${entry.word}")
+                        onDismissDictionaryDialog()
+                    },
+                    onPipeToWiki = {
+                        onDismissDictionaryDialog()
+                        val url = "https://en.wikipedia.org/w/index.php?search=${java.net.URLEncoder.encode(entry.word, "UTF-8")}"
+                        onOpenDirectUrl(url)
+                    },
+                    onDismiss = onDismissDictionaryDialog,
+                )
             }
 
             if (state.previewImageFile != null) {
@@ -397,11 +435,16 @@ private fun PipePromptScreen(
     onChipClick: (SearchEngine) -> Unit,
     onAliasPillClick: (String) -> Unit,
     onSubmitPrimaryAction: () -> Unit,
+    onOpenDirectUrl: (String) -> Unit,
+    onSelectDictionaryItem: (com.sujan.pipe.domain.PaletteItem.DictionaryAction) -> Unit,
+    onExecuteClipboardAction: (com.sujan.pipe.domain.PaletteItem.ClipboardAction) -> Unit,
     onOpenBookmark: (PipeBookmark) -> Unit,
     onOpenLocalFile: (LocalFileItem) -> Unit,
     onShareLocalFile: (LocalFileItem) -> Unit,
     onPreviewImageFile: (LocalFileItem?) -> Unit,
-    onLaunchInstalledApp: (com.sujan.pipe.model.InstalledAppItem) -> Unit,
+    onLaunchInstalledApp: (InstalledAppItem) -> Unit,
+    onAppInfoInstalledApp: (InstalledAppItem) -> Unit,
+    onUninstallInstalledApp: (InstalledAppItem) -> Unit,
     onBookmarkLocalFile: (LocalFileItem) -> Unit,
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
@@ -493,6 +536,8 @@ private fun PipePromptScreen(
             onQuickDeleteBookmark = { bm -> onQuickRemoveItem(true, bm.id) },
             onQuickDeleteEngine = { eng -> onQuickRemoveItem(false, eng.id) },
             onQuickDeleteHistory = onDeleteHistory,
+            onAppInfoInstalledApp = onAppInfoInstalledApp,
+            onUninstallInstalledApp = onUninstallInstalledApp,
             headerRightActions = {
                 AsciiButton("+", {
                     if (inlineQuickAdd != null) {
@@ -518,6 +563,9 @@ private fun PipePromptScreen(
             onSubmitPrimary = onSubmitPrimaryAction,
             onExecuteItem = { item ->
                 when (item) {
+                    is com.sujan.pipe.domain.PaletteItem.DirectUrlAction -> onOpenDirectUrl(item.targetUrl)
+                    is com.sujan.pipe.domain.PaletteItem.DictionaryAction -> onSelectDictionaryItem(item)
+                    is com.sujan.pipe.domain.PaletteItem.ClipboardAction -> onExecuteClipboardAction(item)
                     is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
                         val nextInput = if (item.query.isNotEmpty()) "${item.engine.keyword} ${item.query}" else item.engine.keyword
                         onSearchInputChange(TextFieldValue(nextInput, TextRange(nextInput.length)))
@@ -644,6 +692,8 @@ fun AsciiRaycastPaletteWindow(
     onQuickDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
     onQuickDeleteEngine: ((SearchEngine) -> Unit)? = null,
     onQuickDeleteHistory: ((SearchHistoryEntry) -> Unit)? = null,
+    onAppInfoInstalledApp: ((InstalledAppItem) -> Unit)? = null,
+    onUninstallInstalledApp: ((InstalledAppItem) -> Unit)? = null,
     headerRightActions: @Composable () -> Unit,
     onAliasPillClick: (String) -> Unit,
     onSubmitPrimary: () -> Unit,
@@ -686,10 +736,14 @@ fun AsciiRaycastPaletteWindow(
         PromptIntentMode.PIPES_LIST -> "${prefixes.pipesClean}:pipes"
         PromptIntentMode.APPS_ONLY -> "${prefixes.appsClean}:launcher"
         PromptIntentMode.HISTORY_ONLY -> "${prefixes.historyClean}:history"
+        PromptIntentMode.DICTIONARY_ONLY -> "${prefixes.dictionaryClean}:dictionary"
+        PromptIntentMode.CLIPBOARD_ONLY -> "${prefixes.clipboardClean}:clipboard"
         else -> parsedCommand.mode.scopeBadge
     }
 
     val scopeChips = listOf(
+        prefixes.dictionaryClean to (parsedCommand.mode == PromptIntentMode.DICTIONARY_ONLY),
+        prefixes.clipboardClean to (parsedCommand.mode == PromptIntentMode.CLIPBOARD_ONLY),
         prefixes.contactsClean to (parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY),
         prefixes.filesClean to (parsedCommand.mode == PromptIntentMode.FILES_ONLY || parsedCommand.mode == PromptIntentMode.DIRS_ONLY),
         prefixes.bookmarksClean to (parsedCommand.mode == PromptIntentMode.BOOKMARKS_ONLY),
@@ -1004,11 +1058,98 @@ fun AsciiRaycastPaletteWindow(
                 actionSheetItem = null
                 onQuickDeleteHistory?.invoke(h)
             },
+            onAppInfoInstalledApp = { app ->
+                actionSheetItem = null
+                onAppInfoInstalledApp?.invoke(app)
+            },
+            onUninstallInstalledApp = { app ->
+                actionSheetItem = null
+                onUninstallInstalledApp?.invoke(app)
+            },
             onCopyText = { textToCopy ->
                 clipboard.setText(AnnotatedString(textToCopy))
                 actionSheetItem = null
             },
         )
+    }
+}
+
+@Composable
+fun AsciiDictionaryDetailDialog(
+    entry: DictionaryEntry,
+    onCopy: () -> Unit,
+    onPipeToWiki: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = LocalAscii.current
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(c.bg)
+                .border(1.dp, c.accent)
+                .padding(14.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AsciiText(
+                        text = entry.word,
+                        style = AsciiType.title,
+                        color = c.accent,
+                    )
+                    if (entry.partOfSpeech.isNotBlank()) {
+                        Spacer(Modifier.width(8.dp))
+                        AsciiText(
+                            text = "[${entry.partOfSpeech}]",
+                            style = AsciiType.small,
+                            color = c.accent2,
+                        )
+                    }
+                }
+                AsciiButton("x", onDismiss)
+            }
+
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+
+            AsciiText(
+                text = entry.definition,
+                style = AsciiType.body,
+                color = c.fg,
+            )
+
+            if (entry.synonyms.isNotBlank()) {
+                AsciiText(
+                    text = "syn: ${entry.synonyms}",
+                    style = AsciiType.small,
+                    color = c.good,
+                )
+            }
+            if (entry.example.isNotBlank()) {
+                AsciiText(
+                    text = "ex: \"${entry.example}\"",
+                    style = AsciiType.small,
+                    color = c.dim,
+                )
+            }
+
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiButton("close", onDismiss)
+                AsciiButton("pipe to w", onPipeToWiki)
+                AsciiButton("copy", onCopy, primary = true)
+            }
+        }
     }
 }
 
@@ -1667,7 +1808,7 @@ fun AsciiImagePreviewDialog(
 }
 
 /**
- * Fixed-width 1dp-bordered square-cornered kind tag (`app`, `c`, `f.`, `d/`, `b:bm`, `b:d/`, `b:f.`, `s:yt`).
+ * Fixed-width 1dp-bordered square-cornered kind tag (`app`, `c`, `f.`, `d/`, `b:bm`, `b:d/`, `b:f.`, `s:yt`, `def`, `url`, `clip`).
  */
 @Composable
 fun AsciiKindBadge(
@@ -1729,6 +1870,37 @@ fun AsciiRaycastRow(
     val folderPeekPath: String?
 
     when (item) {
+        is com.sujan.pipe.domain.PaletteItem.DirectUrlAction -> {
+            tagText = "url"
+            tagColor = c.good
+            titleText = "Open ${item.displayHost}"
+            subtitleText = item.targetUrl
+            hasActionSheet = true
+            folderPeekPath = null
+        }
+        is com.sujan.pipe.domain.PaletteItem.DictionaryAction -> {
+            tagText = prefixes.dictionaryClean
+            tagColor = c.accent2
+            if (item.isSetupPrompt || item.entry == null) {
+                titleText = item.setupTitle.ifEmpty { "Load Offline Dictionary File" }
+                subtitleText = item.setupSubtitle
+                hasActionSheet = false
+            } else {
+                val pos = if (item.entry.partOfSpeech.isNotBlank()) " (${item.entry.partOfSpeech})" else ""
+                titleText = "${item.entry.word}$pos"
+                subtitleText = item.entry.definition
+                hasActionSheet = true
+            }
+            folderPeekPath = null
+        }
+        is com.sujan.pipe.domain.PaletteItem.ClipboardAction -> {
+            tagText = prefixes.clipboardClean
+            tagColor = c.accent3
+            titleText = item.title
+            subtitleText = item.subtitle
+            hasActionSheet = false
+            folderPeekPath = null
+        }
         is com.sujan.pipe.domain.PaletteItem.AppAction -> {
             tagText = prefixes.appsClean
             tagColor = c.accent
@@ -1885,7 +2057,7 @@ fun AsciiRaycastRow(
                     text = subAnnotated,
                     style = AsciiType.small,
                     color = if (pressed) c.bg else c.dim,
-                    maxLines = 1,
+                    maxLines = if (item is com.sujan.pipe.domain.PaletteItem.DictionaryAction) 2 else 1,
                 )
             }
 
@@ -1912,6 +2084,18 @@ fun AsciiRaycastRow(
                     label = "⋯",
                     onClick = onOpenActionSheet,
                     spokenLabel = "more actions for $titleText",
+                )
+            } else if (item is com.sujan.pipe.domain.PaletteItem.DictionaryAction && item.isSetupPrompt) {
+                AsciiButton(
+                    label = "load",
+                    onClick = onExecute,
+                    primary = true,
+                )
+            } else if (item is com.sujan.pipe.domain.PaletteItem.ClipboardAction) {
+                AsciiButton(
+                    label = "run",
+                    onClick = onExecute,
+                    primary = isTop,
                 )
             } else if (item is com.sujan.pipe.domain.PaletteItem.QuickAddAction) {
                 AsciiButton(
@@ -2063,6 +2247,8 @@ fun AsciiResultActionSheet(
     onEditEngine: (SearchEngine) -> Unit,
     onDeleteEngine: (SearchEngine) -> Unit,
     onDeleteHistory: (SearchHistoryEntry) -> Unit = {},
+    onAppInfoInstalledApp: (InstalledAppItem) -> Unit = {},
+    onUninstallInstalledApp: (InstalledAppItem) -> Unit = {},
     onCopyText: (String) -> Unit,
     prefixes: PrefixConfig = PrefixConfig(),
 ) {
@@ -2092,6 +2278,53 @@ fun AsciiResultActionSheet(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 when (item) {
+                    is com.sujan.pipe.domain.PaletteItem.DirectUrlAction -> {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                AsciiKindBadge("url", c.good)
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    AsciiText(item.displayHost, style = AsciiType.title, color = c.fg, maxLines = 1)
+                                    AsciiText(item.targetUrl, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                }
+                            }
+                            AsciiButton("x", onDismiss)
+                        }
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiSheetActionRow("open", "Open ${item.targetUrl}", onPrimaryExecute, isPrimary = true)
+                        AsciiSheetActionRow("copy", "Copy clean URL", { onCopyText(QueryRouter.stripTrackingParams(item.targetUrl)) })
+                    }
+
+                    is com.sujan.pipe.domain.PaletteItem.DictionaryAction -> {
+                        val entry = item.entry
+                        if (entry != null) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    AsciiKindBadge(prefixes.dictionaryClean, c.accent2)
+                                    Spacer(Modifier.width(8.dp))
+                                    Column {
+                                        AsciiText("${entry.word} (${entry.partOfSpeech})", style = AsciiType.title, color = c.fg, maxLines = 1)
+                                        AsciiText(entry.definition, style = AsciiType.small, color = c.dim, maxLines = 2)
+                                    }
+                                }
+                                AsciiButton("x", onDismiss)
+                            }
+                            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                            AsciiSheetActionRow("view", "View full definition card", onPrimaryExecute, isPrimary = true)
+                            AsciiSheetActionRow("copy", "Copy definition", { onCopyText("${entry.word} (${entry.partOfSpeech}): ${entry.definition}") })
+                        } else {
+                            AsciiButton("close", onDismiss)
+                        }
+                    }
+
                     is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
                         val contact = item.contact
                         Row(
@@ -2232,7 +2465,9 @@ fun AsciiResultActionSheet(
                         }
                         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
                         AsciiSheetActionRow("open", "Launch ${app.label}", onPrimaryExecute, isPrimary = true)
+                        AsciiSheetActionRow("info", "Open Android App Info", { onAppInfoInstalledApp(app) })
                         AsciiSheetActionRow("copy", "Copy package name", { onCopyText(app.packageName) })
+                        AsciiSheetActionRow("uninstall", "Uninstall ${app.label}", { onUninstallInstalledApp(app) }, isDestructive = true)
                     }
 
                     is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
@@ -3056,7 +3291,8 @@ fun AsciiDangerBox(
  * - Full-name tabs (`overlay`, `index`, `theme`, `routing`, `backup`) in a flush-aligned 2-row grid (`Modifier.weight(1f)`).
  * - Tapping any tab switches directly to that section's view and highlights the active tab.
  * - All permissions (`storage`, `contacts`, `default apps`) are grouped in one unified box inside `index`.
- * - Custom command prefixes (`f`, `s`, `b`, `app`, `hist`, `c`) are editable inside `routing`.
+ * - External on-demand offline dictionary file management (`load`, `scan Download/`, `unlink`) is inside `index`.
+ * - Custom command prefixes (`f`, `s`, `b`, `app`, `hist`, `c`, `def`, `clip`) are editable inside `routing`.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -3094,6 +3330,9 @@ private fun PipeSettingsScreen(
     onShowMenuBtnChange: (Boolean) -> Unit,
     onPrefixConfigChange: (PrefixConfig) -> Unit,
     onResetPrefixConfig: () -> Unit,
+    onImportDictionaryFileClick: () -> Unit = {},
+    onAutoDetectDownloadsDictionary: () -> Unit = {},
+    onRemoveDictionaryClick: () -> Unit = {},
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
@@ -3311,6 +3550,72 @@ private fun PipeSettingsScreen(
                         )
                     }
 
+                    // On-Demand External Offline Dictionary Box
+                    AsciiBox(title = "index · offline dictionary (on-demand)") {
+                        AsciiText(
+                            text = if (state.isDictionaryInstalled) {
+                                "status: linked (${state.dictionaryWordCount} words)  |  idle RAM: 0 MB"
+                            } else {
+                                "status: not linked  |  tapped into only when you type `${state.prefixConfig.dictionaryClean} <word>`"
+                            },
+                            style = AsciiType.body,
+                            color = if (state.isDictionaryInstalled) c.good else c.accent2,
+                        )
+                        AsciiText(
+                            text = if (state.isDictionaryIndexing) {
+                                "building 2-letter byte-offset index..."
+                            } else {
+                                "source: ${state.dictionarySourceName} (supports .tsv, .csv, .json, .json.gz)"
+                            },
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            AsciiButton(
+                                label = if (state.isDictionaryIndexing) "indexing..." else "load dictionary file",
+                                onClick = onImportDictionaryFileClick,
+                                enabled = !state.isDictionaryIndexing,
+                                primary = true,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 46.dp)
+                                    .border(1.dp, c.accent),
+                            )
+                            AsciiButton(
+                                label = "scan Download/",
+                                onClick = onAutoDetectDownloadsDictionary,
+                                enabled = !state.isDictionaryIndexing,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 46.dp)
+                                    .border(1.dp, c.border),
+                            )
+                        }
+                        if (state.isDictionaryInstalled) {
+                            Spacer(Modifier.height(6.dp))
+                            AsciiButton(
+                                label = "unlink dictionary file",
+                                onClick = onRemoveDictionaryClick,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 42.dp)
+                                    .border(1.dp, c.error),
+                            )
+                        }
+                        if (state.jsonStatusMessage != null) {
+                            Spacer(Modifier.height(4.dp))
+                            AsciiText(
+                                text = state.jsonStatusMessage,
+                                style = AsciiType.small,
+                                color = if (state.jsonStatusMessage.startsWith("!")) c.error else c.good,
+                            )
+                        }
+                    }
+
                     AsciiBox(title = "index · local storage index") {
                         val ageText = if (state.lastIndexedTimestampMs <= 0L) {
                             "never indexed"
@@ -3415,8 +3720,10 @@ private fun PipeSettingsScreen(
                     var appsField by remember(p.apps) { mutableStateOf(TextFieldValue(p.apps, TextRange(p.apps.length))) }
                     var histField by remember(p.history) { mutableStateOf(TextFieldValue(p.history, TextRange(p.history.length))) }
                     var contactsField by remember(p.contacts) { mutableStateOf(TextFieldValue(p.contacts, TextRange(p.contacts.length))) }
+                    var dictField by remember(p.dictionary) { mutableStateOf(TextFieldValue(p.dictionary, TextRange(p.dictionary.length))) }
+                    var clipField by remember(p.clipboard) { mutableStateOf(TextFieldValue(p.clipboard, TextRange(p.clipboard.length))) }
 
-                    val pushPrefixUpdate: (String, String, String, String, String, String) -> Unit = { fVal, sVal, bVal, appVal, hVal, cVal ->
+                    val pushPrefixUpdate: (String, String, String, String, String, String, String, String) -> Unit = { fVal, sVal, bVal, appVal, hVal, cVal, dVal, clVal ->
                         onPrefixConfigChange(
                             PrefixConfig(
                                 files = fVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "f" },
@@ -3425,11 +3732,13 @@ private fun PipeSettingsScreen(
                                 apps = appVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "app" },
                                 history = hVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "hist" },
                                 contacts = cVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "c" },
+                                dictionary = dVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "def" },
+                                clipboard = clVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "clip" },
                             )
                         )
                     }
 
-                    AsciiBox(title = "routing · custom prefixes (f, s, b, app, hist, c)") {
+                    AsciiBox(title = "routing · custom prefixes (f, s, b, app, hist, c, def, clip)") {
                         AsciiText(
                             text = "change the command prefixes and row tags used to filter each category:",
                             style = AsciiType.small,
@@ -3447,7 +3756,7 @@ private fun PipeSettingsScreen(
                                     value = filesField,
                                     onValueChange = {
                                         filesField = it
-                                        pushPrefixUpdate(it.text, pipesField.text, bookmarksField.text, appsField.text, histField.text, contactsField.text)
+                                        pushPrefixUpdate(it.text, pipesField.text, bookmarksField.text, appsField.text, histField.text, contactsField.text, dictField.text, clipField.text)
                                     },
                                     placeholder = "f",
                                 )
@@ -3459,7 +3768,7 @@ private fun PipeSettingsScreen(
                                     value = pipesField,
                                     onValueChange = {
                                         pipesField = it
-                                        pushPrefixUpdate(filesField.text, it.text, bookmarksField.text, appsField.text, histField.text, contactsField.text)
+                                        pushPrefixUpdate(filesField.text, it.text, bookmarksField.text, appsField.text, histField.text, contactsField.text, dictField.text, clipField.text)
                                     },
                                     placeholder = "s",
                                 )
@@ -3477,7 +3786,7 @@ private fun PipeSettingsScreen(
                                     value = bookmarksField,
                                     onValueChange = {
                                         bookmarksField = it
-                                        pushPrefixUpdate(filesField.text, pipesField.text, it.text, appsField.text, histField.text, contactsField.text)
+                                        pushPrefixUpdate(filesField.text, pipesField.text, it.text, appsField.text, histField.text, contactsField.text, dictField.text, clipField.text)
                                     },
                                     placeholder = "b",
                                 )
@@ -3489,7 +3798,7 @@ private fun PipeSettingsScreen(
                                     value = appsField,
                                     onValueChange = {
                                         appsField = it
-                                        pushPrefixUpdate(filesField.text, pipesField.text, bookmarksField.text, it.text, histField.text, contactsField.text)
+                                        pushPrefixUpdate(filesField.text, pipesField.text, bookmarksField.text, it.text, histField.text, contactsField.text, dictField.text, clipField.text)
                                     },
                                     placeholder = "app",
                                 )
@@ -3507,7 +3816,7 @@ private fun PipeSettingsScreen(
                                     value = histField,
                                     onValueChange = {
                                         histField = it
-                                        pushPrefixUpdate(filesField.text, pipesField.text, bookmarksField.text, appsField.text, it.text, contactsField.text)
+                                        pushPrefixUpdate(filesField.text, pipesField.text, bookmarksField.text, appsField.text, it.text, contactsField.text, dictField.text, clipField.text)
                                     },
                                     placeholder = "hist",
                                 )
@@ -3519,15 +3828,45 @@ private fun PipeSettingsScreen(
                                     value = contactsField,
                                     onValueChange = {
                                         contactsField = it
-                                        pushPrefixUpdate(filesField.text, pipesField.text, bookmarksField.text, appsField.text, histField.text, it.text)
+                                        pushPrefixUpdate(filesField.text, pipesField.text, bookmarksField.text, appsField.text, histField.text, it.text, dictField.text, clipField.text)
                                     },
                                     placeholder = "c",
                                 )
                             }
                         }
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(Modifier.weight(1f)) {
+                                AsciiTextField(
+                                    label = "dictionary prefix",
+                                    promptPrefix = "> ",
+                                    value = dictField,
+                                    onValueChange = {
+                                        dictField = it
+                                        pushPrefixUpdate(filesField.text, pipesField.text, bookmarksField.text, appsField.text, histField.text, contactsField.text, it.text, clipField.text)
+                                    },
+                                    placeholder = "def",
+                                )
+                            }
+                            Box(Modifier.weight(1f)) {
+                                AsciiTextField(
+                                    label = "clipboard prefix",
+                                    promptPrefix = "> ",
+                                    value = clipField,
+                                    onValueChange = {
+                                        clipField = it
+                                        pushPrefixUpdate(filesField.text, pipesField.text, bookmarksField.text, appsField.text, histField.text, contactsField.text, dictField.text, it.text)
+                                    },
+                                    placeholder = "clip",
+                                )
+                            }
+                        }
                         Spacer(Modifier.height(8.dp))
                         AsciiButton(
-                            label = "reset default prefixes (f, s, b, app, hist, c)",
+                            label = "reset default prefixes (f, s, b, app, hist, c, def, clip)",
                             onClick = onResetPrefixConfig,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -3588,7 +3927,13 @@ private fun PipeSettingsScreen(
                 }
 
                 SettingsSection.BACKUP -> {
-                    AsciiBox(title = "backup · json backup (2x2)") {
+                    AsciiBox(title = "backup · full v2 json backup (2x2)") {
+                        AsciiText(
+                            text = "exports & imports pipes, bookmarks, custom prefixes, excluded folders, and usage rankings:",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        Spacer(Modifier.height(6.dp))
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -3666,8 +4011,10 @@ private fun PipeSettingsScreen(
                         BoxWithConstraints(Modifier.fillMaxWidth()) {
                             val cols = rememberCols(AsciiType.small)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                AsciiText("pipe v2.2 (release)", style = AsciiType.title, color = c.accent)
+                                AsciiText("pipe v2.3 (release)", style = AsciiType.title, color = c.accent)
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
+                                AsciiText(leader("dictionary", "${state.prefixConfig.dictionaryClean} <word> (0 MB idle)", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
+                                AsciiText(leader("clipboard", "${state.prefixConfig.clipboardClean} (url / phone / text)", cols), style = AsciiType.small, color = c.accent3, softWrap = false)
                                 AsciiText(leader("bookmarks", "${state.prefixConfig.bookmarksClean} <alias>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("search pipes", "${state.prefixConfig.pipesClean} <keyword> <query>", cols), style = AsciiType.small, color = c.accent, softWrap = false)
                                 AsciiText(leader("youtube time", "ytt / ytw / ytm <query>", cols), style = AsciiType.small, color = c.good, softWrap = false)
@@ -3690,9 +4037,9 @@ private fun PipeSettingsScreen(
             Column(
                 modifier = Modifier.fillMaxWidth().background(c.bg).border(1.dp, c.accent).padding(12.dp).imePadding(),
             ) {
-                AsciiBox(title = if (state.jsonDialogMode == JsonDialogMode.EXPORT) "export json" else "import json") {
+                AsciiBox(title = if (state.jsonDialogMode == JsonDialogMode.EXPORT) "export full v2 json" else "import full v2 json") {
                     AsciiTextField(
-                        label = "engines json array",
+                        label = "full v2 backup json (pipes, bookmarks, prefixes, folders)",
                         promptPrefix = "> ",
                         value = textVal,
                         onValueChange = { textVal = it; err = null },
@@ -3703,7 +4050,7 @@ private fun PipeSettingsScreen(
                         if (state.jsonDialogMode == JsonDialogMode.EXPORT) {
                             AsciiButton("copy", {
                                 clipboard.setText(AnnotatedString(textVal.text))
-                                onSetJsonStatus("ok: copied json to clipboard")
+                                onSetJsonStatus("ok: copied full v2 json to clipboard")
                                 onCloseJsonDialog()
                             }, primary = true)
                         } else {
@@ -3738,7 +4085,7 @@ fun PipePromptStep1Preview() {
         parentName = "Documents/Legal",
         sizeBytes = 840_000L,
     )
-    val sampleApp = com.sujan.pipe.model.InstalledAppItem(
+    val sampleApp = InstalledAppItem(
         label = "MiXplorer Silver",
         packageName = "com.mixplorer.silver",
     )

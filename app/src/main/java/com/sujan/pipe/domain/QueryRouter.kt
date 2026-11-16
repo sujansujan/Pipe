@@ -4,7 +4,9 @@ import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.ContactQuickAction
 import com.sujan.pipe.model.DefaultEngines
+import com.sujan.pipe.model.DictionaryEntry
 import com.sujan.pipe.model.EngineColorRole
+import com.sujan.pipe.model.FullBackupBundle
 import com.sujan.pipe.model.InstalledAppItem
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
@@ -16,11 +18,6 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
-/**
- * Fast, display-aware fuzzy matcher for contacts, bookmarks, folders, apps, and files.
- * Handles punctuation, parenthetical aliases (`Downloads (dl)`), emojis (`Kali budi`),
- * hyphenated phone numbers (`986-0515496`), and multi-token queries without false-positive noise.
- */
 object FuzzyMatcher {
 
     fun normalizeForSearch(raw: String): String {
@@ -89,11 +86,6 @@ object FuzzyMatcher {
         return scorePreLowered(q, c)
     }
 
-    /**
-     * Computes a character-level boolean mask of length [text.length] marking which characters in [text]
-     * matched [rawFilterQuery] (supporting exact word-boundary prefixes, contiguous substrings, multi-word
-     * token queries like `citi pdf`, and verified subsequence hits). Used by fzf-style UI highlighting.
-     */
     fun findMatchedIndices(text: String, rawFilterQuery: String): BooleanArray {
         val mask = BooleanArray(text.length)
         if (text.isEmpty()) return mask
@@ -108,7 +100,6 @@ object FuzzyMatcher {
             val tLen = token.length
             if (tLen > lowerText.length) continue
 
-            // 1. Prefer word-boundary prefix match
             var wbStart = -1
             var i = 0
             while (i <= lowerText.length - tLen) {
@@ -127,7 +118,6 @@ object FuzzyMatcher {
                 continue
             }
 
-            // 2. Contiguous substring match
             val subIdx = lowerText.indexOf(token)
             if (subIdx >= 0) {
                 for (k in subIdx until (subIdx + tLen)) {
@@ -136,7 +126,6 @@ object FuzzyMatcher {
                 continue
             }
 
-            // 3. Subsequence match (only when scoreSingleTokenSubsequence > 0)
             if (tLen >= 2 && scoreSingleTokenSubsequence(token, lowerText) > 0) {
                 var qIdx = 0
                 for (cIdx in lowerText.indices) {
@@ -354,6 +343,16 @@ enum class QuickAddKind(val tag: String, val label: String) {
     PIPE("+s", "Search Pipe"),
 }
 
+enum class ClipActionKind {
+    OPEN_URL,
+    COPY_CLEAN_URL,
+    SAVE_BOOKMARK,
+    CALL_NUMBER,
+    WA_NUMBER,
+    SAVE_CONTACT,
+    COPY_TEXT,
+}
+
 enum class PromptIntentMode(val scopeBadge: String) {
     ALL("all"),
     CONTACTS_ONLY("c:contacts"),
@@ -363,6 +362,8 @@ enum class PromptIntentMode(val scopeBadge: String) {
     PIPES_LIST("s:pipes"),
     APPS_ONLY("app:launcher"),
     HISTORY_ONLY("hist:history"),
+    DICTIONARY_ONLY("def:dict"),
+    CLIPBOARD_ONLY("clip:tools"),
     SCOPED_FOLDER("b:folder"),
     ENGINE_ONLY("s:pipe"),
     ADD_COMMAND("+add"),
@@ -413,6 +414,33 @@ sealed interface PaletteItem {
         override val usageKey: String,
         override val rankScore: Int,
         override val usageCount: Int,
+    ) : PaletteItem
+
+    data class DictionaryAction(
+        val entry: DictionaryEntry?,
+        val query: String,
+        val isSetupPrompt: Boolean = false,
+        override val usageKey: String = "dict:${entry?.wordLower ?: query.lowercase()}",
+        override val rankScore: Int = 9500,
+        override val usageCount: Int = 0,
+    ) : PaletteItem
+
+    data class DirectUrlAction(
+        val targetUrl: String,
+        val displayHost: String,
+        override val usageKey: String = "url:$targetUrl",
+        override val rankScore: Int = 95_000,
+        override val usageCount: Int = 0,
+    ) : PaletteItem
+
+    data class ClipboardAction(
+        val kind: ClipActionKind,
+        val title: String,
+        val subtitle: String,
+        val payloadText: String,
+        override val usageKey: String = "clip:${kind.name}",
+        override val rankScore: Int = 9000,
+        override val usageCount: Int = 0,
     ) : PaletteItem
 
     data class QuickAddAction(
@@ -469,11 +497,67 @@ object QueryRouter {
 
     const val MAX_PALETTE_RESULTS = 10
     private val WHITESPACE_REGEX = Regex("\\s+")
+    private val IPV4_PORT_REGEX = Regex("^(\\d{1,3}\\.){3}\\d{1,3}(:\\d{1,5})?(/.*)?$")
+    private val LOCALHOST_REGEX = Regex("^localhost(:\\d{1,5})?(/.*)?$", RegexOption.IGNORE_CASE)
+    private val LOCAL_FILE_EXTS = setOf(
+        "pdf", "jpg", "jpeg", "png", "webp", "gif", "bmp", "mp3", "mp4", "mkv", "wav",
+        "flac", "ogg", "apk", "zip", "tar", "gz", "7z", "rar", "txt", "md", "csv",
+        "tsv", "json", "xml", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "kt", "java", "py",
+    )
+    private val TRACKING_PARAMS = setOf(
+        "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id",
+        "fbclid", "gclid", "igsh", "si", "mc_cid", "mc_eid", "_hsenc", "rb_clickid", "ref_src",
+    )
 
     /**
-     * Parses the user's input using user-configurable [prefixes] (`f`, `s`, `b`, `app`, `hist`, `c`)
-     * and trailing-space locking so typing normal words never hijacks the search before pressing space.
+     * Feature #3: Auto-detects bare domains (`audiobookbay.lu`, `github.com/user/repo`),
+     * full `http(s)://` URLs, and local IPs/ports (`192.168.1.1:8080`, `localhost:3000`).
      */
+    fun detectDirectUrl(rawInput: String): String? {
+        val trimmed = rawInput.trim()
+        if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
+        if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+            val afterScheme = trimmed.substringAfter("://")
+            if (afterScheme.isNotEmpty() && (afterScheme.contains('.') || afterScheme.startsWith("localhost", ignoreCase = true))) {
+                return trimmed
+            }
+            return null
+        }
+        if (IPV4_PORT_REGEX.matches(trimmed) || LOCALHOST_REGEX.matches(trimmed)) {
+            return "http://$trimmed"
+        }
+        val hostPart = trimmed.substringBefore('/').substringBefore('?').substringBefore(':')
+        if (!hostPart.contains('.') || hostPart.startsWith('.') || hostPart.endsWith('.')) return null
+        val tld = hostPart.substringAfterLast('.').lowercase()
+        if (tld.length !in 2..12 || !tld.all { it in 'a'..'z' }) return null
+        val hasPathOrQuery = trimmed.contains('/') || trimmed.contains('?')
+        if (!hasPathOrQuery && tld in LOCAL_FILE_EXTS) return null
+        return "https://$trimmed"
+    }
+
+    /**
+     * Feature #6: Strips tracking query parameters (`?utm_source=...`, `fbclid`, `igsh`, `si`, etc.) from a URL.
+     */
+    fun stripTrackingParams(rawUrl: String): String {
+        val qIdx = rawUrl.indexOf('?')
+        if (qIdx < 0) return rawUrl
+        val base = rawUrl.substring(0, qIdx)
+        val afterQ = rawUrl.substring(qIdx + 1)
+        val hashIdx = afterQ.indexOf('#')
+        val queryPart = if (hashIdx >= 0) afterQ.substring(0, hashIdx) else afterQ
+        val fragment = if (hashIdx >= 0) afterQ.substring(hashIdx) else ""
+
+        val keptParams = queryPart.split('&').filter { pair ->
+            val key = pair.substringBefore('=').lowercase()
+            key.isNotEmpty() && key !in TRACKING_PARAMS && !key.startsWith("utm_")
+        }
+        return if (keptParams.isEmpty()) {
+            "$base$fragment"
+        } else {
+            "$base?${keptParams.joinToString("&")}$fragment"
+        }
+    }
+
     fun parsePromptCommand(
         rawInput: String,
         bookmarks: List<PipeBookmark>,
@@ -491,7 +575,6 @@ object QueryRouter {
         val hasSpaceAfterFirst = trimmedStart.length > firstToken.length
         val remainder = if (hasSpaceAfterFirst) trimmedStart.substring(firstToken.length).trim() else ""
 
-        // 0. Quick Add (`+`, `+ ...`, `add`, `add ...`) and Quick Delete (`- ...`, `del`, `rm`)
         if (firstLower == "+" || firstLower == "add") {
             return ParsedPromptCommand(PromptIntentMode.ADD_COMMAND, remainder)
         }
@@ -509,8 +592,20 @@ object QueryRouter {
         val appPrefix = prefixes.appsClean
         val fPrefix = prefixes.filesClean
         val histPrefix = prefixes.historyClean
+        val defPrefix = prefixes.dictionaryClean
+        val clipPrefix = prefixes.clipboardClean
 
-        // 1. Dedicated Bookmark Prefix: `<bPrefix> <query>` or `bm <query>` (requires space)
+        // On-Demand Offline Dictionary: `def <word>` or custom dictionary prefix
+        if ((firstLower == defPrefix || firstLower == "def" || firstLower == "dict" || firstLower == "define") && hasSpaceAfterFirst) {
+            return ParsedPromptCommand(PromptIntentMode.DICTIONARY_ONLY, remainder)
+        }
+
+        // Clipboard & Text Tools: `clip` (works immediately or with space) or `txt <text>`
+        if (firstLower == clipPrefix || firstLower == "clip" || ((firstLower == "txt" || firstLower == "text") && hasSpaceAfterFirst)) {
+            return ParsedPromptCommand(PromptIntentMode.CLIPBOARD_ONLY, remainder)
+        }
+
+        // 1. Dedicated Bookmark Prefix: `<bPrefix> <query>` or `bm <query>`
         if ((firstLower == bPrefix || firstLower == "b" || firstLower == "bm") && hasSpaceAfterFirst) {
             if (remainder.isNotEmpty()) {
                 val subTokens = remainder.split(WHITESPACE_REGEX, limit = 2)
@@ -538,7 +633,7 @@ object QueryRouter {
             return ParsedPromptCommand(PromptIntentMode.BOOKMARKS_ONLY, "")
         }
 
-        // 2. Dedicated Search Pipe Prefix: `<sPrefix> <keyword> [query]` or `pipe <keyword> [query]`
+        // 2. Dedicated Search Pipe Prefix: `<sPrefix> <keyword> [query]`
         if ((firstLower == sPrefix || firstLower == "s" || firstLower == "pipe" || firstLower == "pipes") && hasSpaceAfterFirst) {
             if (remainder.isEmpty()) {
                 return ParsedPromptCommand(PromptIntentMode.PIPES_LIST, "")
@@ -571,7 +666,7 @@ object QueryRouter {
             return ParsedPromptCommand(PromptIntentMode.PIPES_LIST, remainder)
         }
 
-        // 3. Contact alias: `<cPrefix> <name>` (with optional `wa` / `sms` / `call` chaining)
+        // 3. Contact alias: `<cPrefix> <name>`
         if ((firstLower == cPrefix || firstLower == "c" || firstLower == "call" || firstLower == "contact") && hasSpaceAfterFirst) {
             val subTokens = remainder.trim().split(WHITESPACE_REGEX)
             if (subTokens.size >= 2) {
@@ -614,7 +709,7 @@ object QueryRouter {
             return ParsedPromptCommand(PromptIntentMode.DIRS_ONLY, remainder)
         }
 
-        // 8. Direct Folder Bookmark or Engine Keyword when followed by a space (e.g. `dl invoice`, `yt lofi`, `ytt news`)
+        // 8. Direct Folder Bookmark or Engine Keyword when followed by a space
         if (hasSpaceAfterFirst) {
             val matchedBookmark = bookmarks.firstOrNull {
                 it.alias.isNotBlank() && it.alias.equals(firstLower, ignoreCase = true)
@@ -667,6 +762,8 @@ object QueryRouter {
         installedApps: List<InstalledAppItem> = emptyList(),
         clipboardText: String = "",
         prefixes: PrefixConfig = PrefixConfig(),
+        dictionaryMatches: List<DictionaryEntry> = emptyList(),
+        isDictionaryInstalled: Boolean = false,
     ): List<PaletteItem> {
         val cmd = parsePromptCommand(rawInput, bookmarks, engines, prefixes)
         fun usageOf(key: String): Int = usageMap[key] ?: 0
@@ -676,6 +773,53 @@ object QueryRouter {
             PromptIntentMode.ADD_COMMAND -> buildQuickAddSuggestions(cmd.filterQuery, clipboardText, prefixes)
 
             PromptIntentMode.RM_COMMAND -> buildQuickRemoveSuggestions(cmd.filterQuery, bookmarks, engines, history, prefixes)
+
+            PromptIntentMode.DICTIONARY_ONLY -> {
+                val q = cmd.filterQuery.trim()
+                val out = mutableListOf<PaletteItem>()
+                if (!isDictionaryInstalled) {
+                    out.add(
+                        PaletteItem.DictionaryAction(
+                            entry = null,
+                            query = q,
+                            isSetupPrompt = true,
+                            usageKey = "dict:setup",
+                            rankScore = 100_000,
+                        )
+                    )
+                } else {
+                    dictionaryMatches.forEachIndexed { idx, entry ->
+                        out.add(
+                            PaletteItem.DictionaryAction(
+                                entry = entry,
+                                query = q,
+                                isSetupPrompt = false,
+                                usageKey = "dict:${entry.wordLower}",
+                                rankScore = 50_000 - idx * 100,
+                            )
+                        )
+                    }
+                }
+                if (q.isNotEmpty()) {
+                    val wikiEng = engines.firstOrNull { it.keyword.equals("w", ignoreCase = true) }
+                        ?: engines.firstOrNull { it.isDefault }
+                        ?: DefaultEngines.LIST.first()
+                    out.add(
+                        PaletteItem.EngineAction(
+                            engine = wikiEng,
+                            query = q,
+                            targetUrl = buildSearchUrl(wikiEng.urlTemplate, q),
+                            isHome = false,
+                            usageKey = "eng:${wikiEng.id}",
+                            rankScore = 500,
+                            usageCount = usageOf("eng:${wikiEng.id}"),
+                        )
+                    )
+                }
+                out.take(MAX_PALETTE_RESULTS)
+            }
+
+            PromptIntentMode.CLIPBOARD_ONLY -> buildClipboardAndTextSuggestions(cmd.filterQuery, clipboardText)
 
             PromptIntentMode.CONTACTS_ONLY -> {
                 val q = cmd.filterQuery.trim()
@@ -929,6 +1073,21 @@ object QueryRouter {
                     ).take(MAX_PALETTE_RESULTS)
                 } else {
                     val qLower = q.lowercase()
+
+                    // Feature #3: Direct URL & IP Auto-Open at #1 when input is a domain, URL, or IP
+                    val directUrl = detectDirectUrl(q)
+                    if (directUrl != null) {
+                        pool.add(
+                            PaletteItem.DirectUrlAction(
+                                targetUrl = directUrl,
+                                displayHost = q,
+                                usageKey = "url:$directUrl",
+                                rankScore = 95_000,
+                                usageCount = usageOf("url:$directUrl"),
+                            )
+                        )
+                    }
+
                     bookmarks.forEach { bm ->
                         val s = FuzzyMatcher.scoreBookmark(q, bm)
                         if (s > 0) {
@@ -1012,6 +1171,155 @@ object QueryRouter {
                 }
             }
         }
+    }
+
+    /**
+     * Feature #6: Clipboard Router & Text Tools (`clip` / `txt`).
+     */
+    private fun buildClipboardAndTextSuggestions(rawSub: String, clipboardText: String): List<PaletteItem> {
+        val out = mutableListOf<PaletteItem>()
+        val clip = clipboardText.trim()
+        val sub = rawSub.trim()
+        val effectiveText = sub.ifEmpty { clip }
+
+        if (effectiveText.isEmpty()) {
+            out.add(
+                PaletteItem.ClipboardAction(
+                    kind = ClipActionKind.COPY_TEXT,
+                    title = "Clipboard is empty",
+                    subtitle = "copy a URL, phone number, or text, or type `clip <text>`",
+                    payloadText = "",
+                    rankScore = 9000,
+                )
+            )
+            return out
+        }
+
+        val detectedUrl = detectDirectUrl(effectiveText)
+        if (detectedUrl != null) {
+            out.add(
+                PaletteItem.ClipboardAction(
+                    kind = ClipActionKind.OPEN_URL,
+                    title = "Open URL: $detectedUrl",
+                    subtitle = "launch directly in browser",
+                    payloadText = detectedUrl,
+                    rankScore = 9800,
+                )
+            )
+            val cleanedUrl = stripTrackingParams(detectedUrl)
+            if (cleanedUrl != detectedUrl) {
+                out.add(
+                    PaletteItem.ClipboardAction(
+                        kind = ClipActionKind.COPY_CLEAN_URL,
+                        title = "Copy Clean URL (strip tracking params)",
+                        subtitle = cleanedUrl,
+                        payloadText = cleanedUrl,
+                        rankScore = 9700,
+                    )
+                )
+            }
+            out.add(
+                PaletteItem.ClipboardAction(
+                    kind = ClipActionKind.SAVE_BOOKMARK,
+                    title = "Save URL as Bookmark (+b)",
+                    subtitle = detectedUrl,
+                    payloadText = detectedUrl,
+                    rankScore = 9600,
+                )
+            )
+        }
+
+        val digits = effectiveText.filter { it.isDigit() }
+        if (digits.length in 7..15 && detectedUrl == null) {
+            out.add(
+                PaletteItem.ClipboardAction(
+                    kind = ClipActionKind.CALL_NUMBER,
+                    title = "Dial $effectiveText",
+                    subtitle = "open phone dialer",
+                    payloadText = effectiveText,
+                    rankScore = 9750,
+                )
+            )
+            out.add(
+                PaletteItem.ClipboardAction(
+                    kind = ClipActionKind.WA_NUMBER,
+                    title = "Message $effectiveText on WhatsApp",
+                    subtitle = "wa.me/${normalizeWhatsAppPhone(effectiveText)}",
+                    payloadText = effectiveText,
+                    rankScore = 9700,
+                )
+            )
+            out.add(
+                PaletteItem.ClipboardAction(
+                    kind = ClipActionKind.SAVE_CONTACT,
+                    title = "Save $effectiveText as Contact (+c)",
+                    subtitle = "open Quick Add Contact form",
+                    payloadText = effectiveText,
+                    rankScore = 9650,
+                )
+            )
+        }
+
+        val words = effectiveText.split(WHITESPACE_REGEX).filter { it.isNotEmpty() }
+        val lines = effectiveText.lines()
+        val statsSummary = "${words.size} words · ${effectiveText.length} chars · ${lines.size} lines"
+        out.add(
+            PaletteItem.ClipboardAction(
+                kind = ClipActionKind.COPY_TEXT,
+                title = "wc: $statsSummary",
+                subtitle = "tap or RET to copy count summary",
+                payloadText = statsSummary,
+                rankScore = 9400,
+            )
+        )
+
+        val upper = effectiveText.uppercase()
+        out.add(
+            PaletteItem.ClipboardAction(
+                kind = ClipActionKind.COPY_TEXT,
+                title = "UPPERCASE -> ${upper.take(36)}",
+                subtitle = "tap to copy uppercase text",
+                payloadText = upper,
+                rankScore = 9300,
+            )
+        )
+
+        val lower = effectiveText.lowercase()
+        out.add(
+            PaletteItem.ClipboardAction(
+                kind = ClipActionKind.COPY_TEXT,
+                title = "lowercase -> ${lower.take(36)}",
+                subtitle = "tap to copy lowercase text",
+                payloadText = lower,
+                rankScore = 9200,
+            )
+        )
+
+        val titleCased = words.joinToString(" ") { w ->
+            w.lowercase().replaceFirstChar { it.uppercaseChar() }
+        }
+        out.add(
+            PaletteItem.ClipboardAction(
+                kind = ClipActionKind.COPY_TEXT,
+                title = "Title Case -> ${titleCased.take(36)}",
+                subtitle = "tap to copy title-cased text",
+                payloadText = titleCased,
+                rankScore = 9100,
+            )
+        )
+
+        val urlEncoded = URLEncoder.encode(effectiveText, StandardCharsets.UTF_8.name())
+        out.add(
+            PaletteItem.ClipboardAction(
+                kind = ClipActionKind.COPY_TEXT,
+                title = "urlencode -> ${urlEncoded.take(36)}",
+                subtitle = "tap to copy URL-encoded string",
+                payloadText = urlEncoded,
+                rankScore = 9000,
+            )
+        )
+
+        return out.take(MAX_PALETTE_RESULTS)
     }
 
     private fun buildQuickAddSuggestions(rawSub: String, clipboardText: String, prefixes: PrefixConfig = PrefixConfig()): List<PaletteItem> {
@@ -1394,12 +1702,24 @@ object QueryRouter {
             return RouteResolution(defaultEngine, false, null, "", defaultEngine.homeUrl, true)
         }
 
+        // Direct URL detection in resolve()
+        val directUrl = detectDirectUrl(trimmed)
+        if (directUrl != null) {
+            return RouteResolution(
+                engine = defaultEngine,
+                matchedByKeyword = true,
+                extractedKeyword = "url",
+                query = trimmed,
+                targetUrl = directUrl,
+                isHomeLaunch = false,
+            )
+        }
+
         val tokens = trimmed.split(WHITESPACE_REGEX, limit = 2)
         val firstWord = tokens[0]
         val remainder = if (tokens.size > 1) tokens[1].trim().replace(WHITESPACE_REGEX, " ") else ""
         val sPre = prefixes.pipesClean
 
-        // Support `<sPre> <keyword> [query]` in `resolve()` as well!
         if ((firstWord.equals(sPre, ignoreCase = true) || firstWord.equals("s", ignoreCase = true) || firstWord.equals("pipe", ignoreCase = true)) && remainder.isNotEmpty()) {
             val subTokens = remainder.split(WHITESPACE_REGEX, limit = 2)
             val subKw = subTokens[0]
@@ -1549,6 +1869,126 @@ object QueryRouter {
         }
     }
 
+    /**
+     * Feature #4: Full v2 JSON Backup Exporter (bundles `engines`, `bookmarks`, `prefixes`, `excludedFolders`, and `usageCounts`).
+     */
+    fun exportFullBackupToJson(bundle: FullBackupBundle): String {
+        val sb = StringBuilder("{\n")
+        sb.append("  \"version\": 2,\n")
+        sb.append("  \"engines\": [\n")
+        bundle.engines.forEachIndexed { idx, e ->
+            sb.append("    {\n")
+            sb.append("      \"id\": \"${escapeJson(e.id)}\",\n")
+            sb.append("      \"name\": \"${escapeJson(e.name)}\",\n")
+            sb.append("      \"keyword\": \"${escapeJson(e.keyword.lowercase())}\",\n")
+            sb.append("      \"urlTemplate\": \"${escapeJson(e.urlTemplate)}\",\n")
+            sb.append("      \"glyph\": \"${escapeJson(e.glyph)}\",\n")
+            sb.append("      \"colorRole\": \"${escapeJson(e.colorRole.name)}\",\n")
+            sb.append("      \"isDefault\": ${e.isDefault}\n")
+            sb.append("    }")
+            if (idx < bundle.engines.lastIndex) sb.append(",")
+            sb.append("\n")
+        }
+        sb.append("  ],\n")
+        sb.append("  \"bookmarks\": [\n")
+        bundle.bookmarks.forEachIndexed { idx, bm ->
+            sb.append("    {\n")
+            sb.append("      \"id\": \"${escapeJson(bm.id)}\",\n")
+            sb.append("      \"alias\": \"${escapeJson(bm.alias)}\",\n")
+            sb.append("      \"title\": \"${escapeJson(bm.title)}\",\n")
+            sb.append("      \"target\": \"${escapeJson(bm.target)}\",\n")
+            sb.append("      \"kind\": \"${escapeJson(bm.kind.name)}\",\n")
+            sb.append("      \"tags\": \"${escapeJson(bm.tags)}\"\n")
+            sb.append("    }")
+            if (idx < bundle.bookmarks.lastIndex) sb.append(",")
+            sb.append("\n")
+        }
+        sb.append("  ],\n")
+        val p = bundle.prefixes ?: PrefixConfig()
+        sb.append("  \"prefixes\": {\n")
+        sb.append("    \"files\": \"${escapeJson(p.filesClean)}\",\n")
+        sb.append("    \"pipes\": \"${escapeJson(p.pipesClean)}\",\n")
+        sb.append("    \"bookmarks\": \"${escapeJson(p.bookmarksClean)}\",\n")
+        sb.append("    \"apps\": \"${escapeJson(p.appsClean)}\",\n")
+        sb.append("    \"history\": \"${escapeJson(p.historyClean)}\",\n")
+        sb.append("    \"contacts\": \"${escapeJson(p.contactsClean)}\",\n")
+        sb.append("    \"dictionary\": \"${escapeJson(p.dictionaryClean)}\",\n")
+        sb.append("    \"clipboard\": \"${escapeJson(p.clipboardClean)}\"\n")
+        sb.append("  },\n")
+        sb.append("  \"excludedFolders\": [")
+        bundle.excludedFolders.forEachIndexed { idx, f ->
+            sb.append("\"${escapeJson(f)}\"")
+            if (idx < bundle.excludedFolders.lastIndex) sb.append(", ")
+        }
+        sb.append("]\n")
+        sb.append("}")
+        return sb.toString()
+    }
+
+    /**
+     * Feature #4: Full v2 JSON Backup Importer (backward-compatible with v1 `[...]` pipe arrays).
+     */
+    fun importFullBackupFromJson(json: String): FullBackupBundle {
+        val trimmed = json.trim()
+        if (trimmed.startsWith("[")) {
+            return FullBackupBundle(engines = importEnginesFromJson(trimmed))
+        }
+        if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+            throw IllegalArgumentException("! json must be a v2 backup object { ... } or v1 array [ ... ]")
+        }
+
+        val enginesSection = extractJsonArraySection(trimmed, "engines")
+            ?: throw IllegalArgumentException("! backup json missing \"engines\" array")
+        val parsedEngines = importEnginesFromJson(enginesSection)
+
+        val bookmarksSection = extractJsonArraySection(trimmed, "bookmarks")
+        val parsedBookmarks = if (bookmarksSection != null) {
+            val blocks = extractTopLevelJsonObjects(bookmarksSection)
+            blocks.mapIndexedNotNull { idx, block ->
+                val title = extractJsonString(block, "title")?.trim().orEmpty()
+                val target = extractJsonString(block, "target")?.trim().orEmpty()
+                if (title.isEmpty() || target.isEmpty()) null
+                else PipeBookmark(
+                    id = extractJsonString(block, "id")?.trim()?.ifEmpty { "bm_$idx" } ?: "bm_$idx",
+                    alias = extractJsonString(block, "alias")?.trim()?.lowercase().orEmpty(),
+                    title = title,
+                    target = target,
+                    kind = BookmarkKind.fromString(extractJsonString(block, "kind")),
+                    tags = extractJsonString(block, "tags")?.trim().orEmpty(),
+                )
+            }
+        } else emptyList()
+
+        val prefixesSection = extractJsonObjectSection(trimmed, "prefixes")
+        val parsedPrefixes = if (prefixesSection != null) {
+            PrefixConfig(
+                files = extractJsonString(prefixesSection, "files") ?: "f",
+                pipes = extractJsonString(prefixesSection, "pipes") ?: "s",
+                bookmarks = extractJsonString(prefixesSection, "bookmarks") ?: "b",
+                apps = extractJsonString(prefixesSection, "apps") ?: "app",
+                history = extractJsonString(prefixesSection, "history") ?: "hist",
+                contacts = extractJsonString(prefixesSection, "contacts") ?: "c",
+                dictionary = extractJsonString(prefixesSection, "dictionary") ?: "def",
+                clipboard = extractJsonString(prefixesSection, "clipboard") ?: "clip",
+            )
+        } else null
+
+        val excludedSection = extractJsonArraySection(trimmed, "excludedFolders")
+        val parsedExcluded = if (excludedSection != null) {
+            Regex("\"((?:[^\"\\\\]|\\\\.)*)\"").findAll(excludedSection)
+                .map { it.groupValues[1].trim() }
+                .filter { it.isNotEmpty() }
+                .toList()
+        } else emptyList()
+
+        return FullBackupBundle(
+            engines = parsedEngines,
+            bookmarks = parsedBookmarks,
+            prefixes = parsedPrefixes,
+            excludedFolders = parsedExcluded,
+        )
+    }
+
     fun exportEnginesToJson(engines: List<SearchEngine>): String {
         val sb = StringBuilder("[\n")
         engines.forEachIndexed { idx, e ->
@@ -1570,8 +2010,11 @@ object QueryRouter {
 
     fun importEnginesFromJson(json: String): List<SearchEngine> {
         val trimmed = json.trim()
+        if (trimmed.startsWith("{")) {
+            return importFullBackupFromJson(trimmed).engines
+        }
         if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
-            throw IllegalArgumentException("! json must be a top-level array [ ... ]")
+            throw IllegalArgumentException("! json must be a top-level array [ ... ] or v2 backup object { ... }")
         }
         val blocks = extractTopLevelJsonObjects(trimmed)
         if (blocks.isEmpty()) throw IllegalArgumentException("! no engine objects found in json")
@@ -1598,6 +2041,58 @@ object QueryRouter {
         }
         val defaultIdx = parsed.indexOfFirst { it.isDefault }.let { if (it >= 0) it else 0 }
         return parsed.mapIndexed { idx, eng -> eng.copy(isDefault = idx == defaultIdx) }
+    }
+
+    private fun extractJsonArraySection(rootJson: String, key: String): String? {
+        val keyMatch = Regex("\"$key\"\\s*:\\s*\\[").find(rootJson) ?: return null
+        val startBracket = keyMatch.range.last
+        var inString = false
+        var escaped = false
+        var depth = 0
+        for (i in startBracket until rootJson.length) {
+            val ch = rootJson[i]
+            if (inString) {
+                if (escaped) escaped = false
+                else if (ch == '\\') escaped = true
+                else if (ch == '"') inString = false
+            } else {
+                when (ch) {
+                    '"' -> inString = true
+                    '[' -> depth++
+                    ']' -> {
+                        depth--
+                        if (depth == 0) return rootJson.substring(startBracket, i + 1)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun extractJsonObjectSection(rootJson: String, key: String): String? {
+        val keyMatch = Regex("\"$key\"\\s*:\\s*\\{").find(rootJson) ?: return null
+        val startBrace = keyMatch.range.last
+        var inString = false
+        var escaped = false
+        var depth = 0
+        for (i in startBrace until rootJson.length) {
+            val ch = rootJson[i]
+            if (inString) {
+                if (escaped) escaped = false
+                else if (ch == '\\') escaped = true
+                else if (ch == '"') inString = false
+            } else {
+                when (ch) {
+                    '"' -> inString = true
+                    '{' -> depth++
+                    '}' -> {
+                        depth--
+                        if (depth == 0) return rootJson.substring(startBrace, i + 1)
+                    }
+                }
+            }
+        }
+        return null
     }
 
     private fun extractTopLevelJsonObjects(jsonArray: String): List<String> {

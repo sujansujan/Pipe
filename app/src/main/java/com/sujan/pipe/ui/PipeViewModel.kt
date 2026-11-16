@@ -18,6 +18,7 @@ import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.DefaultBookmarks
 import com.sujan.pipe.model.DefaultEngines
+import com.sujan.pipe.model.DictionaryEntry
 import com.sujan.pipe.model.EngineColorRole
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
@@ -95,6 +96,13 @@ data class PipeUiState(
     val showSearchBoxScopeBadge: Boolean = true,
     val showSearchBoxMenuBtn: Boolean = true,
     val previewImageFile: LocalFileItem? = null,
+    val activeDictionaryEntry: DictionaryEntry? = null,
+    val isDictionaryInstalled: Boolean = false,
+    val dictionaryWordCount: Int = 0,
+    val dictionarySourceName: String = "not linked",
+    val dictionaryMatches: List<DictionaryEntry> = emptyList(),
+    val isDictionaryIndexing: Boolean = false,
+    val clipboardPreviewText: String = "",
     val storageFiles: List<LocalFileItem> = emptyList(),
     val scopedFolderFiles: List<LocalFileItem> = emptyList(),
     val hasContactsPermission: Boolean = false,
@@ -133,51 +141,6 @@ data class PipeUiState(
 
     val suggestedEngines: List<SearchEngine>
         get() = QueryRouter.suggestEngines(searchInput.text, engines)
-
-    val matchedBookmarks: List<PipeBookmark>
-        get() {
-            val cmd = parsedCommand
-            return when (cmd.mode) {
-                PromptIntentMode.BOOKMARKS_ONLY -> FuzzyMatcher.filterBookmarks(cmd.filterQuery, bookmarks, limit = 10)
-                PromptIntentMode.SCOPED_FOLDER -> listOfNotNull(cmd.scopedFolderBookmark)
-                PromptIntentMode.ALL -> {
-                    if (searchInput.text.isBlank()) bookmarks.take(6)
-                    else FuzzyMatcher.filterBookmarks(searchInput.text.trim(), bookmarks, limit = 5)
-                }
-                else -> emptyList()
-            }
-        }
-
-    val matchedContacts: List<ContactItem>
-        get() {
-            val cmd = parsedCommand
-            return when (cmd.mode) {
-                PromptIntentMode.CONTACTS_ONLY -> FuzzyMatcher.filterContacts(cmd.filterQuery, contacts, limit = 10)
-                PromptIntentMode.ALL -> {
-                    val q = searchInput.text.trim()
-                    if (q.length < 2) emptyList() else FuzzyMatcher.filterContacts(q, contacts, limit = 4)
-                }
-                else -> emptyList()
-            }
-        }
-
-    val matchedFiles: List<LocalFileItem>
-        get() {
-            val cmd = parsedCommand
-            return when (cmd.mode) {
-                PromptIntentMode.SCOPED_FOLDER -> {
-                    FuzzyMatcher.filterFiles(cmd.filterQuery, scopedFolderFiles, limit = 12)
-                }
-                PromptIntentMode.FILES_ONLY -> {
-                    FuzzyMatcher.filterFiles(cmd.filterQuery, storageFiles, limit = 12)
-                }
-                PromptIntentMode.ALL -> {
-                    val q = searchInput.text.trim()
-                    if (q.length < 2) emptyList() else FuzzyMatcher.filterFiles(q, storageFiles, limit = 6)
-                }
-                else -> emptyList()
-            }
-        }
 }
 
 class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
@@ -187,6 +150,8 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             engines = repository.loadEngines(),
             bookmarks = repository.loadBookmarks(),
             prefixConfig = repository.loadPrefixConfig(),
+            dictionaryWordCount = repository.loadDictionaryWordCount(),
+            dictionarySourceName = repository.loadDictionarySourceName(),
             history = repository.loadHistory(),
             usageCounts = repository.loadUsageCounts(),
             themeMode = repository.loadThemeMode(),
@@ -233,10 +198,46 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 history = snap.history,
                 usageMap = snap.usageCounts,
                 installedApps = snap.installedApps,
+                clipboardText = snap.clipboardPreviewText,
                 prefixes = snap.prefixConfig,
+                dictionaryMatches = snap.dictionaryMatches,
+                isDictionaryInstalled = snap.isDictionaryInstalled,
             )
             _uiState.update { it.copy(paletteResults = computed) }
         }
+    }
+
+    fun updateClipboardPreviewText(clip: String) {
+        if (_uiState.value.clipboardPreviewText != clip) {
+            _uiState.update { it.copy(clipboardPreviewText = clip) }
+            recomputePaletteAsync()
+        }
+    }
+
+    fun syncDictionaryState(
+        installed: Boolean,
+        wordCount: Int = repository.loadDictionaryWordCount(),
+        sourceName: String = repository.loadDictionarySourceName(),
+        isIndexing: Boolean = false,
+    ) {
+        _uiState.update {
+            it.copy(
+                isDictionaryInstalled = installed,
+                dictionaryWordCount = wordCount,
+                dictionarySourceName = sourceName,
+                isDictionaryIndexing = isIndexing,
+            )
+        }
+        recomputePaletteAsync()
+    }
+
+    fun updateDictionaryMatches(matches: List<DictionaryEntry>) {
+        _uiState.update { it.copy(dictionaryMatches = matches) }
+        recomputePaletteAsync()
+    }
+
+    fun setActiveDictionaryEntry(entry: DictionaryEntry?) {
+        _uiState.update { it.copy(activeDictionaryEntry = entry) }
     }
 
     fun setPrefixConfig(config: PrefixConfig) {
@@ -247,6 +248,8 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             apps = config.appsClean,
             history = config.historyClean,
             contacts = config.contactsClean,
+            dictionary = config.dictionaryClean,
+            clipboard = config.clipboardClean,
         )
         repository.savePrefixConfig(normalized)
         _uiState.update { it.copy(prefixConfig = normalized) }
@@ -256,7 +259,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun resetPrefixConfig() {
         val def = PrefixConfig()
         repository.savePrefixConfig(def)
-        _uiState.update { it.copy(prefixConfig = def, jsonStatusMessage = "ok: restored default prefixes (f, s, b, app, hist, c)") }
+        _uiState.update { it.copy(prefixConfig = def, jsonStatusMessage = "ok: restored default prefixes (f, s, b, app, hist, c, def, clip)") }
         recomputePaletteAsync()
     }
 
@@ -375,9 +378,6 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         _uiState.update { it.copy(history = repository.loadHistory(), launchError = null) }
     }
 
-    // -----------------------------------------------------------------------
-    // Bookmarks Management (Links, Folders, Files)
-    // -----------------------------------------------------------------------
     fun openAddBookmarkForm(
         prefillTitle: String = "",
         prefillTarget: String = "/storage/emulated/0/",
@@ -847,14 +847,33 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
 
     fun openJsonDialog(m: JsonDialogMode) = _uiState.update { it.copy(jsonDialogMode = m, jsonStatusMessage = null) }
     fun closeJsonDialog() = _uiState.update { it.copy(jsonDialogMode = null) }
-    fun exportJsonString(): String = QueryRouter.exportEnginesToJson(_uiState.value.engines)
+
+    // Feature #4: Full v2 JSON Backup (bundles pipes, bookmarks, custom prefixes, and excluded folders)
+    fun exportJsonString(): String = QueryRouter.exportFullBackupToJson(
+        com.sujan.pipe.model.FullBackupBundle(
+            engines = _uiState.value.engines,
+            bookmarks = _uiState.value.bookmarks,
+            prefixes = _uiState.value.prefixConfig,
+            excludedFolders = _uiState.value.excludedFolders,
+            usageCounts = _uiState.value.usageCounts,
+        )
+    )
 
     fun importJsonString(rawJson: String): String? = try {
-        val imported = QueryRouter.importEnginesFromJson(rawJson)
-        repository.saveEngines(imported)
+        val bundle = QueryRouter.importFullBackupFromJson(rawJson)
+        repository.applyFullBackupBundle(bundle)
         _uiState.update {
-            it.copy(engines = imported, jsonDialogMode = null, jsonStatusMessage = "ok: imported ${imported.size} pipes")
+            it.copy(
+                engines = repository.loadEngines(),
+                bookmarks = repository.loadBookmarks(),
+                prefixConfig = repository.loadPrefixConfig(),
+                excludedFolders = repository.loadExcludedFolders(),
+                jsonDialogMode = null,
+                jsonStatusMessage = "ok: imported ${bundle.engines.size} pipes" +
+                    (if (bundle.bookmarks.isNotEmpty()) " & ${bundle.bookmarks.size} bookmarks" else ""),
+            )
         }
+        recomputePaletteAsync()
         null
     } catch (e: IllegalArgumentException) {
         e.message ?: "! invalid json"
