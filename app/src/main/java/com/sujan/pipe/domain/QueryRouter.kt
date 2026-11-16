@@ -378,6 +378,7 @@ sealed interface PaletteItem {
         val arg2: String = "",
         val arg3: String = "",
         val bookmarkKind: BookmarkKind = BookmarkKind.LINK,
+        val editingId: String? = null,
         override val usageKey: String = "add:${kind.name}",
         override val rankScore: Int = 9000,
         override val usageCount: Int = 0,

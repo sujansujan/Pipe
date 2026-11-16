@@ -518,6 +518,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         target: String,
         kind: BookmarkKind,
         tags: String = "",
+        editingId: String? = null,
     ) {
         val cleanAlias = alias.trim().lowercase().filter { !it.isWhitespace() }
         val cleanTitle = title.trim().ifEmpty { cleanAlias.ifEmpty { "Bookmark" } }
@@ -528,9 +529,11 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             return
         }
         val current = _uiState.value.bookmarks
-        val existingIdx = if (cleanAlias.isNotEmpty()) {
-            current.indexOfFirst { it.alias.equals(cleanAlias, ignoreCase = true) }
-        } else -1
+        val existingIdx = when {
+            editingId != null -> current.indexOfFirst { it.id == editingId }
+            cleanAlias.isNotEmpty() -> current.indexOfFirst { it.alias.equals(cleanAlias, ignoreCase = true) }
+            else -> -1
+        }
 
         val updated = if (existingIdx >= 0) {
             current.mapIndexed { idx, bm ->
@@ -554,13 +557,13 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 bookmarks = updated,
                 searchInput = TextFieldValue(""),
                 launchError = null,
-                jsonStatusMessage = "ok: saved bookmark [${cleanAlias.ifEmpty { cleanTitle }}]",
+                jsonStatusMessage = "ok: saved bookmark [b ${cleanAlias.ifEmpty { cleanTitle }}]",
             )
         }
         recomputePaletteAsync()
     }
 
-    fun quickSavePipe(keyword: String, name: String, rawUrl: String) {
+    fun quickSavePipe(keyword: String, name: String, rawUrl: String, editingId: String? = null) {
         val cleanKey = keyword.trim().lowercase().filter { !it.isWhitespace() }
         val cleanName = name.trim().ifEmpty { cleanKey.uppercase() }
         val cleanUrl = QueryRouter.normalizePipeUrlTemplate(rawUrl)
@@ -569,7 +572,10 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             return
         }
         val current = _uiState.value.engines
-        val existingIdx = current.indexOfFirst { it.keyword.equals(cleanKey, ignoreCase = true) }
+        val existingIdx = when {
+            editingId != null -> current.indexOfFirst { it.id == editingId }
+            else -> current.indexOfFirst { it.keyword.equals(cleanKey, ignoreCase = true) }
+        }
         val updated = if (existingIdx >= 0) {
             current.mapIndexed { idx, eng ->
                 if (idx == existingIdx) eng.copy(name = cleanName, keyword = cleanKey, urlTemplate = cleanUrl) else eng
@@ -590,7 +596,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 engines = repository.loadEngines(),
                 searchInput = TextFieldValue(""),
                 launchError = null,
-                jsonStatusMessage = "ok: saved pipe [|$cleanKey] $cleanName",
+                jsonStatusMessage = "ok: saved pipe [s $cleanKey] $cleanName",
             )
         }
         recomputePaletteAsync()

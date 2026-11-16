@@ -366,13 +366,15 @@ private fun SleekRaycastOverlay(
         }
     }
 
-    val commitNewBookmark: (String, String, String, BookmarkKind, String) -> Unit = { alias, title, target, kind, tags ->
+    val commitNewBookmark: (String, String, String, BookmarkKind, String, String?) -> Unit = { alias, title, target, kind, tags, editingId ->
         val cleanAlias = alias.trim().lowercase().filter { !it.isWhitespace() }
         val cleanTitle = title.trim().ifEmpty { cleanAlias.ifEmpty { "Bookmark" } }
         val cleanTarget = target.trim()
-        val existingIdx = if (cleanAlias.isNotEmpty()) {
-            activeBookmarks.indexOfFirst { it.alias.equals(cleanAlias, ignoreCase = true) }
-        } else -1
+        val existingIdx = when {
+            editingId != null -> activeBookmarks.indexOfFirst { it.id == editingId }
+            cleanAlias.isNotEmpty() -> activeBookmarks.indexOfFirst { it.alias.equals(cleanAlias, ignoreCase = true) }
+            else -> -1
+        }
         val updated = if (existingIdx >= 0) {
             activeBookmarks.mapIndexed { idx, bm ->
                 if (idx == existingIdx) bm.copy(alias = cleanAlias, title = cleanTitle, target = cleanTarget, kind = kind, tags = tags.ifEmpty { bm.tags }) else bm
@@ -391,14 +393,17 @@ private fun SleekRaycastOverlay(
         onSaveBookmarksList(updated)
         inlineQuickAdd = null
         input = TextFieldValue("")
-        statusMsg = "ok: saved bookmark [${cleanAlias.ifEmpty { cleanTitle }}]"
+        statusMsg = "ok: saved bookmark [b ${cleanAlias.ifEmpty { cleanTitle }}]"
     }
 
-    val commitNewPipe: (String, String, String) -> Unit = { keyword, name, rawUrl ->
+    val commitNewPipe: (String, String, String, String?) -> Unit = { keyword, name, rawUrl, editingId ->
         val cleanKey = keyword.trim().lowercase().filter { !it.isWhitespace() }
         val cleanName = name.trim().ifEmpty { cleanKey.uppercase() }
         val cleanUrl = QueryRouter.normalizePipeUrlTemplate(rawUrl)
-        val existingIdx = activeEngines.indexOfFirst { it.keyword.equals(cleanKey, ignoreCase = true) }
+        val existingIdx = when {
+            editingId != null -> activeEngines.indexOfFirst { it.id == editingId }
+            else -> activeEngines.indexOfFirst { it.keyword.equals(cleanKey, ignoreCase = true) }
+        }
         val updated = if (existingIdx >= 0) {
             activeEngines.mapIndexed { idx, eng ->
                 if (idx == existingIdx) eng.copy(name = cleanName, keyword = cleanKey, urlTemplate = cleanUrl) else eng
@@ -417,7 +422,7 @@ private fun SleekRaycastOverlay(
         onSaveEnginesList(updated)
         inlineQuickAdd = null
         input = TextFieldValue("")
-        statusMsg = "ok: saved pipe [|$cleanKey] $cleanName"
+        statusMsg = "ok: saved pipe [s $cleanKey] $cleanName"
     }
 
     val executeItem: (PaletteItem) -> Unit = { item ->
@@ -447,8 +452,8 @@ private fun SleekRaycastOverlay(
                 if (item.isReadyToCommit) {
                     when (item.kind) {
                         QuickAddKind.CONTACT -> commitNewContact(item.arg1, item.arg2)
-                        QuickAddKind.BOOKMARK -> commitNewBookmark(item.arg1, item.arg2, item.arg3, item.bookmarkKind, "")
-                        QuickAddKind.PIPE -> commitNewPipe(item.arg1, item.arg2, item.arg3)
+                        QuickAddKind.BOOKMARK -> commitNewBookmark(item.arg1, item.arg2, item.arg3, item.bookmarkKind, "", item.editingId)
+                        QuickAddKind.PIPE -> commitNewPipe(item.arg1, item.arg2, item.arg3, item.editingId)
                     }
                 } else {
                     inlineQuickAdd = item
@@ -704,6 +709,31 @@ private fun SleekRaycastOverlay(
                                     bookmarkKind = if (f.isDirectory) BookmarkKind.FOLDER else BookmarkKind.FILE,
                                 )
                             },
+                            onEditBookmark = { bm ->
+                                inlineQuickAdd = PaletteItem.QuickAddAction(
+                                    kind = QuickAddKind.BOOKMARK,
+                                    title = "Edit Bookmark [b ${bm.alias}]",
+                                    subtitle = bm.target,
+                                    isReadyToCommit = false,
+                                    arg1 = bm.alias,
+                                    arg2 = bm.title,
+                                    arg3 = bm.target,
+                                    bookmarkKind = bm.kind,
+                                    editingId = bm.id,
+                                )
+                            },
+                            onEditEngine = { eng ->
+                                inlineQuickAdd = PaletteItem.QuickAddAction(
+                                    kind = QuickAddKind.PIPE,
+                                    title = "Edit Pipe [s ${eng.keyword}]",
+                                    subtitle = eng.urlTemplate,
+                                    isReadyToCommit = false,
+                                    arg1 = eng.keyword,
+                                    arg2 = eng.name,
+                                    arg3 = eng.urlTemplate,
+                                    editingId = eng.id,
+                                )
+                            },
                             onDeleteBookmark = { bm ->
                                 val updated = activeBookmarks.filterNot { it.id == bm.id }
                                 activeBookmarks = updated
@@ -759,6 +789,8 @@ private fun SleekOverlayRow(
     onShareFile: (LocalFileItem) -> Unit,
     onPreviewImage: (LocalFileItem) -> Unit,
     onBookmarkFile: (LocalFileItem) -> Unit,
+    onEditBookmark: ((PipeBookmark) -> Unit)? = null,
+    onEditEngine: ((SearchEngine) -> Unit)? = null,
     onDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
     onDeleteEngine: ((SearchEngine) -> Unit)? = null,
     onCallContact: (ContactItem) -> Unit,
@@ -944,6 +976,9 @@ private fun SleekOverlayRow(
                             spokenLabel = "peek inside ${bm.title}",
                         )
                     }
+                    if (onEditBookmark != null) {
+                        AsciiButton("edit", { onEditBookmark(bm) })
+                    }
                     if (onDeleteBookmark != null) {
                         AsciiButton("x", { onDeleteBookmark(bm) })
                     }
@@ -1019,8 +1054,13 @@ private fun SleekOverlayRow(
             ) {
                 AsciiText("$ptr [s:${eng.keyword}] ", style = AsciiType.small, color = if (pressed) c.bg else c.forRole(eng.colorRole))
                 AsciiText(desc, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
-                if (item.isHome && onDeleteEngine != null) {
-                    AsciiButton("x", { onDeleteEngine(eng) })
+                if (item.isHome) {
+                    if (onEditEngine != null) {
+                        AsciiButton("edit", { onEditEngine(eng) })
+                    }
+                    if (onDeleteEngine != null) {
+                        AsciiButton("x", { onDeleteEngine(eng) })
+                    }
                 } else {
                     AsciiText("pipe", style = AsciiType.small, color = if (pressed) c.bg else c.dim)
                 }

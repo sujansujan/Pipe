@@ -106,8 +106,8 @@ fun PipeApp(
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
     onQuickSaveContact: (String, String) -> Unit = { _, _ -> },
-    onQuickSaveBookmark: (String, String, String, BookmarkKind, String) -> Unit = { _, _, _, _, _ -> },
-    onQuickSavePipe: (String, String, String) -> Unit = { _, _, _ -> },
+    onQuickSaveBookmark: (String, String, String, BookmarkKind, String, String?) -> Unit = { _, _, _, _, _, _ -> },
+    onQuickSavePipe: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
     onQuickRemoveItem: (Boolean, String) -> Unit = { _, _ -> },
     onRequestContactsPermission: () -> Unit,
     onRequestFilesPermission: () -> Unit,
@@ -335,8 +335,8 @@ private fun PipePromptScreen(
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
     onQuickSaveContact: (String, String) -> Unit,
-    onQuickSaveBookmark: (String, String, String, BookmarkKind, String) -> Unit,
-    onQuickSavePipe: (String, String, String) -> Unit,
+    onQuickSaveBookmark: (String, String, String, BookmarkKind, String, String?) -> Unit,
+    onQuickSavePipe: (String, String, String, String?) -> Unit,
     onQuickRemoveItem: (Boolean, String) -> Unit,
     onRequestContactsPermission: () -> Unit,
     onRequestFilesPermission: () -> Unit,
@@ -383,21 +383,43 @@ private fun PipePromptScreen(
                 inlineQuickAdd = null
                 onQuickSaveContact(name, phone)
             },
-            onQuickSaveBookmark = { alias, title, target, kind, tags ->
+            onQuickSaveBookmark = { alias, title, target, kind, tags, editingId ->
                 inlineQuickAdd = null
-                onQuickSaveBookmark(alias, title, target, kind, tags)
+                onQuickSaveBookmark(alias, title, target, kind, tags, editingId)
             },
-            onQuickSavePipe = { kw, name, url ->
+            onQuickSavePipe = { kw, name, url, editingId ->
                 inlineQuickAdd = null
-                onQuickSavePipe(kw, name, url)
+                onQuickSavePipe(kw, name, url, editingId)
+            },
+            onQuickEditBookmark = { bm ->
+                inlineQuickAdd = com.sujan.pipe.domain.PaletteItem.QuickAddAction(
+                    kind = QuickAddKind.BOOKMARK,
+                    title = "Edit Bookmark [b ${bm.alias}]",
+                    subtitle = bm.target,
+                    isReadyToCommit = false,
+                    arg1 = bm.alias,
+                    arg2 = bm.title,
+                    arg3 = bm.target,
+                    bookmarkKind = bm.kind,
+                    editingId = bm.id,
+                )
+            },
+            onQuickEditEngine = { eng ->
+                inlineQuickAdd = com.sujan.pipe.domain.PaletteItem.QuickAddAction(
+                    kind = QuickAddKind.PIPE,
+                    title = "Edit Pipe [s ${eng.keyword}]",
+                    subtitle = eng.urlTemplate,
+                    isReadyToCommit = false,
+                    arg1 = eng.keyword,
+                    arg2 = eng.name,
+                    arg3 = eng.urlTemplate,
+                    editingId = eng.id,
+                )
             },
             existingBookmarks = state.bookmarks,
             existingEngines = state.engines,
             onQuickDeleteBookmark = { bm -> onQuickRemoveItem(true, bm.id) },
             onQuickDeleteEngine = { eng -> onQuickRemoveItem(false, eng.id) },
-            onSetDefaultEngine = { id ->
-                // handled via quick pipe manager
-            },
             headerRightActions = {
                 AsciiButton("+", {
                     if (inlineQuickAdd != null) {
@@ -412,7 +434,9 @@ private fun PipePromptScreen(
                             arg1 = raw,
                         )
                     }
-                }, primary = inlineQuickAdd != null, spokenLabel = "quick add or manage")
+                }, primary = inlineQuickAdd != null, spokenLabel = "quick add or edit")
+                AsciiButton("bm", { onNavigate(PipeView.BOOKMARKS) }, spokenLabel = "bookmarks manager")
+                AsciiButton("pipes", { onNavigate(PipeView.ENGINES) }, spokenLabel = "search pipes manager")
                 AsciiButton("ovl", onLaunchOverlay, spokenLabel = "floating overlay")
                 AsciiButton("set", { onNavigate(PipeView.SETTINGS) }, spokenLabel = "settings")
             },
@@ -442,8 +466,8 @@ private fun PipePromptScreen(
                         if (item.isReadyToCommit) {
                             when (item.kind) {
                                 QuickAddKind.CONTACT -> onQuickSaveContact(item.arg1, item.arg2)
-                                QuickAddKind.BOOKMARK -> onQuickSaveBookmark(item.arg1, item.arg2, item.arg3, item.bookmarkKind, "")
-                                QuickAddKind.PIPE -> onQuickSavePipe(item.arg1, item.arg2, item.arg3)
+                                QuickAddKind.BOOKMARK -> onQuickSaveBookmark(item.arg1, item.arg2, item.arg3, item.bookmarkKind, "", item.editingId)
+                                QuickAddKind.PIPE -> onQuickSavePipe(item.arg1, item.arg2, item.arg3, item.editingId)
                             }
                         } else {
                             inlineQuickAdd = item
@@ -506,13 +530,14 @@ fun AsciiRaycastPaletteWindow(
     inlineQuickAdd: com.sujan.pipe.domain.PaletteItem.QuickAddAction? = null,
     onDismissInlineQuickAdd: () -> Unit = {},
     onQuickSaveContact: (String, String) -> Unit = { _, _ -> },
-    onQuickSaveBookmark: (String, String, String, BookmarkKind, String) -> Unit = { _, _, _, _, _ -> },
-    onQuickSavePipe: (String, String, String) -> Unit = { _, _, _ -> },
+    onQuickSaveBookmark: (String, String, String, BookmarkKind, String, String?) -> Unit = { _, _, _, _, _, _ -> },
+    onQuickSavePipe: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
     existingBookmarks: List<PipeBookmark> = emptyList(),
     existingEngines: List<SearchEngine> = emptyList(),
+    onQuickEditBookmark: ((PipeBookmark) -> Unit)? = null,
+    onQuickEditEngine: ((SearchEngine) -> Unit)? = null,
     onQuickDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
     onQuickDeleteEngine: ((SearchEngine) -> Unit)? = null,
-    onSetDefaultEngine: ((String) -> Unit)? = null,
     headerRightActions: @Composable () -> Unit,
     onAliasPillClick: (String) -> Unit,
     onSubmitPrimary: () -> Unit,
@@ -706,6 +731,8 @@ fun AsciiRaycastPaletteWindow(
                         onBookmarkFile = onBookmarkFile,
                         onShareFile = onShareFile,
                         onPreviewImage = onPreviewImage,
+                        onEditBookmark = onQuickEditBookmark,
+                        onEditEngine = onQuickEditEngine,
                         onDeleteBookmark = onQuickDeleteBookmark,
                         onDeleteEngine = if (existingEngines.size > 1) onQuickDeleteEngine else null,
                     )
@@ -792,12 +819,14 @@ fun AsciiContactAvatar(
 fun QuickAddInlineCard(
     initialAction: com.sujan.pipe.domain.PaletteItem.QuickAddAction,
     onSaveContact: (String, String) -> Unit,
-    onSaveBookmark: (String, String, String, BookmarkKind, String) -> Unit,
-    onSavePipe: (String, String, String) -> Unit,
+    onSaveBookmark: (String, String, String, BookmarkKind, String, String?) -> Unit,
+    onSavePipe: (String, String, String, String?) -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
     existingBookmarks: List<PipeBookmark> = emptyList(),
     existingEngines: List<SearchEngine> = emptyList(),
+    onEditBookmark: ((PipeBookmark) -> Unit)? = null,
+    onEditEngine: ((SearchEngine) -> Unit)? = null,
     onDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
     onDeleteEngine: ((SearchEngine) -> Unit)? = null,
 ) {
@@ -805,13 +834,13 @@ fun QuickAddInlineCard(
     val clipboard = LocalClipboardManager.current
     val clipText = remember { clipboard.getText()?.text?.trim().orEmpty() }
 
-    // Auto-parse if user typed something like "Ramesh 9841234567" before tapping [+]
     val autoContact = remember(initialAction.arg1) {
-        QueryRouter.parseQuickAddContact(initialAction.arg1)
+        if (initialAction.editingId == null) QueryRouter.parseQuickAddContact(initialAction.arg1) else null
     }
     var activeKind by remember(initialAction) {
         mutableStateOf(if (autoContact != null) QuickAddKind.CONTACT else initialAction.kind)
     }
+    var editingId by remember(initialAction) { mutableStateOf(initialAction.editingId) }
 
     // Contact fields
     val initName = autoContact?.first ?: initialAction.arg1
@@ -825,7 +854,7 @@ fun QuickAddInlineCard(
         mutableStateOf(TextFieldValue(initPhone, TextRange(initPhone.length)))
     }
 
-    // Bookmark fields (auto-detects Link vs Folder vs File from target!)
+    // Bookmark fields
     val initialBmTarget = initialAction.arg3.ifEmpty {
         if (clipText.startsWith("http://") || clipText.startsWith("https://") || clipText.startsWith("/")) clipText else ""
     }
@@ -843,7 +872,7 @@ fun QuickAddInlineCard(
         mutableStateOf(TextFieldValue(initialBmTarget, TextRange(initialBmTarget.length)))
     }
 
-    // Pipe fields (auto-converts ?q=sample into ?q={query}!)
+    // Pipe fields
     val initialPipeUrl = initialAction.arg3.ifEmpty {
         if (clipText.startsWith("http://") || clipText.startsWith("https://")) {
             QueryRouter.normalizePipeUrlTemplate(clipText)
@@ -873,7 +902,7 @@ fun QuickAddInlineCard(
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // Standardized 3-tab header: `[+c Contact]  [+b Bookmark]  [+s Pipe]  [x]`
+        // Standardized 3-tab header: `[+c contact]  [+b bookmark]  [+s pipe]  [x]`
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -885,6 +914,7 @@ fun QuickAddInlineCard(
                         label = "${k.tag} ${k.label.lowercase()}",
                         onClick = {
                             activeKind = k
+                            editingId = null
                             errorMsg = null
                         },
                         primary = activeKind == k,
@@ -892,6 +922,29 @@ fun QuickAddInlineCard(
                 }
             }
             AsciiButton("x", onCancel)
+        }
+
+        if (editingId != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText(
+                    text = ":: editing existing ${activeKind.label.lowercase()}",
+                    style = AsciiType.small,
+                    color = c.accent2,
+                )
+                AsciiButton("new instead", {
+                    editingId = null
+                    bmAlias = TextFieldValue("")
+                    bmTitle = TextFieldValue("")
+                    bmTarget = TextFieldValue("")
+                    pipeKeyword = TextFieldValue("")
+                    pipeName = TextFieldValue("")
+                    pipeUrl = TextFieldValue("")
+                })
+            }
         }
 
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
@@ -1011,7 +1064,7 @@ fun QuickAddInlineCard(
                     Row {
                         AsciiButton("cancel", onCancel)
                         AsciiButton(
-                            label = "+ save b",
+                            label = if (editingId != null) "update b" else "+ save b",
                             primary = true,
                             onClick = {
                                 val rawU = bmTarget.text.trim()
@@ -1030,19 +1083,19 @@ fun QuickAddInlineCard(
                                         u.substringAfterLast('/').contains('.') -> BookmarkKind.FILE
                                         else -> BookmarkKind.FOLDER
                                     }
-                                    onSaveBookmark(a, t, u, detectedKind, "")
+                                    onSaveBookmark(a, t, u, detectedKind, "", editingId)
                                 }
                             },
                         )
                     }
                 }
-                if (existingBookmarks.isNotEmpty() && onDeleteBookmark != null) {
+                if (existingBookmarks.isNotEmpty()) {
                     Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
-                    AsciiText("saved bookmarks (tap [x] to delete):", style = AsciiType.small, color = c.dim)
+                    AsciiText("saved bookmarks ([edit] or [x] delete):", style = AsciiType.small, color = c.dim)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 110.dp)
+                            .heightIn(max = 120.dp)
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
@@ -1055,11 +1108,19 @@ fun QuickAddInlineCard(
                                 AsciiText(
                                     text = "[b ${bm.alias}] ${bm.title}",
                                     style = AsciiType.small,
-                                    color = c.fg,
+                                    color = if (editingId == bm.id) c.accent else c.fg,
                                     maxLines = 1,
                                     modifier = Modifier.weight(1f),
                                 )
-                                AsciiButton("x", { onDeleteBookmark(bm) })
+                                AsciiButton("edit", {
+                                    editingId = bm.id
+                                    bmAlias = TextFieldValue(bm.alias, TextRange(bm.alias.length))
+                                    bmTitle = TextFieldValue(bm.title, TextRange(bm.title.length))
+                                    bmTarget = TextFieldValue(bm.target, TextRange(bm.target.length))
+                                })
+                                if (onDeleteBookmark != null) {
+                                    AsciiButton("x", { onDeleteBookmark(bm) })
+                                }
                             }
                         }
                     }
@@ -1128,7 +1189,7 @@ fun QuickAddInlineCard(
                     Row {
                         AsciiButton("cancel", onCancel)
                         AsciiButton(
-                            label = "+ save s",
+                            label = if (editingId != null) "update s" else "+ save s",
                             primary = true,
                             onClick = {
                                 val u = QueryRouter.normalizePipeUrlTemplate(pipeUrl.text)
@@ -1139,19 +1200,19 @@ fun QuickAddInlineCard(
                                 if (k.isEmpty() || u.isEmpty()) {
                                     errorMsg = "! enter keyword and search url"
                                 } else {
-                                    onSavePipe(k, n, u)
+                                    onSavePipe(k, n, u, editingId)
                                 }
                             },
                         )
                     }
                 }
-                if (existingEngines.isNotEmpty() && onDeleteEngine != null) {
+                if (existingEngines.isNotEmpty()) {
                     Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
-                    AsciiText("saved search pipes (tap [x] to delete):", style = AsciiType.small, color = c.dim)
+                    AsciiText("saved search pipes ([edit] or [x] delete):", style = AsciiType.small, color = c.dim)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 110.dp)
+                            .heightIn(max = 120.dp)
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
@@ -1164,11 +1225,17 @@ fun QuickAddInlineCard(
                                 AsciiText(
                                     text = "[s ${eng.keyword}] ${eng.name}",
                                     style = AsciiType.small,
-                                    color = if (eng.isDefault) c.accent else c.fg,
+                                    color = if (editingId == eng.id || eng.isDefault) c.accent else c.fg,
                                     maxLines = 1,
                                     modifier = Modifier.weight(1f),
                                 )
-                                if (existingEngines.size > 1) {
+                                AsciiButton("edit", {
+                                    editingId = eng.id
+                                    pipeKeyword = TextFieldValue(eng.keyword, TextRange(eng.keyword.length))
+                                    pipeName = TextFieldValue(eng.name, TextRange(eng.name.length))
+                                    pipeUrl = TextFieldValue(eng.urlTemplate, TextRange(eng.urlTemplate.length))
+                                })
+                                if (existingEngines.size > 1 && onDeleteEngine != null) {
                                     AsciiButton("x", { onDeleteEngine(eng) })
                                 }
                             }
@@ -1382,6 +1449,9 @@ private fun AsciiRaycastRow(
                 if (bm.kind == BookmarkKind.FOLDER && bm.alias.isNotBlank()) {
                     AsciiButton("ls", { onScopeIntoFolder("b ${bm.alias}") })
                 }
+                if (onEditBookmark != null) {
+                    AsciiButton("edit", { onEditBookmark(bm) }, spokenLabel = "edit bookmark ${bm.title}")
+                }
                 if (onDeleteBookmark != null) {
                     AsciiButton("x", { onDeleteBookmark(bm) }, spokenLabel = "delete bookmark ${bm.title}")
                 }
@@ -1503,8 +1573,13 @@ private fun AsciiRaycastRow(
                     maxLines = 1,
                     modifier = Modifier.weight(1f),
                 )
-                if (item.isHome && onDeleteEngine != null) {
-                    AsciiButton("x", { onDeleteEngine(eng) }, spokenLabel = "delete pipe ${eng.name}")
+                if (item.isHome) {
+                    if (onEditEngine != null) {
+                        AsciiButton("edit", { onEditEngine(eng) }, spokenLabel = "edit pipe ${eng.name}")
+                    }
+                    if (onDeleteEngine != null) {
+                        AsciiButton("x", { onDeleteEngine(eng) }, spokenLabel = "delete pipe ${eng.name}")
+                    }
                 } else {
                     AsciiText(
                         text = " pipe",

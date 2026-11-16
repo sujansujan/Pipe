@@ -221,12 +221,12 @@ class MainActivity : ComponentActivity() {
                         refreshDeviceDataAsync()
                     }
                 },
-                onQuickSaveBookmark = { alias, title, target, kind, tags ->
-                    viewModel.quickSaveBookmark(alias, title, target, kind, tags)
+                onQuickSaveBookmark = { alias, title, target, kind, tags, editingId ->
+                    viewModel.quickSaveBookmark(alias, title, target, kind, tags, editingId)
                     refreshDeviceDataAsync()
                 },
-                onQuickSavePipe = { kw, name, url ->
-                    viewModel.quickSavePipe(kw, name, url)
+                onQuickSavePipe = { kw, name, url, editingId ->
+                    viewModel.quickSavePipe(kw, name, url, editingId)
                 },
                 onQuickRemoveItem = { isBm, id ->
                     viewModel.quickRemoveById(isBm, id)
