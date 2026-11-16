@@ -420,6 +420,8 @@ sealed interface PaletteItem {
         val entry: DictionaryEntry?,
         val query: String,
         val isSetupPrompt: Boolean = false,
+        val setupTitle: String = "Link Offline Dictionary (.tsv / .json / .gz)",
+        val setupSubtitle: String = "tap to auto-detect from Download/ or pick dictionary file",
         override val usageKey: String = "dict:${entry?.wordLower ?: query.lowercase()}",
         override val rankScore: Int = 9500,
         override val usageCount: Int = 0,
