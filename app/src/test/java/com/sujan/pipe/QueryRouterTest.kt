@@ -157,7 +157,7 @@ class QueryRouterTest {
         assertEquals("d", restored.prefixes?.dictionary)
         assertEquals("cl", restored.prefixes?.clipboard)
         assertEquals(listOf("Telegram", "WhatsApp"), restored.excludedFolders)
-        assertEquals(9, restored.usageCounts?.get("bm:bm_dl"))
+        assertEquals(9, restored.usageCounts["bm:bm_dl"])
     }
 
     @Test

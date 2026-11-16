@@ -58,6 +58,7 @@ data class DictionaryEntry(
  * Full v2 JSON backup bundle containing search pipes, bookmarks, custom prefixes, excluded folders, and usage counts.
  */
 data class FullBackupBundle(
+    val version: Int = 2,
     val engines: List<SearchEngine>,
     val bookmarks: List<PipeBookmark> = emptyList(),
     val prefixes: PrefixConfig? = null,

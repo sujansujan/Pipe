@@ -1922,7 +1922,19 @@ object QueryRouter {
             sb.append("\"${escapeJson(f)}\"")
             if (idx < bundle.excludedFolders.lastIndex) sb.append(", ")
         }
-        sb.append("]\n")
+        sb.append("],\n")
+        sb.append("  \"usageCounts\": {")
+        val usageEntries = bundle.usageCounts.entries.toList()
+        if (usageEntries.isNotEmpty()) {
+            sb.append("\n")
+            usageEntries.forEachIndexed { idx, (k, v) ->
+                sb.append("    \"${escapeJson(k)}\": $v")
+                if (idx < usageEntries.lastIndex) sb.append(",")
+                sb.append("\n")
+            }
+            sb.append("  ")
+        }
+        sb.append("}\n")
         sb.append("}")
         return sb.toString()
     }
@@ -1983,11 +1995,26 @@ object QueryRouter {
                 .toList()
         } else emptyList()
 
+        val usageSection = extractJsonObjectSection(trimmed, "usageCounts")
+        val parsedUsage = if (usageSection != null) {
+            Regex("\"((?:[^\"\\\\]|\\\\.)*)\"\\s*:\\s*(\\d+)").findAll(usageSection)
+                .mapNotNull { m ->
+                    val k = m.groupValues[1].replace("\\\"", "\"").replace("\\\\", "\\")
+                    val v = m.groupValues[2].toIntOrNull()
+                    if (k.isNotEmpty() && v != null) k to v else null
+                }
+                .toMap()
+        } else emptyMap()
+
+        val parsedVersion = Regex("\"version\"\\s*:\\s*(\\d+)").find(trimmed)?.groupValues?.get(1)?.toIntOrNull() ?: 2
+
         return FullBackupBundle(
+            version = parsedVersion,
             engines = parsedEngines,
             bookmarks = parsedBookmarks,
             prefixes = parsedPrefixes,
             excludedFolders = parsedExcluded,
+            usageCounts = parsedUsage,
         )
     }
 
