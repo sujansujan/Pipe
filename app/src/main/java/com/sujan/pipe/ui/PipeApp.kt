@@ -1351,6 +1351,8 @@ private fun AsciiRaycastRow(
     onBookmarkFile: ((LocalFileItem) -> Unit)?,
     onShareFile: ((LocalFileItem) -> Unit)? = null,
     onPreviewImage: ((LocalFileItem) -> Unit)? = null,
+    onEditBookmark: ((PipeBookmark) -> Unit)? = null,
+    onEditEngine: ((SearchEngine) -> Unit)? = null,
     onDeleteBookmark: ((PipeBookmark) -> Unit)? = null,
     onDeleteEngine: ((SearchEngine) -> Unit)? = null,
 ) {
