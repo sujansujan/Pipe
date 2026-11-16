@@ -98,8 +98,70 @@ object FuzzyMatcher {
         return scorePreLowered(q, c)
     }
 
+    /**
+     * Computes a character-level boolean mask of length [text.length] marking which characters in [text]
+     * matched [rawFilterQuery] (supporting exact word-boundary prefixes, contiguous substrings, multi-word
+     * token queries like `citi pdf`, and verified subsequence hits). Used by fzf-style UI highlighting.
+     */
+    fun findMatchedIndices(text: String, rawFilterQuery: String): BooleanArray {
+        val mask = BooleanArray(text.length)
+        if (text.isEmpty()) return mask
+        val cleanQuery = rawFilterQuery.trim().removePrefix("#").lowercase()
+        if (cleanQuery.isEmpty()) return mask
+
+        val lowerText = text.lowercase()
+        val tokens = cleanQuery.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return mask
+
+        for (token in tokens) {
+            val tLen = token.length
+            if (tLen > lowerText.length) continue
+
+            // 1. Prefer word-boundary prefix match
+            var wbStart = -1
+            var i = 0
+            while (i <= lowerText.length - tLen) {
+                if (i == 0 || isWordSep(lowerText[i - 1])) {
+                    if (lowerText.regionMatches(i, token, 0, tLen, ignoreCase = false)) {
+                        wbStart = i
+                        break
+                    }
+                }
+                i++
+            }
+            if (wbStart >= 0) {
+                for (k in wbStart until (wbStart + tLen)) {
+                    mask[k] = true
+                }
+                continue
+            }
+
+            // 2. Contiguous substring match
+            val subIdx = lowerText.indexOf(token)
+            if (subIdx >= 0) {
+                for (k in subIdx until (subIdx + tLen)) {
+                    mask[k] = true
+                }
+                continue
+            }
+
+            // 3. Subsequence match (only when scoreSingleTokenSubsequence > 0)
+            if (tLen >= 2 && scoreSingleTokenSubsequence(token, lowerText) > 0) {
+                var qIdx = 0
+                for (cIdx in lowerText.indices) {
+                    if (qIdx < tLen && lowerText[cIdx] == token[qIdx]) {
+                        mask[cIdx] = true
+                        qIdx++
+                        if (qIdx == tLen) break
+                    }
+                }
+            }
+        }
+        return mask
+    }
+
     private fun isWordSep(ch: Char): Boolean =
-        ch == ' ' || ch == '_' || ch == '-' || ch == '.' || ch == '/' || ch == '(' || ch == ')'
+        ch == ' ' || ch == '_' || ch == '-' || ch == '.' || ch == '/' || ch == '(' || ch == ')' || ch == ':'
 
     private fun checkWordBoundaryMatch(q: String, c: String): Int {
         val qLen = q.length
@@ -575,9 +637,6 @@ object QueryRouter {
                 it.keyword.equals(firstLower, ignoreCase = true)
             }
 
-            // If BOTH a Bookmark and a Search Pipe have the same name (e.g. `abb`):
-            // - If the user typed a search query (`abb dune`) and the bookmark is NOT a folder, route to the Search Pipe `abb`!
-            // - If the user only typed `abb ` (trailing space, no query yet), keep in `ALL` mode so both `[bm] abb` and `[|abb]` appear side-by-side!
             if (matchedBookmark != null && matchedEngine != null) {
                 return when {
                     remainder.isNotEmpty() && matchedBookmark.kind != BookmarkKind.FOLDER ->
@@ -810,14 +869,12 @@ object QueryRouter {
             PromptIntentMode.ALL -> {
                 val q = cmd.filterQuery.trim()
                 val pool = mutableListOf<PaletteItem>()
-                // Deduplicate raw storage folders/files that are already represented as Bookmarks
                 val bookmarkedPaths = bookmarks
                     .filter { it.kind != BookmarkKind.LINK }
                     .map { it.target.trimEnd('/').lowercase() }
                     .toSet()
 
                 if (q.isEmpty()) {
-                    // Empty input (idle): show top items ranked by MOST USED (`usageCount`) without duplicate folders!
                     bookmarks.forEachIndexed { idx, bm ->
                         val uKey = "bm:${bm.id}"
                         val uCount = usageOf(uKey)
@@ -872,7 +929,6 @@ object QueryRouter {
                             .thenByDescending { it.rankScore }
                     ).take(MAX_PALETTE_RESULTS)
                 } else {
-                    // Active search: sort strictly by relevance (`rankScore`) first so what you type ALWAYS appears at #1!
                     val qLower = q.lowercase()
                     bookmarks.forEach { bm ->
                         val s = FuzzyMatcher.scoreBookmark(q, bm)
@@ -934,7 +990,6 @@ object QueryRouter {
                         }
                     }
 
-                    // Always include the default fallback web search at the bottom if not already matched
                     val defEng = engines.firstOrNull { it.isDefault } ?: DefaultEngines.LIST.first()
                     if (pool.none { it is PaletteItem.EngineAction && it.engine.id == defEng.id }) {
                         val uKey = "eng:${defEng.id}"
@@ -1073,7 +1128,6 @@ object QueryRouter {
                 }
             }
             else -> {
-                // Zero-syntax smart auto-detection (`+ Ramesh 9841234567`, `+ abb audiobookbay.lu`, `+ abb audiobookbay.lu/?s=dune`)
                 val out = mutableListOf<PaletteItem>()
                 val autoContact = parseQuickAddContact(sub)
                 if (autoContact != null && !sub.contains("http") && !sub.contains('/') && !sub.contains('.')) {

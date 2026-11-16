@@ -188,7 +188,7 @@ class PipeRepository(context: Context) {
             .apply()
     }
 
-    fun loadOverlayOpacity(): Float = prefs.getFloat("overlay_opacity_v1", 0.82f).coerceIn(0.15f, 1.0f)
+    fun loadOverlayOpacity(): Float = prefs.getFloat("overlay_opacity_v1", 0.88f).coerceIn(0.15f, 1.0f)
     fun saveOverlayOpacity(alpha: Float) = prefs.edit().putFloat("overlay_opacity_v1", alpha.coerceIn(0.15f, 1.0f)).apply()
 
     fun loadOverlayDimAmount(): Float = prefs.getFloat("overlay_dim_v1", 0.35f).coerceIn(0.0f, 0.85f)
@@ -197,14 +197,14 @@ class PipeRepository(context: Context) {
     fun loadOverlayCornerRadiusDp(): Int = prefs.getInt("overlay_corner_dp_v1", 16).coerceIn(0, 28)
     fun saveOverlayCornerRadiusDp(dp: Int) = prefs.edit().putInt("overlay_corner_dp_v1", dp.coerceIn(0, 28)).apply()
 
-    fun loadOverlayBottomAnchored(): Boolean = prefs.getBoolean("overlay_bottom_v1", false)
-    fun saveOverlayBottomAnchored(bottom: Boolean) = prefs.edit().putBoolean("overlay_bottom_v1", bottom).apply()
+    fun loadOverlayBottomAnchored(): Boolean = prefs.getBoolean("overlay_bottom_v2", true)
+    fun saveOverlayBottomAnchored(bottom: Boolean) = prefs.edit().putBoolean("overlay_bottom_v2", bottom).apply()
 
     fun loadOverlayForceDark(): Boolean = prefs.getBoolean("overlay_force_dark_v1", true)
     fun saveOverlayForceDark(forceDark: Boolean) = prefs.edit().putBoolean("overlay_force_dark_v1", forceDark).apply()
 
-    fun loadOverlayShowIdleSuggestions(): Boolean = prefs.getBoolean("overlay_idle_suggestions_v1", false)
-    fun saveOverlayShowIdleSuggestions(show: Boolean) = prefs.edit().putBoolean("overlay_idle_suggestions_v1", show).apply()
+    fun loadOverlayShowIdleSuggestions(): Boolean = prefs.getBoolean("overlay_idle_suggestions_v2", true)
+    fun saveOverlayShowIdleSuggestions(show: Boolean) = prefs.edit().putBoolean("overlay_idle_suggestions_v2", show).apply()
 
     fun loadPreferredBrowserPackage(): String = prefs.getString("preferred_browser_pkg_v1", "auto") ?: "auto"
     fun savePreferredBrowserPackage(pkg: String) = prefs.edit().putString("preferred_browser_pkg_v1", pkg).apply()
@@ -221,7 +221,7 @@ class PipeRepository(context: Context) {
     fun loadSearchBoxPrefix(): String = prefs.getString("search_box_prefix_v1", "> ") ?: "> "
     fun saveSearchBoxPrefix(prefix: String) = prefs.edit().putString("search_box_prefix_v1", prefix).apply()
 
-    fun loadSearchBoxPlaceholder(): String = prefs.getString("search_box_placeholder_v1", "pipe (c, f, d, app, dl, yt)...") ?: ""
+    fun loadSearchBoxPlaceholder(): String = prefs.getString("search_box_placeholder_v1", "pipe (c, f, b, s, app)...") ?: ""
     fun saveSearchBoxPlaceholder(hint: String) = prefs.edit().putString("search_box_placeholder_v1", hint).apply()
 
     fun loadShowSearchBoxScopeBadge(): Boolean = prefs.getBoolean("search_box_scope_badge_v1", true)

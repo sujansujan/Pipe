@@ -128,6 +128,19 @@ class QueryRouterTest {
     }
 
     @Test
+    fun `findMatchedIndices marks word-boundary, multi-token, and subsequence spans accurately`() {
+        val mask1 = FuzzyMatcher.findMatchedIndices("Kalika Prasad", "kal")
+        assertTrue(mask1[0] && mask1[1] && mask1[2])
+        assertFalse(mask1[3])
+
+        val mask2 = FuzzyMatcher.findMatchedIndices("citizenship_scan.pdf", "citi pdf")
+        assertTrue(mask2[0] && mask2[1] && mask2[2] && mask2[3])
+        assertFalse(mask2[4])
+        val len = "citizenship_scan.pdf".length
+        assertTrue(mask2[len - 3] && mask2[len - 2] && mask2[len - 1])
+    }
+
+    @Test
     fun `contact fuzzy search and folder bookmark aliases parse and rank accurately`() {
         val cmdContact = QueryRouter.parsePromptCommand("c kali", bookmarks)
         assertEquals(PromptIntentMode.CONTACTS_ONLY, cmdContact.mode)
@@ -159,7 +172,6 @@ class QueryRouterTest {
         assertTrue(fileMatches.first().isDirectory)
         assertEquals("Documents", fileMatches.first().name)
 
-        // Verify strict alias scoping (`f` -> only FileAction items; `c` -> only ContactAction items)
         val usage = mapOf("file:/storage/emulated/0/Documents" to 5, "bm:bm_dl" to 12)
         val fOnly = QueryRouter.buildPaletteResults(
             rawInput = "f doc",
@@ -185,7 +197,6 @@ class QueryRouterTest {
         )
         assertTrue(cOnly.all { it is com.sujan.pipe.domain.PaletteItem.ContactAction })
 
-        // Verify empty / no-alias input combines all categories, caps at max 10, and sorts by most used
         val allMostUsed = QueryRouter.buildPaletteResults(
             rawInput = "",
             engines = engines,
@@ -199,7 +210,6 @@ class QueryRouterTest {
         assertTrue(allMostUsed.size <= 10)
         assertEquals("bm:bm_dl", allMostUsed.first().usageKey)
 
-        // Verify multi-word file ("sasu ama.jpg") and nested folder-path matching ("Nagarikata")
         val deepStorage = listOf(
             com.sujan.pipe.model.LocalFileItem("sasu ama.jpg", "/storage/emulated/0/DCIM/Camera/sasu ama.jpg", isDirectory = false, parentName = "DCIM/Camera", sizeBytes = 2_400_000L),
             com.sujan.pipe.model.LocalFileItem("Nagarikata", "/storage/emulated/0/Documents/Legal/Nagarikata", isDirectory = true, parentName = "Documents/Legal", sizeBytes = 0L),
@@ -210,45 +220,37 @@ class QueryRouterTest {
         assertEquals(1, sasuMatches.size)
         assertEquals("sasu ama.jpg", sasuMatches.first().name)
 
-        // Searching "nagarikata" returns BOTH the Nagarikata folder AND the files inside .../Nagarikata/
         val nagarikataMatches = FuzzyMatcher.filterFiles("nagarikata", deepStorage)
         assertEquals(3, nagarikataMatches.size)
 
-        // Verify Feature 1: Contact action chaining (`c kali wa` -> WHATSAPP, filterQuery = "kali")
         val cmdWa = QueryRouter.parsePromptCommand("c kali wa", bookmarks, engines)
         assertEquals(PromptIntentMode.CONTACTS_ONLY, cmdWa.mode)
         assertEquals("kali", cmdWa.filterQuery)
         assertEquals(com.sujan.pipe.model.ContactQuickAction.WHATSAPP, cmdWa.contactAction)
 
-        // Verify Feature 6: Direct App Launcher alias (`app mix` -> APPS_ONLY)
         val cmdApp = QueryRouter.parsePromptCommand("app mix", bookmarks, engines)
         assertEquals(PromptIntentMode.APPS_ONLY, cmdApp.mode)
         assertEquals("mix", cmdApp.filterQuery)
 
-        // Verify v1.9 Contact Monogram badge fallback
         assertEquals("KP", ContactItem("2", "Kalika Prasad", "9841234567").monogram)
         assertEquals("SD", ContactItem("1", "Sujan Devkota", "9841000000").monogram)
 
-        // Verify v1.9 Quick Add Contact parser (`add c Ramesh Dai 9841234567`)
         val parsedContact = QueryRouter.parseQuickAddContact("Ramesh Dai 9841234567")
         assertNotNull(parsedContact)
         assertEquals("Ramesh Dai", parsedContact?.first)
         assertEquals("9841234567", parsedContact?.second)
 
-        // Verify v1.9 Quick Add Bookmark parser with Clipboard auto-fill
         val parsedBm = QueryRouter.parseQuickAddBookmark("hn Hacker News", "https://news.ycombinator.com")
         assertNotNull(parsedBm)
         assertEquals("hn", parsedBm?.first)
         assertEquals("Hacker News", parsedBm?.second)
         assertEquals("https://news.ycombinator.com", parsedBm?.third?.first)
 
-        // Verify v1.9 Smart {query} URL template normalization
         assertEquals(
             "https://audiobookbay.lu/?s={query}",
             QueryRouter.normalizePipeUrlTemplate("https://audiobookbay.lu/?s=dune"),
         )
 
-        // Verify v1.9/v2.0 `add` (`+`) and `del` (`-`) prompt command modes
         val cmdAdd = QueryRouter.parsePromptCommand("+ Ramesh Dai 9841234567", bookmarks, engines)
         assertEquals(PromptIntentMode.ADD_COMMAND, cmdAdd.mode)
         val addResults = QueryRouter.buildPaletteResults(
@@ -264,7 +266,6 @@ class QueryRouterTest {
         assertTrue(addResults.isNotEmpty())
         assertTrue((addResults.first() as com.sujan.pipe.domain.PaletteItem.QuickAddAction).isReadyToCommit)
 
-        // Verify v2.0 `b <alias>` (Bookmark) vs `s <keyword>` (Search Pipe) separation with identical name `abb`
         val customBookmarks = bookmarks + com.sujan.pipe.model.PipeBookmark(
             id = "bm_abb",
             alias = "abb",

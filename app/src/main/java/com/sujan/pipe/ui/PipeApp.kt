@@ -64,14 +64,20 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.platform.LocalContext
 import com.sujan.pipe.data.ExternalTextMode
+import com.sujan.pipe.domain.FuzzyMatcher
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.domain.QuickAddKind
@@ -101,6 +107,56 @@ import com.sujan.pipe.ui.ascii.ThemeMode
 import com.sujan.pipe.ui.ascii.frame
 import com.sujan.pipe.ui.ascii.leader
 import com.sujan.pipe.ui.ascii.rememberCols
+
+/**
+ * Builds an [AnnotatedString] with fzf-style matched character spans highlighted in bold + underline
+ * using [highlightColor], while unmatched characters use [baseColor].
+ */
+fun buildFzfHighlightedText(
+    text: String,
+    highlightQuery: String,
+    baseColor: Color,
+    highlightColor: Color,
+): AnnotatedString {
+    if (text.isEmpty() || highlightQuery.isBlank()) {
+        return AnnotatedString(text)
+    }
+    val mask = FuzzyMatcher.findMatchedIndices(text, highlightQuery)
+    var anyHit = false
+    for (b in mask) {
+        if (b) {
+            anyHit = true
+            break
+        }
+    }
+    if (!anyHit) {
+        return AnnotatedString(text)
+    }
+    return buildAnnotatedString {
+        var i = 0
+        while (i < text.length) {
+            val isHit = mask[i]
+            var j = i + 1
+            while (j < text.length && mask[j] == isHit) {
+                j++
+            }
+            withStyle(
+                if (isHit) {
+                    SpanStyle(
+                        color = highlightColor,
+                        fontWeight = FontWeight.Bold,
+                        textDecoration = TextDecoration.Underline,
+                    )
+                } else {
+                    SpanStyle(color = baseColor)
+                }
+            ) {
+                append(text.substring(i, j))
+            }
+            i = j
+        }
+    }
+}
 
 @Composable
 fun PipeApp(
@@ -505,6 +561,7 @@ private fun PipePromptScreen(
                 onAliasPillClick(alias)
                 runCatching { focusRequester.requestFocus() }
             },
+            onOpenChildFile = onOpenLocalFile,
             onBookmarkFile = { f ->
                 val suggestedAlias = f.name.lowercase().filter { it.isLetterOrDigit() }.take(6)
                 inlineQuickAdd = com.sujan.pipe.domain.PaletteItem.QuickAddAction(
@@ -527,11 +584,6 @@ private fun PipePromptScreen(
     }
 }
 
-/**
- * Shared Raycast-inspired ASCII Command Palette Window used in both `~/pipe` and `~/pipe/overlay`.
- * Features character-drawn `┌──┐`, `├──┤`, `└──┘` borders, a unified top-10 result list sorted by
- * usage frequency (`#N`), strict alias scoping (`c`, `f`, `d`, `bm`, `dl`, `yt`), and a Raycast footer bar.
- */
 /**
  * 44dp square-cornered, 1dp-bordered ASCII scope chip used in the horizontally scrollable scope bar.
  */
@@ -573,7 +625,7 @@ fun AsciiScopeChip(
  * Bottom-anchored ASCII Command Palette Window (`~/pipe`).
  * Layout stack (top to bottom):
  * 1. Header (`+- ~/pipe` + `[+]`, `[lib]`, `[set]`)
- * 2. Results list (`reverseLayout = true` so `#1` best match sits closest to the input row with `|>`, surface bg, 3dp accent left border, and `#1`)
+ * 2. Results list (`reverseLayout = true` so `#1` best match sits closest to the input row with `|>`, surface bg, 3dp accent left border, fzf highlighting, and `#1`)
  * 3. Horizontally scrollable row of 44dp bordered scope chips (`c:`, `f:`, `b:`, `s:`, `app:`, `dl:`, `yt:`) with active scope highlighted
  * 4. Input row above the keyboard (`>` prefix, field, `[scope]` badge, `[x]`, and primary `[RET ->]` button)
  */
@@ -611,6 +663,7 @@ fun AsciiRaycastPaletteWindow(
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
     onScopeIntoFolder: (String) -> Unit,
+    onOpenChildFile: ((LocalFileItem) -> Unit)? = null,
     onBookmarkFile: ((LocalFileItem) -> Unit)? = null,
     onShareFile: ((LocalFileItem) -> Unit)? = null,
     onPreviewImage: ((LocalFileItem) -> Unit)? = null,
@@ -621,6 +674,20 @@ fun AsciiRaycastPaletteWindow(
     val c = LocalAscii.current
     val clipboard = LocalClipboardManager.current
     var actionSheetItem by remember { mutableStateOf<com.sujan.pipe.domain.PaletteItem?>(null) }
+    var expandedFolderPath by remember { mutableStateOf<String?>(null) }
+    var expandedFolderChildren by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
+
+    LaunchedEffect(expandedFolderPath) {
+        val path = expandedFolderPath
+        expandedFolderChildren = if (path != null) {
+            withContext(Dispatchers.IO) {
+                com.sujan.pipe.data.DeviceIntegrationManager.listDirectChildren(path)
+            }
+        } else {
+            emptyList()
+        }
+    }
+
     val scopeBadge = when (parsedCommand.mode) {
         PromptIntentMode.SCOPED_FOLDER -> "b:${parsedCommand.scopedFolderBookmark?.alias ?: "folder"}"
         PromptIntentMode.ENGINE_ONLY -> "s:${parsedCommand.matchedEngine?.keyword ?: "pipe"}"
@@ -732,6 +799,11 @@ fun AsciiRaycastPaletteWindow(
                 itemsIndexed(results, key = { idx, item -> "${idx}_${item.usageKey}" }) { index, item ->
                     val isTop = index == 0
                     val accentCol = c.accent
+                    val folderPath = when (item) {
+                        is com.sujan.pipe.domain.PaletteItem.FileAction -> if (item.file.isDirectory) item.file.absolutePath else null
+                        is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> if (item.bookmark.kind == BookmarkKind.FOLDER) item.bookmark.target else null
+                        else -> null
+                    }
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -749,8 +821,17 @@ fun AsciiRaycastPaletteWindow(
                         AsciiRaycastRow(
                             item = item,
                             isTop = isTop,
+                            highlightQuery = parsedCommand.filterQuery,
+                            isFolderExpanded = folderPath != null && expandedFolderPath == folderPath,
+                            expandedChildren = if (folderPath != null && expandedFolderPath == folderPath) expandedFolderChildren else emptyList(),
                             onExecute = { onExecuteItem(item) },
                             onOpenActionSheet = { actionSheetItem = item },
+                            onToggleFolderPeek = if (folderPath != null) {
+                                { path -> expandedFolderPath = if (expandedFolderPath == path) null else path }
+                            } else null,
+                            onOpenChildFile = onOpenChildFile,
+                            onShareChildFile = onShareFile,
+                            onPreviewChildImage = onPreviewImage,
                         )
                     }
                 }
@@ -1095,7 +1176,6 @@ fun QuickAddInlineCard(
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // Standardized 3-tab header: `[+c contact]  [+b bookmark]  [+s pipe]  [x]`
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1622,20 +1702,19 @@ fun AsciiKindBadge(
         AsciiText(
             text = tag,
             style = AsciiType.small,
-            color = if (inverted) color else color,
+            color = color,
             maxLines = 1,
         )
     }
 }
 
 /**
- * Step 2 Result Row:
+ * Step 2 Result Row (shared across `~/pipe` and `~/pipe/overlay`):
  * - Fixed-width bordered kind tag (`app`, `c`, `f.`, `d/`, `b:bm`, `b:d/`, `b:f.`, `s:yt`)
- * - Single-line title
- * - Dim single-line subtitle
+ * - Single-line title + dim subtitle with fzf character span highlighting (`buildFzfHighlightedText`)
+ * - Optional `[+]`/`[-]` inline ASCII tree peek (`├─` / `└──`) for folders (`d/` and `b:d/`)
  * - `#1` badge on top match
- * - At most ONE trailing `[⋯]` button (44dp+ touch target)
- * - Tap runs primary action; long-press or `[⋯]` opens `AsciiResultActionSheet`.
+ * - Trailing `[⋯]` button (44dp+ touch target) opening `AsciiResultActionSheet`.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1644,6 +1723,13 @@ fun AsciiRaycastRow(
     isTop: Boolean,
     onExecute: () -> Unit,
     onOpenActionSheet: () -> Unit = {},
+    highlightQuery: String = "",
+    isFolderExpanded: Boolean = false,
+    expandedChildren: List<LocalFileItem> = emptyList(),
+    onToggleFolderPeek: ((String) -> Unit)? = null,
+    onOpenChildFile: ((LocalFileItem) -> Unit)? = null,
+    onShareChildFile: ((LocalFileItem) -> Unit)? = null,
+    onPreviewChildImage: ((LocalFileItem) -> Unit)? = null,
 ) {
     val c = LocalAscii.current
     val src = remember { MutableInteractionSource() }
@@ -1660,6 +1746,7 @@ fun AsciiRaycastRow(
     val titleText: String
     val subtitleText: String
     val hasActionSheet: Boolean
+    val folderPeekPath: String?
 
     when (item) {
         is com.sujan.pipe.domain.PaletteItem.AppAction -> {
@@ -1668,6 +1755,7 @@ fun AsciiRaycastRow(
             titleText = item.app.label
             subtitleText = item.app.packageName
             hasActionSheet = true
+            folderPeekPath = null
         }
         is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
             tagText = "c"
@@ -1675,6 +1763,7 @@ fun AsciiRaycastRow(
             titleText = item.contact.displayName
             subtitleText = item.contact.phoneNumber
             hasActionSheet = true
+            folderPeekPath = null
         }
         is com.sujan.pipe.domain.PaletteItem.FileAction -> {
             val f = item.file
@@ -1683,6 +1772,7 @@ fun AsciiRaycastRow(
             titleText = f.name
             subtitleText = "${f.parentName} · ${f.formattedSize}"
             hasActionSheet = true
+            folderPeekPath = if (f.isDirectory) f.absolutePath else null
         }
         is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> {
             val bm = item.bookmark
@@ -1699,6 +1789,7 @@ fun AsciiRaycastRow(
             titleText = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title
             subtitleText = if (bm.tags.isNotBlank()) "${bm.target} · ${bm.tags}" else bm.target
             hasActionSheet = true
+            folderPeekPath = if (bm.kind == BookmarkKind.FOLDER) bm.target else null
         }
         is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
             val eng = item.engine
@@ -1707,6 +1798,7 @@ fun AsciiRaycastRow(
             titleText = if (item.isHome) eng.name else "${eng.name}: \"${item.query}\""
             subtitleText = if (item.isHome) eng.homeUrl else item.targetUrl
             hasActionSheet = true
+            folderPeekPath = null
         }
         is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
             val h = item.entry
@@ -1715,6 +1807,7 @@ fun AsciiRaycastRow(
             titleText = h.rawInput
             subtitleText = "-> ${h.engineName.lowercase()} (${h.resolvedUrl})"
             hasActionSheet = true
+            folderPeekPath = null
         }
         is com.sujan.pipe.domain.PaletteItem.QuickAddAction -> {
             tagText = item.kind.tag
@@ -1726,6 +1819,7 @@ fun AsciiRaycastRow(
             titleText = item.title
             subtitleText = item.subtitle
             hasActionSheet = false
+            folderPeekPath = null
         }
         is com.sujan.pipe.domain.PaletteItem.QuickRemoveAction -> {
             tagText = "-del"
@@ -1733,96 +1827,190 @@ fun AsciiRaycastRow(
             titleText = item.displayTitle
             subtitleText = "tap or press RET to delete"
             hasActionSheet = false
+            folderPeekPath = null
         }
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 50.dp)
-            .background(rowBg)
-            .combinedClickable(
-                interactionSource = src,
-                indication = null,
-                role = Role.Button,
-                onClick = onExecute,
-                onLongClick = {
-                    if (hasActionSheet) onOpenActionSheet() else onExecute()
-                },
-            )
-            .padding(start = 6.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AsciiText(
-            text = "$pointer ",
-            style = if (isTop) AsciiType.title else AsciiType.small,
-            color = if (pressed) c.bg else if (isTop) c.accent else c.dim,
+    val titleAnnotated = remember(titleText, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+        buildFzfHighlightedText(
+            text = titleText,
+            highlightQuery = highlightQuery,
+            baseColor = if (pressed) c.bg else c.fg,
+            highlightColor = if (pressed) c.bg else c.accent,
         )
-
-        AsciiKindBadge(
-            tag = tagText,
-            color = tagColor,
-            inverted = pressed,
+    }
+    val subAnnotated = remember(subtitleText, highlightQuery, pressed, c.dim, c.accent2, c.bg) {
+        buildFzfHighlightedText(
+            text = subtitleText,
+            highlightQuery = highlightQuery,
+            baseColor = if (pressed) c.bg else c.dim,
+            highlightColor = if (pressed) c.bg else c.accent2,
         )
+    }
 
-        Spacer(Modifier.width(6.dp))
-
-        if (item is com.sujan.pipe.domain.PaletteItem.ContactAction) {
-            AsciiContactAvatar(contact = item.contact)
-        } else if (item is com.sujan.pipe.domain.PaletteItem.FileAction && item.file.isImageFile) {
-            AsciiThumbnailBadge(
-                filePath = item.file.absolutePath,
-                onClick = onOpenActionSheet,
-            )
-        }
-
-        Column(
+    Column(Modifier.fillMaxWidth()) {
+        Row(
             modifier = Modifier
-                .weight(1f)
-                .padding(end = 4.dp),
+                .fillMaxWidth()
+                .heightIn(min = 50.dp)
+                .background(rowBg)
+                .combinedClickable(
+                    interactionSource = src,
+                    indication = null,
+                    role = Role.Button,
+                    onClick = onExecute,
+                    onLongClick = {
+                        if (hasActionSheet) onOpenActionSheet() else onExecute()
+                    },
+                )
+                .padding(start = 6.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             AsciiText(
-                text = titleText,
-                style = if (isTop) AsciiType.title else AsciiType.body,
-                color = if (pressed) c.bg else c.fg,
-                maxLines = 1,
+                text = "$pointer ",
+                style = if (isTop) AsciiType.title else AsciiType.small,
+                color = if (pressed) c.bg else if (isTop) c.accent else c.dim,
             )
-            AsciiText(
-                text = subtitleText,
-                style = AsciiType.small,
-                color = if (pressed) c.bg else c.dim,
-                maxLines = 1,
+
+            AsciiKindBadge(
+                tag = tagText,
+                color = tagColor,
+                inverted = pressed,
             )
+
+            Spacer(Modifier.width(6.dp))
+
+            if (item is com.sujan.pipe.domain.PaletteItem.ContactAction) {
+                AsciiContactAvatar(contact = item.contact)
+            } else if (item is com.sujan.pipe.domain.PaletteItem.FileAction && item.file.isImageFile) {
+                AsciiThumbnailBadge(
+                    filePath = item.file.absolutePath,
+                    onClick = { onPreviewChildImage?.invoke(item.file) ?: onOpenActionSheet() },
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 4.dp),
+            ) {
+                AsciiText(
+                    text = titleAnnotated,
+                    style = if (isTop) AsciiType.title else AsciiType.body,
+                    color = if (pressed) c.bg else c.fg,
+                    maxLines = 1,
+                )
+                AsciiText(
+                    text = subAnnotated,
+                    style = AsciiType.small,
+                    color = if (pressed) c.bg else c.dim,
+                    maxLines = 1,
+                )
+            }
+
+            if (folderPeekPath != null && onToggleFolderPeek != null) {
+                AsciiButton(
+                    label = if (isFolderExpanded) "-" else "+",
+                    onClick = { onToggleFolderPeek(folderPeekPath) },
+                    spokenLabel = "peek inside $titleText",
+                )
+            }
+
+            if (isTop) {
+                AsciiText(
+                    text = "#1",
+                    style = AsciiType.title,
+                    color = if (pressed) c.bg else c.accent,
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+            }
+
+            if (hasActionSheet) {
+                AsciiButton(
+                    label = "⋯",
+                    onClick = onOpenActionSheet,
+                    spokenLabel = "more actions for $titleText",
+                )
+            } else if (item is com.sujan.pipe.domain.PaletteItem.QuickAddAction) {
+                AsciiButton(
+                    label = if (item.isReadyToCommit) "save" else "form",
+                    onClick = onExecute,
+                    primary = item.isReadyToCommit,
+                )
+            } else if (item is com.sujan.pipe.domain.PaletteItem.QuickRemoveAction) {
+                AsciiButton(
+                    label = "del",
+                    onClick = onExecute,
+                    primary = true,
+                )
+            }
         }
 
-        if (isTop) {
-            AsciiText(
-                text = "#1",
-                style = AsciiType.title,
-                color = if (pressed) c.bg else c.accent,
-                maxLines = 1,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
-        }
-
-        if (hasActionSheet) {
-            AsciiButton(
-                label = "⋯",
-                onClick = onOpenActionSheet,
-                spokenLabel = "more actions for $titleText",
-            )
-        } else if (item is com.sujan.pipe.domain.PaletteItem.QuickAddAction) {
-            AsciiButton(
-                label = if (item.isReadyToCommit) "save" else "form",
-                onClick = onExecute,
-                primary = item.isReadyToCommit,
-            )
-        } else if (item is com.sujan.pipe.domain.PaletteItem.QuickRemoveAction) {
-            AsciiButton(
-                label = "del",
-                onClick = onExecute,
-                primary = true,
-            )
+        if (isFolderExpanded && folderPeekPath != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(c.bg)
+                    .padding(start = 28.dp, end = 6.dp, top = 2.dp, bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                if (expandedChildren.isEmpty()) {
+                    AsciiText(
+                        text = "└── (empty folder)",
+                        style = AsciiType.small,
+                        color = c.dim,
+                    )
+                } else {
+                    val visibleChildren = expandedChildren.take(8)
+                    visibleChildren.forEachIndexed { childIdx, child ->
+                        val branchPrefix = if (childIdx == visibleChildren.lastIndex) "└── " else "├─ "
+                        val childBaseCol = if (child.isDirectory) c.warn else c.fg
+                        val childHighlighted = remember(child.name, highlightQuery, childBaseCol, c.accent) {
+                            buildFzfHighlightedText(
+                                text = "$branchPrefix${child.name}",
+                                highlightQuery = highlightQuery,
+                                baseColor = childBaseCol,
+                                highlightColor = c.accent,
+                            )
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 38.dp)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = { onOpenChildFile?.invoke(child) },
+                                )
+                                .padding(vertical = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (child.isImageFile && onPreviewChildImage != null) {
+                                AsciiThumbnailBadge(
+                                    filePath = child.absolutePath,
+                                    onClick = { onPreviewChildImage(child) },
+                                )
+                            }
+                            AsciiText(
+                                text = childHighlighted,
+                                style = AsciiType.small,
+                                color = childBaseCol,
+                                maxLines = 1,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (!child.isDirectory && onShareChildFile != null) {
+                                AsciiButton(
+                                    label = "shr",
+                                    onClick = { onShareChildFile(child) },
+                                    spokenLabel = "share ${child.name}",
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -2183,7 +2371,6 @@ fun PipeLibraryScreen(
             },
         )
 
-        // Chip Tabs Row (`pipes`, `bookmarks`, `history`)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2209,7 +2396,6 @@ fun PipeLibraryScreen(
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
 
         when (activeTab) {
-            // TAB 1: PIPES (`::` drag handle, `*` default marker, `[⋯]` for edit/delete, pinned `+ add pipe`)
             LibraryTab.PIPES -> {
                 LazyColumn(
                     modifier = Modifier
@@ -2246,7 +2432,6 @@ fun PipeLibraryScreen(
                                 .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            // Drag handle `::` (44dp+ touch target) to reorder pipes
                             Box(
                                 modifier = Modifier
                                     .size(width = 44.dp, height = 44.dp)
@@ -2351,7 +2536,6 @@ fun PipeLibraryScreen(
                 }
             }
 
-            // TAB 2: BOOKMARKS
             LibraryTab.BOOKMARKS -> {
                 LazyColumn(
                     modifier = Modifier
@@ -2447,7 +2631,6 @@ fun PipeLibraryScreen(
                 }
             }
 
-            // TAB 3: HISTORY
             LibraryTab.HISTORY -> {
                 LazyColumn(
                     modifier = Modifier
@@ -2535,7 +2718,6 @@ fun PipeLibraryScreen(
         }
     }
 
-    // Bottom sheet for `[⋯]` in `~/pipe/lib`
     val currentTarget = sheetTarget
     if (currentTarget != null) {
         Dialog(onDismissRequest = { sheetTarget = null }) {
@@ -2681,7 +2863,6 @@ fun PipeLibraryScreen(
         }
     }
 
-    // Bookmark Add/Edit Modal Dialog
     if (bookmarkForm.isOpen) {
         Dialog(onDismissRequest = onBookmarkCancel) {
             Column(
@@ -2744,7 +2925,6 @@ fun PipeLibraryScreen(
         }
     }
 
-    // Engine Add/Edit Modal Dialog
     if (engineForm.isOpen) {
         Dialog(onDismissRequest = onEngineCancel) {
             Column(
@@ -2822,7 +3002,6 @@ fun PipeLibraryScreen(
 
 /**
  * Step 4 ASCII Slider Row (`44dp` touch height, 1dp square border, live drag + tap track, ASCII progress bar).
- * Replaces the old `-10%` / `+10%` buttons for overlay opacity and background dim.
  */
 @Composable
 fun AsciiSliderRow(
@@ -2919,13 +3098,6 @@ fun AsciiDangerBox(
     }
 }
 
-/**
- * Step 4 Redesigned Settings Screen (`~/pipe/set`):
- * - Horizontally scrollable 44dp chip row (`ovl`, `idx`, `thm`, `rte`, `bak`) that smoothly scrolls to each section in a unified `LazyColumn`.
- * - Interactive `AsciiSliderRow` sliders (instead of `-10%` / `+10%`) for overlay opacity and background dim.
- * - JSON backup laid out as a symmetric 2x2 button grid (`export file` / `import file` / `copy json` / `paste json`).
- * - `reset pipes` moved into a separate red-bordered `danger zone` box at the bottom.
- */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PipeSettingsScreen(
@@ -2972,7 +3144,6 @@ private fun PipeSettingsScreen(
     val coroutineScope = rememberCoroutineScope()
     val sections = SettingsSection.entries
 
-    // Sync active chip highlight as user scrolls through the 5 sections
     val visibleSection = remember(listState.firstVisibleItemIndex) {
         sections.getOrElse(listState.firstVisibleItemIndex.coerceIn(0, sections.lastIndex)) { SettingsSection.OVERLAY }
     }
@@ -2985,7 +3156,6 @@ private fun PipeSettingsScreen(
             },
         )
 
-        // Scroll-to-Section 44dp Bordered Chip Row (`ovl`, `idx`, `thm`, `rte`, `bak`)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3010,7 +3180,6 @@ private fun PipeSettingsScreen(
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
 
-        // Unified Scrollable Sections List (indices 0..4 correspond to `ovl`, `idx`, `thm`, `rte`, `bak`)
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -3019,7 +3188,6 @@ private fun PipeSettingsScreen(
                 .padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            // SECTION 0: `ovl` (Overlay & Search Box — with Sliders and "launch overlay")
             item(key = "sec_ovl") {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -3043,8 +3211,8 @@ private fun PipeSettingsScreen(
                             label = "overlay position",
                             selectedValue = state.overlayBottomAnchored,
                             options = listOf(
-                                false to "Top of screen",
                                 true to "Bottom (above keyboard)",
+                                false to "Top of screen",
                             ),
                             onSelect = onOverlayBottomChange,
                         )
@@ -3132,7 +3300,6 @@ private fun PipeSettingsScreen(
                 }
             }
 
-            // SECTION 1: `idx` (Storage Index, Permissions & Excluded Folders)
             item(key = "sec_idx") {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -3219,7 +3386,6 @@ private fun PipeSettingsScreen(
                 }
             }
 
-            // SECTION 2: `thm` (Theme & Color Palette)
             item(key = "sec_thm") {
                 AsciiBox(title = "thm · theme & color palette") {
                     AsciiDropdownRow(
@@ -3241,7 +3407,6 @@ private fun PipeSettingsScreen(
                 }
             }
 
-            // SECTION 3: `rte` (Default Browser Dropdown & Routing)
             item(key = "sec_rte") {
                 AsciiBox(title = "rte · browser & routing") {
                     val browserOptions = remember(state.installedBrowsers) {
@@ -3294,7 +3459,6 @@ private fun PipeSettingsScreen(
                 }
             }
 
-            // SECTION 4: `bak` (2x2 JSON Backup Grid + Red-Bordered Danger Zone)
             item(key = "sec_bak") {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
@@ -3343,7 +3507,6 @@ private fun PipeSettingsScreen(
                         }
                     }
 
-                    // Separate Red-Bordered Danger Zone for `reset pipes`
                     AsciiDangerBox(title = "danger zone") {
                         AsciiText(
                             text = "restores the 7 default search pipes (you can undo within 6s):",
@@ -3468,9 +3631,9 @@ fun PipePromptStep1Preview() {
     PipeTheme(mode = ThemeMode.Dark, palette = PaletteChoice.MOSS.palette) {
         AsciiRaycastPaletteWindow(
             titlePath = "~/pipe",
-            searchInput = TextFieldValue(""),
+            searchInput = TextFieldValue("kal"),
             onSearchInputChange = {},
-            parsedCommand = com.sujan.pipe.domain.ParsedPromptCommand(PromptIntentMode.ALL, ""),
+            parsedCommand = com.sujan.pipe.domain.ParsedPromptCommand(PromptIntentMode.ALL, "kal"),
             results = sampleResults,
             hasContactsPermission = true,
             hasFilesPermission = true,

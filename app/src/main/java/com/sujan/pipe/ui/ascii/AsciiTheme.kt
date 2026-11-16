@@ -19,6 +19,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -195,3 +196,13 @@ fun AsciiText(
     softWrap: Boolean = true,
     maxLines: Int = Int.MAX_VALUE,
 ) = Text(text, modifier, color = color, style = style, softWrap = softWrap, maxLines = maxLines)
+
+@Composable
+fun AsciiText(
+    text: AnnotatedString,
+    modifier: Modifier = Modifier,
+    style: TextStyle = AsciiType.body,
+    color: Color = LocalAscii.current.fg,
+    softWrap: Boolean = true,
+    maxLines: Int = Int.MAX_VALUE,
+) = Text(text = text, modifier = modifier, color = color, style = style, softWrap = softWrap, maxLines = maxLines)
