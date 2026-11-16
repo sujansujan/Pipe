@@ -18,6 +18,25 @@ object EngineGlyphs {
     val ALL = listOf("|", ">", "*", "#", "@", "?", "$", "~")
 }
 
+/**
+ * User-customizable command prefixes and row badge tags for `f`, `s`, `b`, `app`, `hist`, and `c`.
+ */
+data class PrefixConfig(
+    val files: String = "f",
+    val pipes: String = "s",
+    val bookmarks: String = "b",
+    val apps: String = "app",
+    val history: String = "hist",
+    val contacts: String = "c",
+) {
+    val filesClean: String get() = files.trim().lowercase().ifEmpty { "f" }
+    val pipesClean: String get() = pipes.trim().lowercase().ifEmpty { "s" }
+    val bookmarksClean: String get() = bookmarks.trim().lowercase().ifEmpty { "b" }
+    val appsClean: String get() = apps.trim().lowercase().ifEmpty { "app" }
+    val historyClean: String get() = history.trim().lowercase().ifEmpty { "hist" }
+    val contactsClean: String get() = contacts.trim().lowercase().ifEmpty { "c" }
+}
+
 data class SearchEngine(
     val id: String,
     val name: String,
@@ -52,10 +71,6 @@ enum class BookmarkKind(val badge: String) {
     }
 }
 
-/**
- * User bookmark supporting Links (`https://...`), Folders (`/storage/emulated/0/Download`),
- * and Files (`/storage/emulated/0/Documents/notes.txt`), triggered by [alias] or fuzzy search.
- */
 enum class ContactQuickAction(val badge: String) {
     CALL("call"),
     SMS("sms"),
@@ -81,9 +96,6 @@ data class InstalledAppItem(
     val pkgLower: String = packageName.trim().lowercase()
 }
 
-/**
- * Device contact entry for live fuzzy search (`c kali` -> call, sms, whatsapp).
- */
 data class ContactItem(
     val id: String,
     val displayName: String,
@@ -103,10 +115,6 @@ data class ContactItem(
     }
 }
 
-/**
- * Local file or directory discovered on device storage.
- * Pre-computes lowercase strings once at index load time so keystroke search allocates zero strings.
- */
 data class LocalFileItem(
     val name: String,
     val absolutePath: String,
@@ -146,10 +154,38 @@ data class SearchHistoryEntry(
 )
 
 object DefaultEngines {
+    val YT_TIME_PIPES: List<SearchEngine> = listOf(
+        SearchEngine(
+            id = "eng_yt_today",
+            name = "YouTube Today",
+            keyword = "ytt",
+            urlTemplate = "https://www.youtube.com/results?search_query={query}&sp=EgIIAg%3D%3D",
+            glyph = "|",
+            colorRole = EngineColorRole.ACCENT2,
+        ),
+        SearchEngine(
+            id = "eng_yt_week",
+            name = "YouTube Last Week",
+            keyword = "ytw",
+            urlTemplate = "https://www.youtube.com/results?search_query={query}&sp=EgIIAw%3D%3D",
+            glyph = "|",
+            colorRole = EngineColorRole.ACCENT2,
+        ),
+        SearchEngine(
+            id = "eng_yt_month",
+            name = "YouTube This Month",
+            keyword = "ytm",
+            urlTemplate = "https://www.youtube.com/results?search_query={query}&sp=EgIIBA%3D%3D",
+            glyph = "|",
+            colorRole = EngineColorRole.ACCENT2,
+        ),
+    )
+
     val LIST: List<SearchEngine> = listOf(
         SearchEngine("eng_google", "Google", "g", "https://www.google.com/search?q={query}", "|", EngineColorRole.ACCENT, isDefault = true),
         SearchEngine("eng_youtube", "YouTube", "yt", "https://www.youtube.com/results?search_query={query}", "|", EngineColorRole.ACCENT2),
-        SearchEngine("eng_wikipedia", "Wikipedia", "w", "https://en.wikipedia.org/w/index.php?search={query}", "|", EngineColorRole.FG),
+    ) + YT_TIME_PIPES + listOf(
+        SearchEngine("eng_wikipedia", "Wikipedia", "w", "https://en.wikipedia.com/w/index.php?search={query}".replace("wikipedia.com", "wikipedia.org"), "|", EngineColorRole.FG),
         SearchEngine("eng_maps", "Maps", "maps", "https://www.google.com/maps/search/{query}", "|", EngineColorRole.GOOD),
         SearchEngine("eng_github", "GitHub", "gh", "https://github.com/search?q={query}", "|", EngineColorRole.ACCENT3),
         SearchEngine("eng_amazon", "Amazon", "a", "https://www.amazon.com/s?k={query}", "|", EngineColorRole.WARN),

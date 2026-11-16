@@ -24,7 +24,6 @@ import androidx.compose.runtime.getValue
 import androidx.lifecycle.lifecycleScope
 import com.sujan.pipe.data.DeviceIntegrationManager
 import com.sujan.pipe.data.PipeRepository
-import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.PipeBookmark
@@ -54,7 +53,6 @@ class MainActivity : ComponentActivity() {
                 viewModel.navigateTo(PipeView.PROMPT)
             }
 
-            // Whenever the user types a folder alias like `dl `, load files inside that folder
             val scopedTarget = state.parsedCommand.scopedFolderBookmark?.target
             LaunchedEffect(scopedTarget, state.hasFilesPermission) {
                 if (scopedTarget != null && state.hasFilesPermission) {
@@ -161,7 +159,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         is com.sujan.pipe.domain.PaletteItem.QuickRemoveAction -> {
-                            viewModel.quickRemoveById(top.isBookmark, top.targetId)
+                            viewModel.quickRemoveById(top.isBookmark, top.targetId, top.isHistory)
                         }
                         is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
                             viewModel.recordItemUsage(top.usageKey)
@@ -314,6 +312,8 @@ class MainActivity : ComponentActivity() {
                 onSearchBoxPlaceholderChange = viewModel::setSearchBoxPlaceholder,
                 onShowScopeBadgeChange = viewModel::setShowSearchBoxScopeBadge,
                 onShowMenuBtnChange = viewModel::setShowSearchBoxMenuBtn,
+                onPrefixConfigChange = viewModel::setPrefixConfig,
+                onResetPrefixConfig = viewModel::resetPrefixConfig,
                 onLaunchOverlayPreview = ::launchOverlayActivity,
                 onPinOverlayShortcut = ::requestPinOverlayShortcut,
                 onOpenDefaultAppsSettings = ::openDefaultAppsSettings,

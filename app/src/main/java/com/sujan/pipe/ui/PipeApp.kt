@@ -40,9 +40,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -62,7 +59,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -86,14 +82,12 @@ import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.EngineColorRole
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
+import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.ui.ascii.AsciiBox
 import com.sujan.pipe.ui.ascii.AsciiButton
-import com.sujan.pipe.ui.ascii.AsciiCheckbox
 import com.sujan.pipe.ui.ascii.AsciiDropdownRow
-import com.sujan.pipe.ui.ascii.AsciiPipePill
-import com.sujan.pipe.ui.ascii.AsciiRadio
 import com.sujan.pipe.ui.ascii.AsciiToggleRow
 import com.sujan.pipe.ui.ascii.AsciiText
 import com.sujan.pipe.ui.ascii.AsciiTextField
@@ -104,7 +98,6 @@ import com.sujan.pipe.ui.ascii.LocalAscii
 import com.sujan.pipe.ui.ascii.PaletteChoice
 import com.sujan.pipe.ui.ascii.PipeTheme
 import com.sujan.pipe.ui.ascii.ThemeMode
-import com.sujan.pipe.ui.ascii.frame
 import com.sujan.pipe.ui.ascii.leader
 import com.sujan.pipe.ui.ascii.rememberCols
 
@@ -237,6 +230,8 @@ fun PipeApp(
     onSearchBoxPlaceholderChange: (String) -> Unit = {},
     onShowScopeBadgeChange: (Boolean) -> Unit = {},
     onShowMenuBtnChange: (Boolean) -> Unit = {},
+    onPrefixConfigChange: (PrefixConfig) -> Unit = {},
+    onResetPrefixConfig: () -> Unit = {},
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
@@ -287,15 +282,14 @@ fun PipeApp(
                         engines = state.engines,
                         bookmarks = state.bookmarks,
                         history = state.history,
+                        prefixes = state.prefixConfig,
                         engineForm = state.engineForm,
                         bookmarkForm = state.bookmarkForm,
-                        hasFilesPermission = state.hasFilesPermission,
                         onBack = { onNavigate(PipeView.PROMPT) },
                         onOpenBookmark = onOpenBookmark,
                         onAddBookmarkClick = onAddBookmarkClick,
                         onEditBookmarkClick = onEditBookmarkClick,
                         onDeleteBookmarkClick = onDeleteBookmarkClick,
-                        onRequestFilesPermission = onRequestFilesPermission,
                         onBookmarkAliasChange = onBookmarkFormAliasChange,
                         onBookmarkTitleChange = onBookmarkFormTitleChange,
                         onBookmarkTargetChange = onBookmarkFormTargetChange,
@@ -356,6 +350,8 @@ fun PipeApp(
                         onSearchBoxPlaceholderChange = onSearchBoxPlaceholderChange,
                         onShowScopeBadgeChange = onShowScopeBadgeChange,
                         onShowMenuBtnChange = onShowMenuBtnChange,
+                        onPrefixConfigChange = onPrefixConfigChange,
+                        onResetPrefixConfig = onResetPrefixConfig,
                         onLaunchOverlayPreview = onLaunchOverlayPreview,
                         onPinOverlayShortcut = onPinOverlayShortcut,
                         onOpenDefaultAppsSettings = onOpenDefaultAppsSettings,
@@ -422,10 +418,10 @@ private fun PipePromptScreen(
     onClearHistory: () -> Unit,
     onLaunchOverlay: () -> Unit,
 ) {
-    val c = LocalAscii.current
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     var inlineQuickAdd by remember { mutableStateOf<com.sujan.pipe.domain.PaletteItem.QuickAddAction?>(null) }
+    val p = state.prefixConfig
 
     LaunchedEffect(Unit) {
         runCatching {
@@ -439,13 +435,13 @@ private fun PipePromptScreen(
             .fillMaxSize()
             .padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
-        // Raycast-style ASCII Command Palette Frame
         AsciiRaycastPaletteWindow(
             titlePath = "~/pipe",
             searchInput = state.searchInput,
             onSearchInputChange = onSearchInputChange,
             parsedCommand = state.parsedCommand,
             results = state.paletteResults,
+            prefixes = p,
             hasContactsPermission = state.hasContactsPermission,
             hasFilesPermission = state.hasFilesPermission,
             launchError = state.launchError ?: state.jsonStatusMessage,
@@ -470,7 +466,7 @@ private fun PipePromptScreen(
             onQuickEditBookmark = { bm ->
                 inlineQuickAdd = com.sujan.pipe.domain.PaletteItem.QuickAddAction(
                     kind = QuickAddKind.BOOKMARK,
-                    title = "Edit Bookmark [b ${bm.alias}]",
+                    title = "Edit Bookmark [${p.bookmarksClean} ${bm.alias}]",
                     subtitle = bm.target,
                     isReadyToCommit = false,
                     arg1 = bm.alias,
@@ -483,7 +479,7 @@ private fun PipePromptScreen(
             onQuickEditEngine = { eng ->
                 inlineQuickAdd = com.sujan.pipe.domain.PaletteItem.QuickAddAction(
                     kind = QuickAddKind.PIPE,
-                    title = "Edit Pipe [s ${eng.keyword}]",
+                    title = "Edit Pipe [${p.pipesClean} ${eng.keyword}]",
                     subtitle = eng.urlTemplate,
                     isReadyToCommit = false,
                     arg1 = eng.keyword,
@@ -585,7 +581,7 @@ private fun PipePromptScreen(
 }
 
 /**
- * 44dp square-cornered, 1dp-bordered ASCII scope chip used in the horizontally scrollable scope bar.
+ * 44dp square-cornered, 1dp-bordered ASCII scope/tab chip.
  */
 @Composable
 fun AsciiScopeChip(
@@ -609,7 +605,7 @@ fun AsciiScopeChip(
                 role = Role.Button,
                 onClick = onClick,
             )
-            .padding(horizontal = 10.dp),
+            .padding(horizontal = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         AsciiText(
@@ -621,14 +617,6 @@ fun AsciiScopeChip(
     }
 }
 
-/**
- * Bottom-anchored ASCII Command Palette Window (`~/pipe`).
- * Layout stack (top to bottom):
- * 1. Header (`+- ~/pipe` + `[+]`, `[lib]`, `[set]`)
- * 2. Results list (`reverseLayout = true` so `#1` best match sits closest to the input row with `|>`, surface bg, 3dp accent left border, fzf highlighting, and `#1`)
- * 3. Horizontally scrollable row of 44dp bordered scope chips (`c:`, `f:`, `b:`, `s:`, `app:`, `dl:`, `yt:`) with active scope highlighted
- * 4. Input row above the keyboard (`>` prefix, field, `[scope]` badge, `[x]`, and primary `[RET ->]` button)
- */
 @Composable
 fun AsciiRaycastPaletteWindow(
     titlePath: String,
@@ -636,12 +624,13 @@ fun AsciiRaycastPaletteWindow(
     onSearchInputChange: (TextFieldValue) -> Unit,
     parsedCommand: com.sujan.pipe.domain.ParsedPromptCommand,
     results: List<com.sujan.pipe.domain.PaletteItem>,
+    prefixes: PrefixConfig = PrefixConfig(),
     hasContactsPermission: Boolean,
     hasFilesPermission: Boolean,
     launchError: String?,
     focusRequester: FocusRequester,
     promptPrefix: String = "> ",
-    placeholderText: String = "pipe (c, f, b, s, app)...",
+    placeholderText: String = "pipe for???",
     showScopeBadge: Boolean = true,
     inlineQuickAdd: com.sujan.pipe.domain.PaletteItem.QuickAddAction? = null,
     onDismissInlineQuickAdd: () -> Unit = {},
@@ -689,17 +678,24 @@ fun AsciiRaycastPaletteWindow(
     }
 
     val scopeBadge = when (parsedCommand.mode) {
-        PromptIntentMode.SCOPED_FOLDER -> "b:${parsedCommand.scopedFolderBookmark?.alias ?: "folder"}"
-        PromptIntentMode.ENGINE_ONLY -> "s:${parsedCommand.matchedEngine?.keyword ?: "pipe"}"
+        PromptIntentMode.SCOPED_FOLDER -> "${prefixes.bookmarksClean}:${parsedCommand.scopedFolderBookmark?.alias ?: "folder"}"
+        PromptIntentMode.ENGINE_ONLY -> "${prefixes.pipesClean}:${parsedCommand.matchedEngine?.keyword ?: "pipe"}"
+        PromptIntentMode.CONTACTS_ONLY -> "${prefixes.contactsClean}:contacts"
+        PromptIntentMode.FILES_ONLY -> "${prefixes.filesClean}:files"
+        PromptIntentMode.BOOKMARKS_ONLY -> "${prefixes.bookmarksClean}:bookmarks"
+        PromptIntentMode.PIPES_LIST -> "${prefixes.pipesClean}:pipes"
+        PromptIntentMode.APPS_ONLY -> "${prefixes.appsClean}:launcher"
+        PromptIntentMode.HISTORY_ONLY -> "${prefixes.historyClean}:history"
         else -> parsedCommand.mode.scopeBadge
     }
 
     val scopeChips = listOf(
-        "c" to (parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY),
-        "f" to (parsedCommand.mode == PromptIntentMode.FILES_ONLY || parsedCommand.mode == PromptIntentMode.DIRS_ONLY),
-        "b" to (parsedCommand.mode == PromptIntentMode.BOOKMARKS_ONLY),
-        "s" to (parsedCommand.mode == PromptIntentMode.PIPES_LIST || (parsedCommand.mode == PromptIntentMode.ENGINE_ONLY && !parsedCommand.matchedEngine?.keyword.equals("yt", ignoreCase = true))),
-        "app" to (parsedCommand.mode == PromptIntentMode.APPS_ONLY),
+        prefixes.contactsClean to (parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY),
+        prefixes.filesClean to (parsedCommand.mode == PromptIntentMode.FILES_ONLY || parsedCommand.mode == PromptIntentMode.DIRS_ONLY),
+        prefixes.bookmarksClean to (parsedCommand.mode == PromptIntentMode.BOOKMARKS_ONLY),
+        prefixes.pipesClean to (parsedCommand.mode == PromptIntentMode.PIPES_LIST || (parsedCommand.mode == PromptIntentMode.ENGINE_ONLY && !parsedCommand.matchedEngine?.keyword.equals("yt", ignoreCase = true))),
+        prefixes.appsClean to (parsedCommand.mode == PromptIntentMode.APPS_ONLY),
+        prefixes.historyClean to (parsedCommand.mode == PromptIntentMode.HISTORY_ONLY),
         "dl" to (parsedCommand.mode == PromptIntentMode.SCOPED_FOLDER && parsedCommand.scopedFolderBookmark?.alias.equals("dl", ignoreCase = true)),
         "yt" to (parsedCommand.mode == PromptIntentMode.ENGINE_ONLY && parsedCommand.matchedEngine?.keyword.equals("yt", ignoreCase = true)),
     )
@@ -710,7 +706,6 @@ fun AsciiRaycastPaletteWindow(
             .background(c.bg)
             .border(1.dp, c.border),
     ) {
-        // 1. Top ASCII Header Bar: `+- ~/pipe ─────────────────────── [+] [lib] [set]`
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -732,7 +727,6 @@ fun AsciiRaycastPaletteWindow(
 
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
 
-        // Permission banners if needed for active alias
         if (!hasContactsPermission && parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY && onRequestContactsPermission != null) {
             Row(
                 modifier = Modifier
@@ -742,7 +736,7 @@ fun AsciiRaycastPaletteWindow(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText("! contacts permission needed for `c:`", style = AsciiType.small, color = c.warn)
+                AsciiText("! contacts permission needed for `${prefixes.contactsClean}:`", style = AsciiType.small, color = c.warn)
                 AsciiButton("grant", onRequestContactsPermission, primary = true)
             }
             Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
@@ -756,7 +750,7 @@ fun AsciiRaycastPaletteWindow(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText("! storage access needed for `f:` / `dl:`", style = AsciiType.small, color = c.warn)
+                AsciiText("! storage access needed for `${prefixes.filesClean}:` / `dl:`", style = AsciiType.small, color = c.warn)
                 AsciiButton("grant", onRequestFilesPermission, primary = true)
             }
             Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
@@ -778,7 +772,6 @@ fun AsciiRaycastPaletteWindow(
             Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
         }
 
-        // 2. Bottom-Anchored Results List (`reverseLayout = true` puts index 0 / `#1` closest to the input row!)
         LazyColumn(
             modifier = Modifier
                 .weight(1f)
@@ -821,6 +814,7 @@ fun AsciiRaycastPaletteWindow(
                         AsciiRaycastRow(
                             item = item,
                             isTop = isTop,
+                            prefixes = prefixes,
                             highlightQuery = parsedCommand.filterQuery,
                             isFolderExpanded = folderPath != null && expandedFolderPath == folderPath,
                             expandedChildren = if (folderPath != null && expandedFolderPath == folderPath) expandedFolderChildren else emptyList(),
@@ -851,7 +845,6 @@ fun AsciiRaycastPaletteWindow(
             )
         }
 
-        // 3. Horizontally Scrollable 44dp Bordered Scope Chips (`c:`, `f:`, `b:`, `s:`, `app:`, `dl:`, `yt:`)
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
         Row(
             modifier = Modifier
@@ -877,7 +870,6 @@ fun AsciiRaycastPaletteWindow(
             }
         }
 
-        // 4. Bottom Input Row Above Keyboard: `>` prefix, field, `[scope]` badge, `[x]`, and primary `RET ->` button
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
         Row(
             modifier = Modifier
@@ -957,6 +949,7 @@ fun AsciiRaycastPaletteWindow(
         val currentSheetItem = actionSheetItem!!
         AsciiResultActionSheet(
             item = currentSheetItem,
+            prefixes = prefixes,
             canDeleteEngine = existingEngines.size > 1,
             onDismiss = { actionSheetItem = null },
             onPrimaryExecute = {
@@ -1063,9 +1056,6 @@ fun AsciiContactAvatar(
     }
 }
 
-/**
- * Step 5 Live Preview Line (`s gh compose -> github.com/search?q=compose`) rendered inside Quick Add & Library dialogs.
- */
 @Composable
 fun AsciiLivePreviewLine(
     previewText: String,
@@ -1117,7 +1107,6 @@ fun QuickAddInlineCard(
     }
     var editingId by remember(initialAction) { mutableStateOf(initialAction.editingId) }
 
-    // Contact fields
     val initName = autoContact?.first ?: initialAction.arg1
     val initPhone = autoContact?.second ?: initialAction.arg2.ifEmpty {
         if (clipText.any { it.isDigit() } && clipText.length in 7..16 && !clipText.startsWith("http")) clipText else ""
@@ -1129,7 +1118,6 @@ fun QuickAddInlineCard(
         mutableStateOf(TextFieldValue(initPhone, TextRange(initPhone.length)))
     }
 
-    // Bookmark fields
     val initialBmTarget = initialAction.arg3.ifEmpty {
         if (clipText.startsWith("http://") || clipText.startsWith("https://") || clipText.startsWith("/")) clipText else ""
     }
@@ -1147,7 +1135,6 @@ fun QuickAddInlineCard(
         mutableStateOf(TextFieldValue(initialBmTarget, TextRange(initialBmTarget.length)))
     }
 
-    // Pipe fields
     val initialPipeUrl = initialAction.arg3.ifEmpty {
         if (clipText.startsWith("http://") || clipText.startsWith("https://")) {
             QueryRouter.normalizePipeUrlTemplate(clipText)
@@ -1692,7 +1679,7 @@ fun AsciiKindBadge(
     val c = LocalAscii.current
     Box(
         modifier = modifier
-            .width(56.dp)
+            .width(58.dp)
             .heightIn(min = 26.dp)
             .background(if (inverted) c.bg else c.surface)
             .border(1.dp, if (inverted) c.bg else color)
@@ -1708,14 +1695,6 @@ fun AsciiKindBadge(
     }
 }
 
-/**
- * Step 2 Result Row (shared across `~/pipe` and `~/pipe/overlay`):
- * - Fixed-width bordered kind tag (`app`, `c`, `f.`, `d/`, `b:bm`, `b:d/`, `b:f.`, `s:yt`)
- * - Single-line title + dim subtitle with fzf character span highlighting (`buildFzfHighlightedText`)
- * - Optional `[+]`/`[-]` inline ASCII tree peek (`├─` / `└──`) for folders (`d/` and `b:d/`)
- * - `#1` badge on top match
- * - Trailing `[⋯]` button (44dp+ touch target) opening `AsciiResultActionSheet`.
- */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AsciiRaycastRow(
@@ -1723,6 +1702,7 @@ fun AsciiRaycastRow(
     isTop: Boolean,
     onExecute: () -> Unit,
     onOpenActionSheet: () -> Unit = {},
+    prefixes: PrefixConfig = PrefixConfig(),
     highlightQuery: String = "",
     isFolderExpanded: Boolean = false,
     expandedChildren: List<LocalFileItem> = emptyList(),
@@ -1750,7 +1730,7 @@ fun AsciiRaycastRow(
 
     when (item) {
         is com.sujan.pipe.domain.PaletteItem.AppAction -> {
-            tagText = "app"
+            tagText = prefixes.appsClean
             tagColor = c.accent
             titleText = item.app.label
             subtitleText = item.app.packageName
@@ -1758,7 +1738,7 @@ fun AsciiRaycastRow(
             folderPeekPath = null
         }
         is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
-            tagText = "c"
+            tagText = prefixes.contactsClean
             tagColor = c.good
             titleText = item.contact.displayName
             subtitleText = item.contact.phoneNumber
@@ -1767,7 +1747,7 @@ fun AsciiRaycastRow(
         }
         is com.sujan.pipe.domain.PaletteItem.FileAction -> {
             val f = item.file
-            tagText = if (f.isDirectory) "d/" else "f."
+            tagText = if (f.isDirectory) "d/" else "${prefixes.filesClean}."
             tagColor = if (f.isDirectory) c.warn else c.accent3
             titleText = f.name
             subtitleText = "${f.parentName} · ${f.formattedSize}"
@@ -1776,10 +1756,11 @@ fun AsciiRaycastRow(
         }
         is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> {
             val bm = item.bookmark
+            val bPre = prefixes.bookmarksClean
             tagText = when (bm.kind) {
-                BookmarkKind.FOLDER -> "b:d/"
-                BookmarkKind.FILE -> "b:f."
-                BookmarkKind.LINK -> "b:bm"
+                BookmarkKind.FOLDER -> "$bPre:d/"
+                BookmarkKind.FILE -> "$bPre:f."
+                BookmarkKind.LINK -> "$bPre:bm"
             }
             tagColor = when (bm.kind) {
                 BookmarkKind.FOLDER -> c.warn
@@ -1793,7 +1774,7 @@ fun AsciiRaycastRow(
         }
         is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
             val eng = item.engine
-            tagText = "s:${eng.keyword}"
+            tagText = "${prefixes.pipesClean}:${eng.keyword}"
             tagColor = c.forRole(eng.colorRole)
             titleText = if (item.isHome) eng.name else "${eng.name}: \"${item.query}\""
             subtitleText = if (item.isHome) eng.homeUrl else item.targetUrl
@@ -1802,7 +1783,7 @@ fun AsciiRaycastRow(
         }
         is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
             val h = item.entry
-            tagText = "hist"
+            tagText = prefixes.historyClean
             tagColor = c.accent2
             titleText = h.rawInput
             subtitleText = "-> ${h.engineName.lowercase()} (${h.resolvedUrl})"
@@ -2015,10 +1996,6 @@ fun AsciiRaycastRow(
     }
 }
 
-/**
- * Full-width 48dp action row inside `AsciiResultActionSheet`.
- * Destructive actions (`isDestructive = true`) render last in `c.error`.
- */
 @Composable
 fun AsciiSheetActionRow(
     tag: String,
@@ -2068,14 +2045,6 @@ fun AsciiSheetActionRow(
     }
 }
 
-/**
- * Bottom sheet opened by long-pressing a result row or tapping its trailing `[⋯]` button.
- * Provides full-width 48dp actions tailored to each item kind:
- * - Contacts: call / sms / wa / copy
- * - Bookmarks: open / ls / edit / copy / delete (in error color, triggers undo banner)
- * - Files: open / ls / bookmark / share / preview / copy
- * - Pipes: open / edit / delete (in error color, triggers undo banner)
- */
 @Composable
 fun AsciiResultActionSheet(
     item: com.sujan.pipe.domain.PaletteItem,
@@ -2095,6 +2064,7 @@ fun AsciiResultActionSheet(
     onDeleteEngine: (SearchEngine) -> Unit,
     onDeleteHistory: (SearchHistoryEntry) -> Unit = {},
     onCopyText: (String) -> Unit,
+    prefixes: PrefixConfig = PrefixConfig(),
 ) {
     val c = LocalAscii.current
     Dialog(onDismissRequest = onDismiss) {
@@ -2130,7 +2100,7 @@ fun AsciiResultActionSheet(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                AsciiKindBadge("c", c.good)
+                                AsciiKindBadge(prefixes.contactsClean, c.good)
                                 Spacer(Modifier.width(8.dp))
                                 Column {
                                     AsciiText(contact.displayName, style = AsciiType.title, color = c.fg, maxLines = 1)
@@ -2148,10 +2118,11 @@ fun AsciiResultActionSheet(
 
                     is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> {
                         val bm = item.bookmark
+                        val bPre = prefixes.bookmarksClean
                         val tag = when (bm.kind) {
-                            BookmarkKind.FOLDER -> "b:d/"
-                            BookmarkKind.FILE -> "b:f."
-                            BookmarkKind.LINK -> "b:bm"
+                            BookmarkKind.FOLDER -> "$bPre:d/"
+                            BookmarkKind.FILE -> "$bPre:f."
+                            BookmarkKind.LINK -> "$bPre:bm"
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -2171,7 +2142,7 @@ fun AsciiResultActionSheet(
                         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
                         AsciiSheetActionRow("open", "Open ${bm.title}", onPrimaryExecute, isPrimary = true)
                         if (bm.kind == BookmarkKind.FOLDER && bm.alias.isNotBlank()) {
-                            AsciiSheetActionRow("ls", "Scope inside folder (b ${bm.alias})", { onScopeFolder("b ${bm.alias}") })
+                            AsciiSheetActionRow("ls", "Scope inside folder ($bPre ${bm.alias})", { onScopeFolder("$bPre ${bm.alias}") })
                         }
                         AsciiSheetActionRow("edit", "Edit bookmark", { onEditBookmark(bm) })
                         AsciiSheetActionRow("copy", "Copy target URL / path", { onCopyText(bm.target) })
@@ -2180,7 +2151,8 @@ fun AsciiResultActionSheet(
 
                     is com.sujan.pipe.domain.PaletteItem.FileAction -> {
                         val f = item.file
-                        val tag = if (f.isDirectory) "d/" else "f."
+                        val fPre = prefixes.filesClean
+                        val tag = if (f.isDirectory) "d/" else "$fPre."
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -2199,7 +2171,7 @@ fun AsciiResultActionSheet(
                         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
                         AsciiSheetActionRow("open", "Open ${f.name}", onPrimaryExecute, isPrimary = true)
                         if (f.isDirectory) {
-                            AsciiSheetActionRow("ls", "Filter inside folder (f ${f.name})", { onScopeFolder("f ${f.name}") })
+                            AsciiSheetActionRow("ls", "Filter inside folder ($fPre ${f.name})", { onScopeFolder("$fPre ${f.name}") })
                         }
                         AsciiSheetActionRow("bookmark", "Save as bookmark", { onBookmarkFile(f) })
                         if (!f.isDirectory) {
@@ -2219,7 +2191,7 @@ fun AsciiResultActionSheet(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                AsciiKindBadge("s:${eng.keyword}", c.forRole(eng.colorRole))
+                                AsciiKindBadge("${prefixes.pipesClean}:${eng.keyword}", c.forRole(eng.colorRole))
                                 Spacer(Modifier.width(8.dp))
                                 Column {
                                     AsciiText(eng.name, style = AsciiType.title, color = c.fg, maxLines = 1)
@@ -2249,7 +2221,7 @@ fun AsciiResultActionSheet(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                AsciiKindBadge("app", c.accent)
+                                AsciiKindBadge(prefixes.appsClean, c.accent)
                                 Spacer(Modifier.width(8.dp))
                                 Column {
                                     AsciiText(app.label, style = AsciiType.title, color = c.fg, maxLines = 1)
@@ -2271,7 +2243,7 @@ fun AsciiResultActionSheet(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                AsciiKindBadge("hist", c.accent2)
+                                AsciiKindBadge(prefixes.historyClean, c.accent2)
                                 Spacer(Modifier.width(8.dp))
                                 Column {
                                     AsciiText(h.rawInput, style = AsciiType.title, color = c.fg, maxLines = 1)
@@ -2308,11 +2280,7 @@ private sealed interface LibrarySheetTarget {
 }
 
 /**
- * Step 3 Merged Library Screen (`~/pipe/lib`):
- * - Chip tabs: `pipes`, `bookmarks`, `history` (44dp bordered chips with active highlight)
- * - Pipes tab: `::` drag handle to reorder (replaces `^` and `v`), `*` default marker, `[⋯]` for default/edit/delete, pinned `+ add pipe` button at the bottom
- * - Bookmarks tab: fixed-width kind tag (`b:bm`, `b:d/`, `b:f.`), single-line title + dim subtitle, `[⋯]` for open/edit/copy/delete, pinned `+ add bookmark` button at the bottom
- * - History tab: fixed-width `hist` tag, query + dim URL, `[⋯]` for run/fill/copy/delete, pinned `clear history` button at the bottom
+ * Merged Library Screen (`~/pipe/lib`) with flush-aligned equal-width tabs (`Modifier.weight(1f)`).
  */
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
@@ -2321,15 +2289,14 @@ fun PipeLibraryScreen(
     engines: List<SearchEngine>,
     bookmarks: List<PipeBookmark>,
     history: List<SearchHistoryEntry>,
+    prefixes: PrefixConfig = PrefixConfig(),
     engineForm: EngineFormState,
     bookmarkForm: BookmarkFormState,
-    hasFilesPermission: Boolean,
     onBack: () -> Unit,
     onOpenBookmark: (PipeBookmark) -> Unit,
     onAddBookmarkClick: () -> Unit,
     onEditBookmarkClick: (PipeBookmark) -> Unit,
     onDeleteBookmarkClick: (PipeBookmark) -> Unit,
-    onRequestFilesPermission: () -> Unit,
     onBookmarkAliasChange: (TextFieldValue) -> Unit,
     onBookmarkTitleChange: (TextFieldValue) -> Unit,
     onBookmarkTargetChange: (TextFieldValue) -> Unit,
@@ -2371,13 +2338,13 @@ fun PipeLibraryScreen(
             },
         )
 
+        // Flush-aligned equal-width (`Modifier.weight(1f)`) Chip Tabs Row (`pipes`, `bookmarks`, `history`)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(c.surface)
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             LibraryTab.entries.forEach { tab ->
@@ -2390,6 +2357,7 @@ fun PipeLibraryScreen(
                     label = "${tab.label} ($count)",
                     active = activeTab == tab,
                     onClick = { activeTab = tab },
+                    modifier = Modifier.weight(1f),
                 )
             }
         }
@@ -2472,7 +2440,7 @@ fun PipeLibraryScreen(
                             }
 
                             AsciiKindBadge(
-                                tag = "s:${eng.keyword}",
+                                tag = "${prefixes.pipesClean}:${eng.keyword}",
                                 color = c.forRole(eng.colorRole),
                             )
 
@@ -2521,7 +2489,7 @@ fun PipeLibraryScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(c.surface)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                 ) {
                     AsciiButton(
                         label = "+ add pipe",
@@ -2537,6 +2505,7 @@ fun PipeLibraryScreen(
             }
 
             LibraryTab.BOOKMARKS -> {
+                val bPre = prefixes.bookmarksClean
                 LazyColumn(
                     modifier = Modifier
                         .weight(1f)
@@ -2544,22 +2513,11 @@ fun PipeLibraryScreen(
                         .padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    if (!hasFilesPermission) {
-                        item {
-                            AsciiButton(
-                                label = "! grant all-files access for folder bookmarks",
-                                onClick = onRequestFilesPermission,
-                                primary = true,
-                                modifier = Modifier.fillMaxWidth().border(1.dp, c.warn),
-                            )
-                        }
-                    }
-
                     items(bookmarks, key = { it.id }) { bm ->
                         val badge = when (bm.kind) {
-                            BookmarkKind.FOLDER -> "b:d/"
-                            BookmarkKind.FILE -> "b:f."
-                            BookmarkKind.LINK -> "b:bm"
+                            BookmarkKind.FOLDER -> "$bPre:d/"
+                            BookmarkKind.FILE -> "$bPre:f."
+                            BookmarkKind.LINK -> "$bPre:bm"
                         }
                         val badgeCol = when (bm.kind) {
                             BookmarkKind.FOLDER -> c.warn
@@ -2616,7 +2574,7 @@ fun PipeLibraryScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(c.surface)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                 ) {
                     AsciiButton(
                         label = "+ add bookmark",
@@ -2666,7 +2624,7 @@ fun PipeLibraryScreen(
                                     .padding(horizontal = 8.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                AsciiKindBadge(tag = "hist", color = c.accent2)
+                                AsciiKindBadge(tag = prefixes.historyClean, color = c.accent2)
                                 Spacer(Modifier.width(8.dp))
                                 Column(
                                     modifier = Modifier
@@ -2701,7 +2659,7 @@ fun PipeLibraryScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(c.surface)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                 ) {
                     AsciiButton(
                         label = "clear history",
@@ -2753,7 +2711,7 @@ fun PipeLibraryScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                    AsciiKindBadge("s:${eng.keyword}", c.forRole(eng.colorRole))
+                                    AsciiKindBadge("${prefixes.pipesClean}:${eng.keyword}", c.forRole(eng.colorRole))
                                     Spacer(Modifier.width(8.dp))
                                     Column {
                                         AsciiText(if (eng.isDefault) "${eng.name} *" else eng.name, style = AsciiType.title, color = c.fg, maxLines = 1)
@@ -2783,10 +2741,11 @@ fun PipeLibraryScreen(
 
                         is LibrarySheetTarget.BookmarkTarget -> {
                             val bm = currentTarget.bookmark
+                            val bPre = prefixes.bookmarksClean
                             val badge = when (bm.kind) {
-                                BookmarkKind.FOLDER -> "b:d/"
-                                BookmarkKind.FILE -> "b:f."
-                                BookmarkKind.LINK -> "b:bm"
+                                BookmarkKind.FOLDER -> "$bPre:d/"
+                                BookmarkKind.FILE -> "$bPre:f."
+                                BookmarkKind.LINK -> "$bPre:bm"
                             }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -2830,7 +2789,7 @@ fun PipeLibraryScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                    AsciiKindBadge("hist", c.accent2)
+                                    AsciiKindBadge(prefixes.historyClean, c.accent2)
                                     Spacer(Modifier.width(8.dp))
                                     Column {
                                         AsciiText(entry.rawInput, style = AsciiType.title, color = c.fg, maxLines = 1)
@@ -2883,8 +2842,8 @@ fun PipeLibraryScreen(
                             onSelect = onBookmarkKindChange,
                         )
                         AsciiTextField(
-                            label = "b alias (e.g. dl, docs, hn)",
-                            promptPrefix = "b ",
+                            label = "${prefixes.bookmarksClean} alias (e.g. dl, docs, hn)",
+                            promptPrefix = "${prefixes.bookmarksClean} ",
                             value = bookmarkForm.alias,
                             onValueChange = onBookmarkAliasChange,
                             placeholder = "dl",
@@ -2948,8 +2907,8 @@ fun PipeLibraryScreen(
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                         )
                         AsciiTextField(
-                            label = "s keyword (unique, no spaces)",
-                            promptPrefix = "s ",
+                            label = "${prefixes.pipesClean} keyword (unique, no spaces)",
+                            promptPrefix = "${prefixes.pipesClean} ",
                             value = engineForm.keyword,
                             onValueChange = onEngineKeywordChange,
                             placeholder = "ddg",
@@ -3000,9 +2959,6 @@ fun PipeLibraryScreen(
     }
 }
 
-/**
- * Step 4 ASCII Slider Row (`44dp` touch height, 1dp square border, live drag + tap track, ASCII progress bar).
- */
 @Composable
 fun AsciiSliderRow(
     label: String,
@@ -3068,9 +3024,6 @@ fun AsciiSliderRow(
     }
 }
 
-/**
- * Red-bordered ASCII box for destructive actions (`danger zone`).
- */
 @Composable
 fun AsciiDangerBox(
     title: String = "danger zone",
@@ -3098,6 +3051,13 @@ fun AsciiDangerBox(
     }
 }
 
+/**
+ * Settings Screen (`~/pipe/set/<section>`):
+ * - Full-name tabs (`overlay`, `index`, `theme`, `routing`, `backup`) in a flush-aligned 2-row grid (`Modifier.weight(1f)`).
+ * - Tapping any tab switches directly to that section's view and highlights the active tab.
+ * - All permissions (`storage`, `contacts`, `default apps`) are grouped in one unified box inside `index`.
+ * - Custom command prefixes (`f`, `s`, `b`, `app`, `hist`, `c`) are editable inside `routing`.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PipeSettingsScreen(
@@ -3132,6 +3092,8 @@ private fun PipeSettingsScreen(
     onSearchBoxPlaceholderChange: (String) -> Unit,
     onShowScopeBadgeChange: (Boolean) -> Unit,
     onShowMenuBtnChange: (Boolean) -> Unit,
+    onPrefixConfigChange: (PrefixConfig) -> Unit,
+    onResetPrefixConfig: () -> Unit,
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
@@ -3140,60 +3102,66 @@ private fun PipeSettingsScreen(
 ) {
     val c = LocalAscii.current
     val clipboard = LocalClipboardManager.current
-    val listState = rememberLazyListState()
-    val coroutineScope = rememberCoroutineScope()
-    val sections = SettingsSection.entries
-
-    val visibleSection = remember(listState.firstVisibleItemIndex) {
-        sections.getOrElse(listState.firstVisibleItemIndex.coerceIn(0, sections.lastIndex)) { SettingsSection.OVERLAY }
-    }
+    val activeSection = state.settingsSection
 
     Column(Modifier.fillMaxSize().background(c.bg)) {
         AsciiTopHeader(
-            path = "~/pipe/set/${visibleSection.label}",
+            path = "~/pipe/set/${activeSection.label}",
             actions = {
                 AsciiButton(label = "< back", onClick = onBack, spokenLabel = "back to search prompt")
             },
         )
 
-        Row(
+        // Flush-aligned 2-row grid of full-name Settings tabs (`overlay`, `index`, `theme` / `routing`, `backup`)
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(c.surface)
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            sections.forEachIndexed { idx, tab ->
-                AsciiScopeChip(
-                    label = tab.label,
-                    active = visibleSection == tab,
-                    onClick = {
-                        onSelectSettingsSection(tab)
-                        coroutineScope.launch {
-                            listState.animateScrollToItem(idx)
-                        }
-                    },
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                listOf(SettingsSection.OVERLAY, SettingsSection.INDEX, SettingsSection.THEME).forEach { tab ->
+                    AsciiScopeChip(
+                        label = tab.label,
+                        active = activeSection == tab,
+                        onClick = { onSelectSettingsSection(tab) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                listOf(SettingsSection.ROUTING, SettingsSection.BACKUP).forEach { tab ->
+                    AsciiScopeChip(
+                        label = tab.label,
+                        active = activeSection == tab,
+                        onClick = { onSelectSettingsSection(tab) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
 
-        LazyColumn(
-            state = listState,
+        Column(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item(key = "sec_ovl") {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    AsciiBox(title = "ovl · floating overlay") {
+            when (activeSection) {
+                SettingsSection.OVERLAY -> {
+                    AsciiBox(title = "overlay · floating window") {
                         AsciiSliderRow(
                             label = "card opacity",
                             value = state.overlayOpacity,
@@ -3221,16 +3189,16 @@ private fun PipeSettingsScreen(
                             label = "corner radius",
                             selectedValue = state.overlayCornerRadiusDp,
                             options = listOf(
+                                10 to "10dp (Default)",
                                 0 to "0dp (Sharp ASCII)",
-                                10 to "10dp (Subtle)",
-                                16 to "16dp (Default)",
+                                16 to "16dp (Medium)",
                                 24 to "24dp (Round)",
                             ),
                             onSelect = onOverlayCornerChange,
                         )
 
                         AsciiToggleRow(
-                            label = "force dark glass in overlay",
+                            label = "force dark glass (override app theme)",
                             checked = state.overlayForceDark,
                             onCheckedChange = onOverlayForceDarkChange,
                         )
@@ -3259,7 +3227,7 @@ private fun PipeSettingsScreen(
                         }
                     }
 
-                    AsciiBox(title = "ovl · search box") {
+                    AsciiBox(title = "overlay · search box") {
                         var placeholderField by remember(state.searchBoxPlaceholder) {
                             mutableStateOf(TextFieldValue(state.searchBoxPlaceholder, TextRange(state.searchBoxPlaceholder.length)))
                         }
@@ -3271,7 +3239,7 @@ private fun PipeSettingsScreen(
                                 placeholderField = it
                                 onSearchBoxPlaceholderChange(it.text)
                             },
-                            placeholder = "pipe (c, f, b, s, app)...",
+                            placeholder = "pipe for???",
                         )
                         Spacer(Modifier.height(4.dp))
                         AsciiDropdownRow(
@@ -3298,14 +3266,52 @@ private fun PipeSettingsScreen(
                         )
                     }
                 }
-            }
 
-            item(key = "sec_idx") {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    AsciiBox(title = "idx · local index & permissions") {
+                SettingsSection.INDEX -> {
+                    // Unified Permissions & System Access Box
+                    AsciiBox(title = "permissions & system access") {
+                        AsciiText(
+                            text = "manage all app permissions and default system handler settings in one place:",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            AsciiButton(
+                                label = if (state.hasFilesPermission) "storage: ok" else "! grant storage",
+                                onClick = onRequestFilesPermission,
+                                primary = !state.hasFilesPermission,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 46.dp)
+                                    .border(1.dp, if (state.hasFilesPermission) c.good else c.warn),
+                            )
+                            AsciiButton(
+                                label = if (state.hasContactsPermission) "contacts: ok" else "! grant contacts",
+                                onClick = onRequestContactsPermission,
+                                primary = !state.hasContactsPermission,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 46.dp)
+                                    .border(1.dp, if (state.hasContactsPermission) c.good else c.warn),
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        AsciiButton(
+                            label = "default apps settings (browser / assist)",
+                            onClick = onOpenDefaultAppsSettings,
+                            primary = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 46.dp)
+                                .border(1.dp, c.accent),
+                        )
+                    }
+
+                    AsciiBox(title = "index · local storage index") {
                         val ageText = if (state.lastIndexedTimestampMs <= 0L) {
                             "never indexed"
                         } else {
@@ -3327,31 +3333,20 @@ private fun PipeSettingsScreen(
                             checked = state.hourlyAutoIndexEnabled,
                             onCheckedChange = onHourlyAutoIndexChange,
                         )
-                        Spacer(Modifier.height(4.dp))
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            AsciiButton(
-                                label = if (state.isIndexingInProgress) "indexing..." else "re-index now",
-                                onClick = onRebuildIndexNow,
-                                enabled = !state.isIndexingInProgress,
-                                primary = true,
-                                modifier = Modifier.border(1.dp, c.accent),
-                            )
-                            AsciiButton(
-                                label = if (state.hasFilesPermission) "files: ok" else "! grant files",
-                                onClick = onRequestFilesPermission,
-                                primary = !state.hasFilesPermission,
-                                modifier = Modifier.border(1.dp, if (state.hasFilesPermission) c.border else c.warn),
-                            )
-                            AsciiButton(
-                                label = if (state.hasContactsPermission) "contacts: ok" else "! grant contacts",
-                                onClick = onRequestContactsPermission,
-                                primary = !state.hasContactsPermission,
-                                modifier = Modifier.border(1.dp, if (state.hasContactsPermission) c.border else c.warn),
-                            )
-                        }
+                        Spacer(Modifier.height(6.dp))
+                        AsciiButton(
+                            label = if (state.isIndexingInProgress) "indexing..." else "re-index storage now",
+                            onClick = onRebuildIndexNow,
+                            enabled = !state.isIndexingInProgress,
+                            primary = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 46.dp)
+                                .border(1.dp, c.accent),
+                        )
                     }
 
-                    AsciiBox(title = "idx · excluded folders (${state.excludedFolders.size})") {
+                    AsciiBox(title = "index · excluded folders (${state.excludedFolders.size})") {
                         var newFolderInput by remember { mutableStateOf(TextFieldValue("")) }
                         AsciiTextField(
                             label = "skip folder name during indexing",
@@ -3384,87 +3379,216 @@ private fun PipeSettingsScreen(
                         }
                     }
                 }
-            }
 
-            item(key = "sec_thm") {
-                AsciiBox(title = "thm · theme & color palette") {
-                    AsciiDropdownRow(
-                        label = "theme mode",
-                        selectedValue = state.themeMode,
-                        options = listOf(
-                            ThemeMode.System to "System default",
-                            ThemeMode.Dark to "Dark mode",
-                            ThemeMode.Light to "Light mode",
-                        ),
-                        onSelect = onThemeModeChange,
-                    )
-                    AsciiDropdownRow(
-                        label = "color palette",
-                        selectedValue = state.paletteChoice,
-                        options = PaletteChoice.entries.map { it to it.palette.name },
-                        onSelect = onPaletteChoiceChange,
-                    )
-                }
-            }
-
-            item(key = "sec_rte") {
-                AsciiBox(title = "rte · browser & routing") {
-                    val browserOptions = remember(state.installedBrowsers) {
-                        listOf("auto" to "System Default (Auto)") +
-                            state.installedBrowsers.map { it.packageName to it.label }
-                    }
-                    AsciiDropdownRow(
-                        label = "default browser",
-                        subtitle = "opens web links & search pipes",
-                        selectedValue = state.preferredBrowserPackage,
-                        options = browserOptions,
-                        onSelect = onPreferredBrowserChange,
-                    )
-                    AsciiDropdownRow(
-                        label = "share text action",
-                        subtitle = "when sharing or selecting text",
-                        selectedValue = state.externalTextMode,
-                        options = listOf(
-                            ExternalTextMode.OPEN_OVERLAY to "Open floating overlay",
-                            ExternalTextMode.OPEN_PROMPT to "Open main prompt",
-                            ExternalTextMode.DIRECT_PIPE to "Pipe immediately",
-                        ),
-                        onSelect = onExternalTextModeChange,
-                    )
-                    AsciiToggleRow(
-                        label = "record local command history",
-                        checked = state.historyEnabled,
-                        onCheckedChange = onHistoryEnabledChange,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        AsciiButton(
-                            label = "default apps",
-                            onClick = onOpenDefaultAppsSettings,
-                            primary = true,
-                            modifier = Modifier.weight(1f).border(1.dp, c.accent),
+                SettingsSection.THEME -> {
+                    AsciiBox(title = "theme · mode & color palette") {
+                        AsciiText(
+                            text = "overlay and main app share this theme automatically unless 'force dark glass' is enabled in overlay settings.",
+                            style = AsciiType.small,
+                            color = c.dim,
                         )
+                        Spacer(Modifier.height(6.dp))
+                        AsciiDropdownRow(
+                            label = "theme mode",
+                            selectedValue = state.themeMode,
+                            options = listOf(
+                                ThemeMode.System to "System default",
+                                ThemeMode.Dark to "Dark mode",
+                                ThemeMode.Light to "Light mode",
+                            ),
+                            onSelect = onThemeModeChange,
+                        )
+                        AsciiDropdownRow(
+                            label = "color palette",
+                            selectedValue = state.paletteChoice,
+                            options = PaletteChoice.entries.map { it to it.palette.name },
+                            onSelect = onPaletteChoiceChange,
+                        )
+                    }
+                }
+
+                SettingsSection.ROUTING -> {
+                    val p = state.prefixConfig
+                    var filesField by remember(p.files) { mutableStateOf(TextFieldValue(p.files, TextRange(p.files.length))) }
+                    var pipesField by remember(p.pipes) { mutableStateOf(TextFieldValue(p.pipes, TextRange(p.pipes.length))) }
+                    var bookmarksField by remember(p.bookmarks) { mutableStateOf(TextFieldValue(p.bookmarks, TextRange(p.bookmarks.length))) }
+                    var appsField by remember(p.apps) { mutableStateOf(TextFieldValue(p.apps, TextRange(p.apps.length))) }
+                    var histField by remember(p.history) { mutableStateOf(TextFieldValue(p.history, TextRange(p.history.length))) }
+                    var contactsField by remember(p.contacts) { mutableStateOf(TextFieldValue(p.contacts, TextRange(p.contacts.length))) }
+
+                    val pushPrefixUpdate: (String, String, String, String, String, String) -> Unit = { fVal, sVal, bVal, appVal, hVal, cVal ->
+                        onPrefixConfigChange(
+                            PrefixConfig(
+                                files = fVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "f" },
+                                pipes = sVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "s" },
+                                bookmarks = bVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "b" },
+                                apps = appVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "app" },
+                                history = hVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "hist" },
+                                contacts = cVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "c" },
+                            )
+                        )
+                    }
+
+                    AsciiBox(title = "routing · custom prefixes (f, s, b, app, hist, c)") {
+                        AsciiText(
+                            text = "change the command prefixes and row tags used to filter each category:",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(Modifier.weight(1f)) {
+                                AsciiTextField(
+                                    label = "files prefix",
+                                    promptPrefix = "> ",
+                                    value = filesField,
+                                    onValueChange = {
+                                        filesField = it
+                                        pushPrefixUpdate(it.text, pipesField.text, bookmarksField.text, appsField.text, histField.text, contactsField.text)
+                                    },
+                                    placeholder = "f",
+                                )
+                            }
+                            Box(Modifier.weight(1f)) {
+                                AsciiTextField(
+                                    label = "search pipes prefix",
+                                    promptPrefix = "> ",
+                                    value = pipesField,
+                                    onValueChange = {
+                                        pipesField = it
+                                        pushPrefixUpdate(filesField.text, it.text, bookmarksField.text, appsField.text, histField.text, contactsField.text)
+                                    },
+                                    placeholder = "s",
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(Modifier.weight(1f)) {
+                                AsciiTextField(
+                                    label = "bookmarks prefix",
+                                    promptPrefix = "> ",
+                                    value = bookmarksField,
+                                    onValueChange = {
+                                        bookmarksField = it
+                                        pushPrefixUpdate(filesField.text, pipesField.text, it.text, appsField.text, histField.text, contactsField.text)
+                                    },
+                                    placeholder = "b",
+                                )
+                            }
+                            Box(Modifier.weight(1f)) {
+                                AsciiTextField(
+                                    label = "apps prefix",
+                                    promptPrefix = "> ",
+                                    value = appsField,
+                                    onValueChange = {
+                                        appsField = it
+                                        pushPrefixUpdate(filesField.text, pipesField.text, bookmarksField.text, it.text, histField.text, contactsField.text)
+                                    },
+                                    placeholder = "app",
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(Modifier.weight(1f)) {
+                                AsciiTextField(
+                                    label = "history prefix",
+                                    promptPrefix = "> ",
+                                    value = histField,
+                                    onValueChange = {
+                                        histField = it
+                                        pushPrefixUpdate(filesField.text, pipesField.text, bookmarksField.text, appsField.text, it.text, contactsField.text)
+                                    },
+                                    placeholder = "hist",
+                                )
+                            }
+                            Box(Modifier.weight(1f)) {
+                                AsciiTextField(
+                                    label = "contacts prefix",
+                                    promptPrefix = "> ",
+                                    value = contactsField,
+                                    onValueChange = {
+                                        contactsField = it
+                                        pushPrefixUpdate(filesField.text, pipesField.text, bookmarksField.text, appsField.text, histField.text, it.text)
+                                    },
+                                    placeholder = "c",
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
                         AsciiButton(
-                            label = "copy pipe:// url",
+                            label = "reset default prefixes (f, s, b, app, hist, c)",
+                            onClick = onResetPrefixConfig,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 44.dp)
+                                .border(1.dp, c.border),
+                        )
+                    }
+
+                    AsciiBox(title = "routing · browser & external text") {
+                        val browserOptions = remember(state.installedBrowsers) {
+                            listOf("auto" to "System Default (Auto)") +
+                                state.installedBrowsers.map { it.packageName to it.label }
+                        }
+                        AsciiDropdownRow(
+                            label = "default browser",
+                            subtitle = "opens web links & search pipes",
+                            selectedValue = state.preferredBrowserPackage,
+                            options = browserOptions,
+                            onSelect = onPreferredBrowserChange,
+                        )
+                        AsciiDropdownRow(
+                            label = "share text action",
+                            subtitle = "when sharing or selecting text",
+                            selectedValue = state.externalTextMode,
+                            options = listOf(
+                                ExternalTextMode.OPEN_OVERLAY to "Open floating overlay",
+                                ExternalTextMode.OPEN_PROMPT to "Open main prompt",
+                                ExternalTextMode.DIRECT_PIPE to "Pipe immediately",
+                            ),
+                            onSelect = onExternalTextModeChange,
+                        )
+                        AsciiToggleRow(
+                            label = "record local command history",
+                            checked = state.historyEnabled,
+                            onCheckedChange = onHistoryEnabledChange,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        AsciiButton(
+                            label = "copy pipe://search?q=%s url",
                             onClick = {
                                 clipboard.setText(AnnotatedString("pipe://search?q=%s"))
                                 onSetJsonStatus("ok: copied pipe://search?q=%s")
                             },
-                            modifier = Modifier.weight(1f).border(1.dp, c.border),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 46.dp)
+                                .border(1.dp, c.border),
                         )
+                        if (state.jsonStatusMessage != null) {
+                            Spacer(Modifier.height(4.dp))
+                            AsciiText(
+                                text = state.jsonStatusMessage,
+                                style = AsciiType.small,
+                                color = c.good,
+                            )
+                        }
                     }
                 }
-            }
 
-            item(key = "sec_bak") {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    AsciiBox(title = "bak · json backup (2x2)") {
+                SettingsSection.BACKUP -> {
+                    AsciiBox(title = "backup · json backup (2x2)") {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -3509,7 +3633,7 @@ private fun PipeSettingsScreen(
 
                     AsciiDangerBox(title = "danger zone") {
                         AsciiText(
-                            text = "restores the 7 default search pipes (you can undo within 6s):",
+                            text = "restores the ${com.sujan.pipe.model.DefaultEngines.LIST.size} default search pipes including ytt, ytw, ytm (undo within 6s):",
                             style = AsciiType.small,
                             color = c.dim,
                         )
@@ -3542,10 +3666,11 @@ private fun PipeSettingsScreen(
                         BoxWithConstraints(Modifier.fillMaxWidth()) {
                             val cols = rememberCols(AsciiType.small)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                AsciiText("pipe v2.0 (release)", style = AsciiType.title, color = c.accent)
+                                AsciiText("pipe v2.2 (release)", style = AsciiType.title, color = c.accent)
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
-                                AsciiText(leader("bookmarks", "b <alias>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
-                                AsciiText(leader("search pipes", "s <keyword> <query>", cols), style = AsciiType.small, color = c.accent, softWrap = false)
+                                AsciiText(leader("bookmarks", "${state.prefixConfig.bookmarksClean} <alias>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
+                                AsciiText(leader("search pipes", "${state.prefixConfig.pipesClean} <keyword> <query>", cols), style = AsciiType.small, color = c.accent, softWrap = false)
+                                AsciiText(leader("youtube time", "ytt / ytw / ytm <query>", cols), style = AsciiType.small, color = c.good, softWrap = false)
                             }
                         }
                     }
@@ -3591,9 +3716,6 @@ private fun PipeSettingsScreen(
     }
 }
 
-/**
- * Launcher-style sample data preview for Step 1 (apps, contact, file, folder bookmark, search pipe).
- */
 @Composable
 fun PipePromptStep1Preview() {
     val sampleEngine = com.sujan.pipe.model.DefaultEngines.LIST.first { it.keyword == "gh" }

@@ -8,6 +8,7 @@ import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.DefaultBookmarks
 import com.sujan.pipe.model.DefaultEngines
 import com.sujan.pipe.model.PipeBookmark
+import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.ui.ascii.PaletteChoice
@@ -23,14 +24,62 @@ class PipeRepository(context: Context) {
         context.applicationContext.getSharedPreferences("pipe_ascii_prefs", Context.MODE_PRIVATE)
 
     fun loadEngines(): List<SearchEngine> {
-        val raw = prefs.getString("engines_json", null) ?: return DefaultEngines.LIST
-        return try { QueryRouter.importEnginesFromJson(raw) } catch (_: Exception) { DefaultEngines.LIST }
+        val raw = prefs.getString("engines_json", null)
+        if (raw == null) {
+            prefs.edit().putBoolean("seeded_yt_time_pipes_v1", true).apply()
+            return DefaultEngines.LIST
+        }
+        val loaded = try {
+            QueryRouter.importEnginesFromJson(raw)
+        } catch (_: Exception) {
+            DefaultEngines.LIST
+        }
+        if (!prefs.getBoolean("seeded_yt_time_pipes_v1", false)) {
+            val existingKeywords = loaded.map { it.keyword.lowercase() }.toSet()
+            val missingYt = DefaultEngines.YT_TIME_PIPES.filter { it.keyword.lowercase() !in existingKeywords }
+            val merged = if (missingYt.isNotEmpty()) {
+                val ytIndex = loaded.indexOfFirst { it.keyword.equals("yt", ignoreCase = true) }
+                if (ytIndex >= 0) {
+                    loaded.subList(0, ytIndex + 1) + missingYt + loaded.subList(ytIndex + 1, loaded.size)
+                } else {
+                    loaded + missingYt
+                }
+            } else {
+                loaded
+            }
+            prefs.edit().putBoolean("seeded_yt_time_pipes_v1", true).apply()
+            saveEngines(merged)
+            return merged
+        }
+        return loaded
     }
 
     fun saveEngines(engines: List<SearchEngine>) {
         val idx = engines.indexOfFirst { it.isDefault }.let { if (it >= 0) it else 0 }
         val normalized = engines.ifEmpty { DefaultEngines.LIST }.mapIndexed { i, e -> e.copy(isDefault = i == idx) }
         prefs.edit().putString("engines_json", QueryRouter.exportEnginesToJson(normalized)).apply()
+    }
+
+    fun loadPrefixConfig(): PrefixConfig {
+        return PrefixConfig(
+            files = prefs.getString("prefix_files_v1", "f")?.trim()?.ifEmpty { "f" } ?: "f",
+            pipes = prefs.getString("prefix_pipes_v1", "s")?.trim()?.ifEmpty { "s" } ?: "s",
+            bookmarks = prefs.getString("prefix_bookmarks_v1", "b")?.trim()?.ifEmpty { "b" } ?: "b",
+            apps = prefs.getString("prefix_apps_v1", "app")?.trim()?.ifEmpty { "app" } ?: "app",
+            history = prefs.getString("prefix_history_v1", "hist")?.trim()?.ifEmpty { "hist" } ?: "hist",
+            contacts = prefs.getString("prefix_contacts_v1", "c")?.trim()?.ifEmpty { "c" } ?: "c",
+        )
+    }
+
+    fun savePrefixConfig(config: PrefixConfig) {
+        prefs.edit()
+            .putString("prefix_files_v1", config.filesClean)
+            .putString("prefix_pipes_v1", config.pipesClean)
+            .putString("prefix_bookmarks_v1", config.bookmarksClean)
+            .putString("prefix_apps_v1", config.appsClean)
+            .putString("prefix_history_v1", config.historyClean)
+            .putString("prefix_contacts_v1", config.contactsClean)
+            .apply()
     }
 
     fun loadBookmarks(): List<PipeBookmark> {
@@ -194,17 +243,20 @@ class PipeRepository(context: Context) {
     fun loadOverlayDimAmount(): Float = prefs.getFloat("overlay_dim_v1", 0.35f).coerceIn(0.0f, 0.85f)
     fun saveOverlayDimAmount(dim: Float) = prefs.edit().putFloat("overlay_dim_v1", dim.coerceIn(0.0f, 0.85f)).apply()
 
-    fun loadOverlayCornerRadiusDp(): Int = prefs.getInt("overlay_corner_dp_v1", 16).coerceIn(0, 28)
-    fun saveOverlayCornerRadiusDp(dp: Int) = prefs.edit().putInt("overlay_corner_dp_v1", dp.coerceIn(0, 28)).apply()
+    // Default 10dp corner radius as requested
+    fun loadOverlayCornerRadiusDp(): Int = prefs.getInt("overlay_corner_dp_v2", 10).coerceIn(0, 28)
+    fun saveOverlayCornerRadiusDp(dp: Int) = prefs.edit().putInt("overlay_corner_dp_v2", dp.coerceIn(0, 28)).apply()
 
+    // Default bottom overlay as requested
     fun loadOverlayBottomAnchored(): Boolean = prefs.getBoolean("overlay_bottom_v2", true)
     fun saveOverlayBottomAnchored(bottom: Boolean) = prefs.edit().putBoolean("overlay_bottom_v2", bottom).apply()
 
-    fun loadOverlayForceDark(): Boolean = prefs.getBoolean("overlay_force_dark_v1", true)
-    fun saveOverlayForceDark(forceDark: Boolean) = prefs.edit().putBoolean("overlay_force_dark_v1", forceDark).apply()
+    // Default false so overlay theme matches app theme automatically
+    fun loadOverlayForceDark(): Boolean = prefs.getBoolean("overlay_force_dark_v2", false)
+    fun saveOverlayForceDark(forceDark: Boolean) = prefs.edit().putBoolean("overlay_force_dark_v2", forceDark).apply()
 
-    fun loadOverlayShowIdleSuggestions(): Boolean = prefs.getBoolean("overlay_idle_suggestions_v2", true)
-    fun saveOverlayShowIdleSuggestions(show: Boolean) = prefs.edit().putBoolean("overlay_idle_suggestions_v2", show).apply()
+    fun loadOverlayShowIdleSuggestions(): Boolean = prefs.getBoolean("overlay_idle_suggestions_v1", false)
+    fun saveOverlayShowIdleSuggestions(show: Boolean) = prefs.edit().putBoolean("overlay_idle_suggestions_v1", show).apply()
 
     fun loadPreferredBrowserPackage(): String = prefs.getString("preferred_browser_pkg_v1", "auto") ?: "auto"
     fun savePreferredBrowserPackage(pkg: String) = prefs.edit().putString("preferred_browser_pkg_v1", pkg).apply()
@@ -221,8 +273,9 @@ class PipeRepository(context: Context) {
     fun loadSearchBoxPrefix(): String = prefs.getString("search_box_prefix_v1", "> ") ?: "> "
     fun saveSearchBoxPrefix(prefix: String) = prefs.edit().putString("search_box_prefix_v1", prefix).apply()
 
-    fun loadSearchBoxPlaceholder(): String = prefs.getString("search_box_placeholder_v1", "pipe (c, f, b, s, app)...") ?: ""
-    fun saveSearchBoxPlaceholder(hint: String) = prefs.edit().putString("search_box_placeholder_v1", hint).apply()
+    // Default "pipe for???" placeholder as requested
+    fun loadSearchBoxPlaceholder(): String = prefs.getString("search_box_placeholder_v2", "pipe for???") ?: "pipe for???"
+    fun saveSearchBoxPlaceholder(hint: String) = prefs.edit().putString("search_box_placeholder_v2", hint).apply()
 
     fun loadShowSearchBoxScopeBadge(): Boolean = prefs.getBoolean("search_box_scope_badge_v1", true)
     fun saveShowSearchBoxScopeBadge(show: Boolean) = prefs.edit().putBoolean("search_box_scope_badge_v1", show).apply()

@@ -8,6 +8,7 @@ import com.sujan.pipe.model.EngineColorRole
 import com.sujan.pipe.model.InstalledAppItem
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
+import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
 import java.net.URI
@@ -22,10 +23,6 @@ import java.nio.charset.StandardCharsets
  */
 object FuzzyMatcher {
 
-    /**
-     * Normalizes text by lowercasing, turning separators (`-`, `_`, `/`, `.`, `(`, `)`, `[`, `]`)
-     * into spaces, stripping emojis/symbols, and collapsing whitespace.
-     */
     fun normalizeForSearch(raw: String): String {
         if (raw.isEmpty()) return ""
         val sb = StringBuilder(raw.length)
@@ -49,9 +46,6 @@ object FuzzyMatcher {
         return sb.toString().trim()
     }
 
-    /**
-     * Zero-allocation / display-normalized fuzzy scorer operating on pre-lowercased [q] and [c].
-     */
     fun scorePreLowered(q: String, c: String): Int {
         if (q.isEmpty()) return 1
         if (c.isEmpty()) return 0
@@ -59,15 +53,12 @@ object FuzzyMatcher {
         if (c == q) return 1000
         if (c.startsWith(q)) return 900 - (c.length - q.length).coerceAtMost(80)
 
-        // Word-boundary prefix check on raw lowered strings
         val wordMatch = checkWordBoundaryMatch(q, c)
         if (wordMatch > 0) return wordMatch
 
-        // Contiguous substring match
         val subIdx = c.indexOf(q)
         if (subIdx >= 0) return 680 - subIdx.coerceAtMost(60)
 
-        // Normalized comparison (handles `Kali budi❤️`, `Downloads (dl)`, `986-051`, `sasu_ama.jpg`)
         val normQ = normalizeForSearch(q)
         val normC = normalizeForSearch(c)
         if (normQ.isNotEmpty() && normC.isNotEmpty()) {
@@ -241,7 +232,6 @@ object FuzzyMatcher {
             }
         }
         if (qIdx < qLen) return 0
-        // Reject loose accidental scattered subsequences across long strings
         val span = (lastMatchIdx - firstPos + 1).coerceAtLeast(qLen)
         if (maxConsecutive < 2 && boundaryHits < qLen) return 0
         if (span > qLen * 3 + 4 && boundaryHits < 2) return 0
@@ -309,9 +299,6 @@ object FuzzyMatcher {
             .map { it.first }
     }
 
-    /**
-     * Display-aware file/folder scorer using `nameLower`, `parentLower/nameLower`, and `pathLower`.
-     */
     fun scoreFileItemPreLowered(cleanLowerQuery: String, item: LocalFileItem): Int {
         if (cleanLowerQuery.isEmpty()) return if (item.isDirectory) 220 else 100
         val nameScore = scorePreLowered(cleanLowerQuery, item.nameLower)
@@ -375,6 +362,7 @@ enum class PromptIntentMode(val scopeBadge: String) {
     BOOKMARKS_ONLY("b:bookmarks"),
     PIPES_LIST("s:pipes"),
     APPS_ONLY("app:launcher"),
+    HISTORY_ONLY("hist:history"),
     SCOPED_FOLDER("b:folder"),
     ENGINE_ONLY("s:pipe"),
     ADD_COMMAND("+add"),
@@ -390,10 +378,6 @@ data class ParsedPromptCommand(
     val contactAction: ContactQuickAction = ContactQuickAction.CALL,
 )
 
-/**
- * Unified Raycast-style command palette row item.
- * Every item has a `usageKey` used to track usage frequency (`usageCount`) and `rankScore` for relevance.
- */
 sealed interface PaletteItem {
     val usageKey: String
     val rankScore: Int
@@ -487,24 +471,14 @@ object QueryRouter {
     private val WHITESPACE_REGEX = Regex("\\s+")
 
     /**
-     * Parses the user's input with strict prefix separation (`b` for Bookmarks, `s` for Search Pipes)
-     * and trailing-space locking so typing normal words (`g`, `docs`, `download`, `abb`) never hijacks
-     * the search before you press space!
-     *
-     * Supported scoped prefixes (activated after a space):
-     * - `b <query>` / `bm <query>` -> `BOOKMARKS_ONLY` (e.g. `b abb` matches ONLY the `abb` Bookmark; `b dl invoice` scopes into folder `dl`)
-     * - `s <kw> [query]` / `pipe <kw> [query]` -> `PIPES_LIST` or `ENGINE_ONLY` (e.g. `s abb` or `s abb dune` matches ONLY the `abb` Search Pipe)
-     * - `c <query> [wa|sms|call]` -> `CONTACTS_ONLY`
-     * - `f <query>` -> `FILES_ONLY`
-     * - `d <query>` -> `DIRS_ONLY`
-     * - `app <query>` -> `APPS_ONLY`
-     * - `+ [args]` / `add [args]` -> `ADD_COMMAND`
-     * - `- [args]` / `del [args]` / `rm [args]` -> `RM_COMMAND`
+     * Parses the user's input using user-configurable [prefixes] (`f`, `s`, `b`, `app`, `hist`, `c`)
+     * and trailing-space locking so typing normal words never hijacks the search before pressing space.
      */
     fun parsePromptCommand(
         rawInput: String,
         bookmarks: List<PipeBookmark>,
         engines: List<SearchEngine> = DefaultEngines.LIST,
+        prefixes: PrefixConfig = PrefixConfig(),
     ): ParsedPromptCommand {
         val trimmedStart = rawInput.trimStart()
         val trimmed = trimmedStart.trimEnd()
@@ -529,8 +503,15 @@ object QueryRouter {
             return ParsedPromptCommand(PromptIntentMode.RM_COMMAND, remainder)
         }
 
-        // 1. Dedicated Bookmark Prefix: `b <query>` or `bm <query>` (requires space after `b` / `bm`)
-        if ((firstLower == "b" || firstLower == "bm") && hasSpaceAfterFirst) {
+        val bPrefix = prefixes.bookmarksClean
+        val sPrefix = prefixes.pipesClean
+        val cPrefix = prefixes.contactsClean
+        val appPrefix = prefixes.appsClean
+        val fPrefix = prefixes.filesClean
+        val histPrefix = prefixes.historyClean
+
+        // 1. Dedicated Bookmark Prefix: `<bPrefix> <query>` or `bm <query>` (requires space)
+        if ((firstLower == bPrefix || firstLower == "b" || firstLower == "bm") && hasSpaceAfterFirst) {
             if (remainder.isNotEmpty()) {
                 val subTokens = remainder.split(WHITESPACE_REGEX, limit = 2)
                 val subFirst = subTokens[0].lowercase()
@@ -557,8 +538,8 @@ object QueryRouter {
             return ParsedPromptCommand(PromptIntentMode.BOOKMARKS_ONLY, "")
         }
 
-        // 2. Dedicated Search Pipe Prefix: `s <keyword> [query]` or `pipe <keyword> [query]` (requires space after `s` / `pipe`)
-        if ((firstLower == "s" || firstLower == "pipe" || firstLower == "pipes") && hasSpaceAfterFirst) {
+        // 2. Dedicated Search Pipe Prefix: `<sPrefix> <keyword> [query]` or `pipe <keyword> [query]`
+        if ((firstLower == sPrefix || firstLower == "s" || firstLower == "pipe" || firstLower == "pipes") && hasSpaceAfterFirst) {
             if (remainder.isEmpty()) {
                 return ParsedPromptCommand(PromptIntentMode.PIPES_LIST, "")
             }
@@ -590,8 +571,8 @@ object QueryRouter {
             return ParsedPromptCommand(PromptIntentMode.PIPES_LIST, remainder)
         }
 
-        // 3. Contact alias: `c <name>` (requires space after `c`, with optional `wa` / `sms` / `call` chaining)
-        if ((firstLower == "c" || firstLower == "call" || firstLower == "contact") && hasSpaceAfterFirst) {
+        // 3. Contact alias: `<cPrefix> <name>` (with optional `wa` / `sms` / `call` chaining)
+        if ((firstLower == cPrefix || firstLower == "c" || firstLower == "call" || firstLower == "contact") && hasSpaceAfterFirst) {
             val subTokens = remainder.trim().split(WHITESPACE_REGEX)
             if (subTokens.size >= 2) {
                 val lastToken = subTokens.last().lowercase()
@@ -613,22 +594,27 @@ object QueryRouter {
             return ParsedPromptCommand(PromptIntentMode.CONTACTS_ONLY, remainder, contactAction = ContactQuickAction.CALL)
         }
 
-        // 4. Direct App Launcher alias: `app <query>` (requires space)
-        if ((firstLower == "app" || firstLower == "apps" || firstLower == "ap") && hasSpaceAfterFirst) {
+        // 4. Direct App Launcher alias: `<appPrefix> <query>`
+        if ((firstLower == appPrefix || firstLower == "app" || firstLower == "apps" || firstLower == "ap") && hasSpaceAfterFirst) {
             return ParsedPromptCommand(PromptIntentMode.APPS_ONLY, remainder)
         }
 
-        // 5. File + Folder search alias: `f <query>` (requires space)
-        if ((firstLower == "f" || firstLower == "file" || firstLower == "files") && hasSpaceAfterFirst) {
+        // 5. File + Folder search alias: `<fPrefix> <query>`
+        if ((firstLower == fPrefix || firstLower == "f" || firstLower == "file" || firstLower == "files") && hasSpaceAfterFirst) {
             return ParsedPromptCommand(PromptIntentMode.FILES_ONLY, remainder)
         }
 
-        // 6. Directory-only alias: `d <query>` (requires space)
+        // 6. History search alias: `<histPrefix> <query>`
+        if ((firstLower == histPrefix || firstLower == "hist" || firstLower == "history") && hasSpaceAfterFirst) {
+            return ParsedPromptCommand(PromptIntentMode.HISTORY_ONLY, remainder)
+        }
+
+        // 7. Directory-only alias: `d <query>`
         if ((firstLower == "d" || firstLower == "dir" || firstLower == "folder" || firstLower == "folders") && hasSpaceAfterFirst) {
             return ParsedPromptCommand(PromptIntentMode.DIRS_ONLY, remainder)
         }
 
-        // 7. Direct Folder Bookmark or Engine Keyword when followed by a space (e.g. `dl invoice`, `yt lofi`, `abb dune`)
+        // 8. Direct Folder Bookmark or Engine Keyword when followed by a space (e.g. `dl invoice`, `yt lofi`, `ytt news`)
         if (hasSpaceAfterFirst) {
             val matchedBookmark = bookmarks.firstOrNull {
                 it.alias.isNotBlank() && it.alias.equals(firstLower, ignoreCase = true)
@@ -669,12 +655,6 @@ object QueryRouter {
         return ParsedPromptCommand(PromptIntentMode.ALL, trimmed)
     }
 
-    /**
-     * Builds the unified Raycast-style command list (strictly capped at [MAX_PALETTE_RESULTS] = 10).
-     * - Deduplicates `storageFiles` against bookmarked paths so `Downloads (dl)` and `Download` never repeat.
-     * - When idle (`q.isEmpty()`): ranks by `usageCount` first.
-     * - When searching (`q.isNotEmpty()`): ranks strictly by `rankScore` (match quality) first!
-     */
     fun buildPaletteResults(
         rawInput: String,
         engines: List<SearchEngine>,
@@ -686,15 +666,16 @@ object QueryRouter {
         usageMap: Map<String, Int>,
         installedApps: List<InstalledAppItem> = emptyList(),
         clipboardText: String = "",
+        prefixes: PrefixConfig = PrefixConfig(),
     ): List<PaletteItem> {
-        val cmd = parsePromptCommand(rawInput, bookmarks, engines)
+        val cmd = parsePromptCommand(rawInput, bookmarks, engines, prefixes)
         fun usageOf(key: String): Int = usageMap[key] ?: 0
         fun usageBonus(key: String): Int = (usageMap[key] ?: 0) * 35
 
         return when (cmd.mode) {
-            PromptIntentMode.ADD_COMMAND -> buildQuickAddSuggestions(cmd.filterQuery, clipboardText)
+            PromptIntentMode.ADD_COMMAND -> buildQuickAddSuggestions(cmd.filterQuery, clipboardText, prefixes)
 
-            PromptIntentMode.RM_COMMAND -> buildQuickRemoveSuggestions(cmd.filterQuery, bookmarks, engines, history)
+            PromptIntentMode.RM_COMMAND -> buildQuickRemoveSuggestions(cmd.filterQuery, bookmarks, engines, history, prefixes)
 
             PromptIntentMode.CONTACTS_ONLY -> {
                 val q = cmd.filterQuery.trim()
@@ -777,6 +758,24 @@ object QueryRouter {
                 }.sortedWith(
                     if (q.isEmpty()) compareByDescending<PaletteItem.BookmarkAction> { it.usageCount }.thenByDescending { it.rankScore }
                     else compareByDescending<PaletteItem.BookmarkAction> { it.rankScore }.thenByDescending { it.usageCount }
+                ).take(MAX_PALETTE_RESULTS)
+            }
+
+            PromptIntentMode.HISTORY_ONLY -> {
+                val q = cmd.filterQuery.trim().lowercase()
+                history.mapNotNull { h ->
+                    val hKey = "hist:${h.rawInput.lowercase()}"
+                    val uCount = usageOf(hKey).coerceAtLeast(1)
+                    val fScore = if (q.isEmpty()) 200 else maxOf(
+                        FuzzyMatcher.scorePreLowered(q, h.rawInput.lowercase()),
+                        FuzzyMatcher.scorePreLowered(q, h.engineName.lowercase()),
+                    )
+                    if (fScore > 0) {
+                        PaletteItem.HistoryAction(h, hKey, fScore * 10 + usageBonus(hKey), uCount)
+                    } else null
+                }.sortedWith(
+                    if (q.isEmpty()) compareByDescending<PaletteItem.HistoryAction> { it.entry.timestampEpochMs }
+                    else compareByDescending<PaletteItem.HistoryAction> { it.rankScore }.thenByDescending { it.usageCount }
                 ).take(MAX_PALETTE_RESULTS)
             }
 
@@ -1015,27 +1014,30 @@ object QueryRouter {
         }
     }
 
-    private fun buildQuickAddSuggestions(rawSub: String, clipboardText: String): List<PaletteItem> {
+    private fun buildQuickAddSuggestions(rawSub: String, clipboardText: String, prefixes: PrefixConfig = PrefixConfig()): List<PaletteItem> {
         val sub = rawSub.trim()
+        val bPre = prefixes.bookmarksClean
+        val sPre = prefixes.pipesClean
+        val cPre = prefixes.contactsClean
         if (sub.isEmpty()) {
             return listOf(
                 PaletteItem.QuickAddAction(
                     kind = QuickAddKind.CONTACT,
-                    title = "Add Contact",
+                    title = "Add Contact ($cPre)",
                     subtitle = "tap for form  |  + Name Phone",
                     isReadyToCommit = false,
                 ),
                 PaletteItem.QuickAddAction(
                     kind = QuickAddKind.BOOKMARK,
-                    title = "Add Bookmark (b)",
-                    subtitle = "tap for form  |  + b <alias> <url/path>",
+                    title = "Add Bookmark ($bPre)",
+                    subtitle = "tap for form  |  + $bPre <alias> <url/path>",
                     isReadyToCommit = false,
                     arg3 = clipboardText,
                 ),
                 PaletteItem.QuickAddAction(
                     kind = QuickAddKind.PIPE,
-                    title = "Add Search Pipe (s)",
-                    subtitle = "tap for form  |  + s <keyword> <search-url>",
+                    title = "Add Search Pipe ($sPre)",
+                    subtitle = "tap for form  |  + $sPre <keyword> <search-url>",
                     isReadyToCommit = false,
                     arg3 = clipboardText,
                 ),
@@ -1047,7 +1049,7 @@ object QueryRouter {
         val subArgs = if (subTokens.size > 1) subTokens[1].trim() else ""
 
         return when (subType) {
-            "c", "contact", "call" -> {
+            cPre, "c", "contact", "call" -> {
                 val parsed = parseQuickAddContact(subArgs)
                 if (parsed != null) {
                     listOf(
@@ -1065,20 +1067,20 @@ object QueryRouter {
                         PaletteItem.QuickAddAction(
                             kind = QuickAddKind.CONTACT,
                             title = "Add Contact (tap for form)",
-                            subtitle = "+ c <Name> <Phone>",
+                            subtitle = "+ $cPre <Name> <Phone>",
                             isReadyToCommit = false,
                             arg1 = subArgs,
                         )
                     )
                 }
             }
-            "b", "bm", "bookmark" -> {
+            bPre, "b", "bm", "bookmark" -> {
                 val parsed = parseQuickAddBookmark(subArgs, clipboardText)
                 if (parsed != null) {
                     listOf(
                         PaletteItem.QuickAddAction(
                             kind = QuickAddKind.BOOKMARK,
-                            title = "Save Bookmark [b ${parsed.first}]: \"${parsed.second}\"",
+                            title = "Save Bookmark [$bPre ${parsed.first}]: \"${parsed.second}\"",
                             subtitle = "${parsed.third.second.badge} -> ${parsed.third.first}",
                             isReadyToCommit = true,
                             arg1 = parsed.first,
@@ -1092,7 +1094,7 @@ object QueryRouter {
                         PaletteItem.QuickAddAction(
                             kind = QuickAddKind.BOOKMARK,
                             title = "Add Bookmark (tap for form)",
-                            subtitle = "+ b <alias> [Title] <url/path>",
+                            subtitle = "+ $bPre <alias> [Title] <url/path>",
                             isReadyToCommit = false,
                             arg1 = subArgs,
                             arg3 = clipboardText,
@@ -1100,13 +1102,13 @@ object QueryRouter {
                     )
                 }
             }
-            "s", "p", "pipe", "eng", "engine" -> {
+            sPre, "s", "p", "pipe", "eng", "engine" -> {
                 val parsed = parseQuickAddPipe(subArgs, clipboardText)
                 if (parsed != null) {
                     listOf(
                         PaletteItem.QuickAddAction(
                             kind = QuickAddKind.PIPE,
-                            title = "Save Search Pipe [s ${parsed.first}]: \"${parsed.second}\"",
+                            title = "Save Search Pipe [$sPre ${parsed.first}]: \"${parsed.second}\"",
                             subtitle = "template: ${parsed.third}",
                             isReadyToCommit = true,
                             arg1 = parsed.first,
@@ -1119,7 +1121,7 @@ object QueryRouter {
                         PaletteItem.QuickAddAction(
                             kind = QuickAddKind.PIPE,
                             title = "Add Search Pipe (tap for form)",
-                            subtitle = "+ s <keyword> [Name] <search-url>",
+                            subtitle = "+ $sPre <keyword> [Name] <search-url>",
                             isReadyToCommit = false,
                             arg1 = subArgs,
                             arg3 = clipboardText,
@@ -1149,7 +1151,7 @@ object QueryRouter {
                     out.add(
                         PaletteItem.QuickAddAction(
                             kind = QuickAddKind.PIPE,
-                            title = "Save Search Pipe [s ${autoPipe.first}]: \"${autoPipe.second}\"",
+                            title = "Save Search Pipe [$sPre ${autoPipe.first}]: \"${autoPipe.second}\"",
                             subtitle = "template: ${autoPipe.third}",
                             isReadyToCommit = true,
                             arg1 = autoPipe.first,
@@ -1162,7 +1164,7 @@ object QueryRouter {
                     out.add(
                         PaletteItem.QuickAddAction(
                             kind = QuickAddKind.BOOKMARK,
-                            title = "Save Bookmark [b ${autoBm.first}]: \"${autoBm.second}\"",
+                            title = "Save Bookmark [$bPre ${autoBm.first}]: \"${autoBm.second}\"",
                             subtitle = "${autoBm.third.second.badge} -> ${autoBm.third.first}",
                             isReadyToCommit = true,
                             arg1 = autoBm.first,
@@ -1176,7 +1178,7 @@ object QueryRouter {
                     out.add(
                         PaletteItem.QuickAddAction(
                             kind = QuickAddKind.PIPE,
-                            title = "Save Search Pipe [s ${autoPipe.first}]: \"${autoPipe.second}\"",
+                            title = "Save Search Pipe [$sPre ${autoPipe.first}]: \"${autoPipe.second}\"",
                             subtitle = "template: ${autoPipe.third}",
                             isReadyToCommit = true,
                             arg1 = autoPipe.first,
@@ -1190,7 +1192,7 @@ object QueryRouter {
                         PaletteItem.QuickAddAction(
                             kind = QuickAddKind.CONTACT,
                             title = "Open Quick Add Form for \"$sub\"",
-                            subtitle = "tap to choose Contact, Bookmark (b), or Pipe (s)",
+                            subtitle = "tap to choose Contact ($cPre), Bookmark ($bPre), or Pipe ($sPre)",
                             isReadyToCommit = false,
                             arg1 = sub,
                             arg3 = clipboardText,
@@ -1207,12 +1209,15 @@ object QueryRouter {
         bookmarks: List<PipeBookmark>,
         engines: List<SearchEngine>,
         history: List<SearchHistoryEntry>,
+        prefixes: PrefixConfig = PrefixConfig(),
     ): List<PaletteItem> {
         val sub = rawSub.trim().lowercase()
         val tokens = sub.split(WHITESPACE_REGEX, limit = 2)
         val first = tokens.firstOrNull().orEmpty()
-        val onlyBookmarks = first == "b" || first == "bm"
-        val onlyPipes = first == "s" || first == "p" || first == "pipe"
+        val bPre = prefixes.bookmarksClean
+        val sPre = prefixes.pipesClean
+        val onlyBookmarks = first == bPre || first == "b" || first == "bm"
+        val onlyPipes = first == sPre || first == "s" || first == "p" || first == "pipe"
         val targetToken = if ((onlyBookmarks || onlyPipes) && tokens.size > 1) tokens[1].trim() else if (onlyBookmarks || onlyPipes) "" else sub
 
         val out = mutableListOf<PaletteItem>()
@@ -1225,7 +1230,7 @@ object QueryRouter {
                         isBookmark = true,
                         targetId = bm.id,
                         aliasOrKeyword = bm.alias,
-                        displayTitle = "Delete Bookmark [b ${bm.alias}] ${bm.title}",
+                        displayTitle = "Delete Bookmark [$bPre ${bm.alias}] ${bm.title}",
                     )
                 )
             }
@@ -1239,7 +1244,7 @@ object QueryRouter {
                         isBookmark = false,
                         targetId = eng.id,
                         aliasOrKeyword = eng.keyword,
-                        displayTitle = "Delete Search Pipe [s ${eng.keyword}] ${eng.name}",
+                        displayTitle = "Delete Search Pipe [$sPre ${eng.keyword}] ${eng.name}",
                     )
                 )
             }
@@ -1262,10 +1267,6 @@ object QueryRouter {
         return out.take(MAX_PALETTE_RESULTS)
     }
 
-    /**
-     * Converts a sample search URL (e.g. `https://site.com/search?q=hello`) into a `{query}` template
-     * (`https://site.com/search?q={query}`) if `{query}` is not already present.
-     */
     fun normalizePipeUrlTemplate(rawUrl: String): String {
         val trimmed = rawUrl.trim()
         if (trimmed.isEmpty()) return ""
@@ -1282,9 +1283,6 @@ object QueryRouter {
         return if (withScheme.contains("?")) "$withScheme&q={query}" else "$withScheme?q={query}"
     }
 
-    /**
-     * Infers a clean title from a URL or file path when the user only types `+ b abb https://audiobookbay.lu`.
-     */
     fun inferTitleFromTarget(alias: String, target: String): String {
         val cleanTarget = target.trim().trimEnd('/')
         if (cleanTarget.startsWith("/")) {
@@ -1304,9 +1302,6 @@ object QueryRouter {
         }
     }
 
-    /**
-     * Parses `add c <Name> <Phone>` or `+ <Name> <Phone>` into `(name, phone)`.
-     */
     fun parseQuickAddContact(rawArgs: String): Pair<String, String>? {
         val trimmed = rawArgs.trim()
         if (trimmed.isEmpty()) return null
@@ -1320,9 +1315,6 @@ object QueryRouter {
         return name to last
     }
 
-    /**
-     * Parses `+ b <alias> [Title] [target]` (falling back to [clipboardText] if target is omitted).
-     */
     fun parseQuickAddBookmark(rawArgs: String, clipboardText: String = ""): Triple<String, String, Pair<String, BookmarkKind>>? {
         val trimmed = rawArgs.trim()
         if (trimmed.isEmpty()) return null
@@ -1358,9 +1350,6 @@ object QueryRouter {
         return Triple(alias, title, target to kind)
     }
 
-    /**
-     * Parses `+ s <keyword> [Name] [url]` (falling back to [clipboardText] if url is omitted).
-     */
     fun parseQuickAddPipe(rawArgs: String, clipboardText: String = ""): Triple<String, String, String>? {
         val trimmed = rawArgs.trim()
         if (trimmed.isEmpty()) return null
@@ -1395,6 +1384,7 @@ object QueryRouter {
     fun resolve(
         rawInput: String,
         engines: List<SearchEngine> = DefaultEngines.LIST,
+        prefixes: PrefixConfig = PrefixConfig(),
     ): RouteResolution {
         val activeEngines = engines.ifEmpty { DefaultEngines.LIST }
         val defaultEngine = activeEngines.firstOrNull { it.isDefault } ?: activeEngines.first()
@@ -1407,9 +1397,10 @@ object QueryRouter {
         val tokens = trimmed.split(WHITESPACE_REGEX, limit = 2)
         val firstWord = tokens[0]
         val remainder = if (tokens.size > 1) tokens[1].trim().replace(WHITESPACE_REGEX, " ") else ""
+        val sPre = prefixes.pipesClean
 
-        // Support `s <keyword> [query]` in `resolve()` as well!
-        if ((firstWord.equals("s", ignoreCase = true) || firstWord.equals("pipe", ignoreCase = true)) && remainder.isNotEmpty()) {
+        // Support `<sPre> <keyword> [query]` in `resolve()` as well!
+        if ((firstWord.equals(sPre, ignoreCase = true) || firstWord.equals("s", ignoreCase = true) || firstWord.equals("pipe", ignoreCase = true)) && remainder.isNotEmpty()) {
             val subTokens = remainder.split(WHITESPACE_REGEX, limit = 2)
             val subKw = subTokens[0]
             val subQuery = if (subTokens.size > 1) subTokens[1].trim().replace(WHITESPACE_REGEX, " ") else ""

@@ -21,6 +21,7 @@ import com.sujan.pipe.model.DefaultEngines
 import com.sujan.pipe.model.EngineColorRole
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
+import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.ui.ascii.PaletteChoice
@@ -36,11 +37,11 @@ import kotlinx.coroutines.launch
 enum class PipeView { PROMPT, BOOKMARKS, ENGINES, SETTINGS }
 
 enum class SettingsSection(val index: Int, val label: String, val title: String) {
-    OVERLAY(1, "ovl", "overlay appearance & ubitouch"),
-    INDEX(2, "idx", "storage index & permissions"),
-    THEME(3, "thm", "theme & color palette"),
-    ROUTING(4, "rte", "default browser & routing"),
-    BACKUP(5, "bak", "json backup & about"),
+    OVERLAY(1, "overlay", "overlay & search box"),
+    INDEX(2, "index", "storage index & permissions"),
+    THEME(3, "theme", "theme & color palette"),
+    ROUTING(4, "routing", "routing & custom prefixes"),
+    BACKUP(5, "backup", "json backup & about"),
 }
 
 sealed interface UndoPayload {
@@ -83,13 +84,14 @@ data class PipeUiState(
     val searchInput: TextFieldValue = TextFieldValue(""),
     val engines: List<SearchEngine> = DefaultEngines.LIST,
     val bookmarks: List<PipeBookmark> = DefaultBookmarks.LIST,
+    val prefixConfig: PrefixConfig = PrefixConfig(),
     val contacts: List<ContactItem> = emptyList(),
     val installedApps: List<com.sujan.pipe.model.InstalledAppItem> = emptyList(),
     val installedBrowsers: List<com.sujan.pipe.model.InstalledAppItem> = emptyList(),
     val preferredBrowserPackage: String = "auto",
     val excludedFolders: List<String> = listOf(".Statuses", ".thumbnails"),
     val searchBoxPrefix: String = "> ",
-    val searchBoxPlaceholder: String = "pipe (c, f, b, s, app)...",
+    val searchBoxPlaceholder: String = "pipe for???",
     val showSearchBoxScopeBadge: Boolean = true,
     val showSearchBoxMenuBtn: Boolean = true,
     val previewImageFile: LocalFileItem? = null,
@@ -104,10 +106,10 @@ data class PipeUiState(
     val externalTextMode: ExternalTextMode = ExternalTextMode.OPEN_OVERLAY,
     val overlayOpacity: Float = 0.88f,
     val overlayDimAmount: Float = 0.35f,
-    val overlayCornerRadiusDp: Int = 16,
+    val overlayCornerRadiusDp: Int = 10,
     val overlayBottomAnchored: Boolean = true,
-    val overlayForceDark: Boolean = true,
-    val overlayShowIdleSuggestions: Boolean = true,
+    val overlayForceDark: Boolean = false,
+    val overlayShowIdleSuggestions: Boolean = false,
     val settingsSection: SettingsSection = SettingsSection.OVERLAY,
     val hourlyAutoIndexEnabled: Boolean = true,
     val lastIndexedTimestampMs: Long = 0L,
@@ -124,10 +126,10 @@ data class PipeUiState(
     val jsonStatusMessage: String? = null,
 ) {
     val parsedCommand: ParsedPromptCommand
-        get() = QueryRouter.parsePromptCommand(searchInput.text, bookmarks, engines)
+        get() = QueryRouter.parsePromptCommand(searchInput.text, bookmarks, engines, prefixConfig)
 
     val liveResolution: RouteResolution
-        get() = QueryRouter.resolve(searchInput.text, engines)
+        get() = QueryRouter.resolve(searchInput.text, engines, prefixConfig)
 
     val suggestedEngines: List<SearchEngine>
         get() = QueryRouter.suggestEngines(searchInput.text, engines)
@@ -184,6 +186,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         PipeUiState(
             engines = repository.loadEngines(),
             bookmarks = repository.loadBookmarks(),
+            prefixConfig = repository.loadPrefixConfig(),
             history = repository.loadHistory(),
             usageCounts = repository.loadUsageCounts(),
             themeMode = repository.loadThemeMode(),
@@ -230,9 +233,31 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 history = snap.history,
                 usageMap = snap.usageCounts,
                 installedApps = snap.installedApps,
+                prefixes = snap.prefixConfig,
             )
             _uiState.update { it.copy(paletteResults = computed) }
         }
+    }
+
+    fun setPrefixConfig(config: PrefixConfig) {
+        val normalized = PrefixConfig(
+            files = config.filesClean,
+            pipes = config.pipesClean,
+            bookmarks = config.bookmarksClean,
+            apps = config.appsClean,
+            history = config.historyClean,
+            contacts = config.contactsClean,
+        )
+        repository.savePrefixConfig(normalized)
+        _uiState.update { it.copy(prefixConfig = normalized) }
+        recomputePaletteAsync()
+    }
+
+    fun resetPrefixConfig() {
+        val def = PrefixConfig()
+        repository.savePrefixConfig(def)
+        _uiState.update { it.copy(prefixConfig = def, jsonStatusMessage = "ok: restored default prefixes (f, s, b, app, hist, c)") }
+        recomputePaletteAsync()
     }
 
     fun syncDeviceState(
@@ -341,7 +366,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun submitSearch(overrideInput: String? = null, onOpenUrl: (String) -> Boolean) {
         val state = _uiState.value
         val raw = overrideInput ?: state.searchInput.text
-        val resolution = QueryRouter.resolve(raw, state.engines)
+        val resolution = QueryRouter.resolve(raw, state.engines, state.prefixConfig)
         if (!onOpenUrl(resolution.targetUrl)) {
             _uiState.update { it.copy(launchError = "! could not pipe to ${resolution.targetUrl}") }
             return
@@ -552,12 +577,13 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             )
         }
         repository.saveBookmarks(updated)
+        val bPre = _uiState.value.prefixConfig.bookmarksClean
         _uiState.update {
             it.copy(
                 bookmarks = updated,
                 searchInput = TextFieldValue(""),
                 launchError = null,
-                jsonStatusMessage = "ok: saved bookmark [b ${cleanAlias.ifEmpty { cleanTitle }}]",
+                jsonStatusMessage = "ok: saved bookmark [$bPre ${cleanAlias.ifEmpty { cleanTitle }}]",
             )
         }
         recomputePaletteAsync()
@@ -591,12 +617,13 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             )
         }
         repository.saveEngines(updated)
+        val sPre = _uiState.value.prefixConfig.pipesClean
         _uiState.update {
             it.copy(
                 engines = repository.loadEngines(),
                 searchInput = TextFieldValue(""),
                 launchError = null,
-                jsonStatusMessage = "ok: saved pipe [s $cleanKey] $cleanName",
+                jsonStatusMessage = "ok: saved pipe [$sPre $cleanKey] $cleanName",
             )
         }
         recomputePaletteAsync()
@@ -761,7 +788,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun resetEnginesToDefault() {
         val prev = _uiState.value.engines
         repository.saveEngines(DefaultEngines.LIST)
-        _uiState.update { it.copy(engines = DefaultEngines.LIST, jsonStatusMessage = "ok: reset to 7 default pipes") }
+        _uiState.update { it.copy(engines = DefaultEngines.LIST, jsonStatusMessage = "ok: reset to ${DefaultEngines.LIST.size} default pipes") }
         postUndo("reset engines to defaults", UndoPayload.ResetEngines(prev))
     }
 

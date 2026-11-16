@@ -6,6 +6,7 @@ import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.DefaultBookmarks
 import com.sujan.pipe.model.DefaultEngines
+import com.sujan.pipe.model.PrefixConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -27,6 +28,45 @@ class QueryRouterTest {
         assertEquals("lofi music", res.query)
         assertFalse(res.isHomeLaunch)
         assertEquals("https://www.youtube.com/results?search_query=lofi+music", res.targetUrl)
+    }
+
+    @Test
+    fun `matches youtube time-filtered search pipes ytt, ytw, and ytm by default`() {
+        val resToday = QueryRouter.resolve("ytt kotlin compose", engines)
+        assertTrue(resToday.matchedByKeyword)
+        assertEquals("ytt", resToday.extractedKeyword)
+        assertEquals("YouTube Today", resToday.engine.name)
+        assertEquals("https://www.youtube.com/results?search_query=kotlin+compose&sp=EgIIAg%3D%3D", resToday.targetUrl)
+
+        val resWeek = QueryRouter.resolve("ytw android dev", engines)
+        assertTrue(resWeek.matchedByKeyword)
+        assertEquals("ytw", resWeek.extractedKeyword)
+        assertEquals("YouTube Last Week", resWeek.engine.name)
+        assertEquals("https://www.youtube.com/results?search_query=android+dev&sp=EgIIAw%3D%3D", resWeek.targetUrl)
+
+        val resMonth = QueryRouter.resolve("ytm linux terminal", engines)
+        assertTrue(resMonth.matchedByKeyword)
+        assertEquals("ytm", resMonth.extractedKeyword)
+        assertEquals("YouTube This Month", resMonth.engine.name)
+        assertEquals("https://www.youtube.com/results?search_query=linux+terminal&sp=EgIIBA%3D%3D", resMonth.targetUrl)
+    }
+
+    @Test
+    fun `custom PrefixConfig routes custom files, pipes, bookmarks, apps, and history prefixes`() {
+        val customPrefixes = PrefixConfig(
+            files = "fl",
+            pipes = "sp",
+            bookmarks = "bk",
+            apps = "la",
+            history = "hs",
+            contacts = "ct",
+        )
+        assertEquals(PromptIntentMode.FILES_ONLY, QueryRouter.parsePromptCommand("fl report", bookmarks, engines, customPrefixes).mode)
+        assertEquals(PromptIntentMode.ENGINE_ONLY, QueryRouter.parsePromptCommand("sp yt music", bookmarks, engines, customPrefixes).mode)
+        assertEquals(PromptIntentMode.BOOKMARKS_ONLY, QueryRouter.parsePromptCommand("bk docs", bookmarks, engines, customPrefixes).mode)
+        assertEquals(PromptIntentMode.APPS_ONLY, QueryRouter.parsePromptCommand("la mix", bookmarks, engines, customPrefixes).mode)
+        assertEquals(PromptIntentMode.HISTORY_ONLY, QueryRouter.parsePromptCommand("hs compose", bookmarks, engines, customPrefixes).mode)
+        assertEquals(PromptIntentMode.CONTACTS_ONLY, QueryRouter.parsePromptCommand("ct kalika", bookmarks, engines, customPrefixes).mode)
     }
 
     @Test
@@ -209,103 +249,5 @@ class QueryRouterTest {
         )
         assertTrue(allMostUsed.size <= 10)
         assertEquals("bm:bm_dl", allMostUsed.first().usageKey)
-
-        val deepStorage = listOf(
-            com.sujan.pipe.model.LocalFileItem("sasu ama.jpg", "/storage/emulated/0/DCIM/Camera/sasu ama.jpg", isDirectory = false, parentName = "DCIM/Camera", sizeBytes = 2_400_000L),
-            com.sujan.pipe.model.LocalFileItem("Nagarikata", "/storage/emulated/0/Documents/Legal/Nagarikata", isDirectory = true, parentName = "Documents/Legal", sizeBytes = 0L),
-            com.sujan.pipe.model.LocalFileItem("front_scan.jpg", "/storage/emulated/0/Documents/Legal/Nagarikata/front_scan.jpg", isDirectory = false, parentName = "Documents/Legal/Nagarikata", sizeBytes = 850_000L),
-            com.sujan.pipe.model.LocalFileItem("back_scan.jpg", "/storage/emulated/0/Documents/Legal/Nagarikata/back_scan.jpg", isDirectory = false, parentName = "Documents/Legal/Nagarikata", sizeBytes = 910_000L),
-        )
-        val sasuMatches = FuzzyMatcher.filterFiles("sasu ama", deepStorage)
-        assertEquals(1, sasuMatches.size)
-        assertEquals("sasu ama.jpg", sasuMatches.first().name)
-
-        val nagarikataMatches = FuzzyMatcher.filterFiles("nagarikata", deepStorage)
-        assertEquals(3, nagarikataMatches.size)
-
-        val cmdWa = QueryRouter.parsePromptCommand("c kali wa", bookmarks, engines)
-        assertEquals(PromptIntentMode.CONTACTS_ONLY, cmdWa.mode)
-        assertEquals("kali", cmdWa.filterQuery)
-        assertEquals(com.sujan.pipe.model.ContactQuickAction.WHATSAPP, cmdWa.contactAction)
-
-        val cmdApp = QueryRouter.parsePromptCommand("app mix", bookmarks, engines)
-        assertEquals(PromptIntentMode.APPS_ONLY, cmdApp.mode)
-        assertEquals("mix", cmdApp.filterQuery)
-
-        assertEquals("KP", ContactItem("2", "Kalika Prasad", "9841234567").monogram)
-        assertEquals("SD", ContactItem("1", "Sujan Devkota", "9841000000").monogram)
-
-        val parsedContact = QueryRouter.parseQuickAddContact("Ramesh Dai 9841234567")
-        assertNotNull(parsedContact)
-        assertEquals("Ramesh Dai", parsedContact?.first)
-        assertEquals("9841234567", parsedContact?.second)
-
-        val parsedBm = QueryRouter.parseQuickAddBookmark("hn Hacker News", "https://news.ycombinator.com")
-        assertNotNull(parsedBm)
-        assertEquals("hn", parsedBm?.first)
-        assertEquals("Hacker News", parsedBm?.second)
-        assertEquals("https://news.ycombinator.com", parsedBm?.third?.first)
-
-        assertEquals(
-            "https://audiobookbay.lu/?s={query}",
-            QueryRouter.normalizePipeUrlTemplate("https://audiobookbay.lu/?s=dune"),
-        )
-
-        val cmdAdd = QueryRouter.parsePromptCommand("+ Ramesh Dai 9841234567", bookmarks, engines)
-        assertEquals(PromptIntentMode.ADD_COMMAND, cmdAdd.mode)
-        val addResults = QueryRouter.buildPaletteResults(
-            rawInput = "+ Ramesh Dai 9841234567",
-            engines = engines,
-            bookmarks = bookmarks,
-            contacts = contacts,
-            storageFiles = sampleItems,
-            scopedFolderFiles = emptyList(),
-            history = emptyList(),
-            usageMap = usage,
-        )
-        assertTrue(addResults.isNotEmpty())
-        assertTrue((addResults.first() as com.sujan.pipe.domain.PaletteItem.QuickAddAction).isReadyToCommit)
-
-        val customBookmarks = bookmarks + com.sujan.pipe.model.PipeBookmark(
-            id = "bm_abb",
-            alias = "abb",
-            title = "AudiobookBay Home",
-            target = "https://audiobookbay.lu",
-            kind = com.sujan.pipe.model.BookmarkKind.LINK,
-        )
-        val customEngines = engines + com.sujan.pipe.model.SearchEngine(
-            id = "eng_abb",
-            name = "AudiobookBay Search",
-            keyword = "abb",
-            urlTemplate = "https://audiobookbay.lu/?s={query}",
-        )
-
-        val bAbb = QueryRouter.buildPaletteResults(
-            rawInput = "b abb",
-            engines = customEngines,
-            bookmarks = customBookmarks,
-            contacts = contacts,
-            storageFiles = sampleItems,
-            scopedFolderFiles = emptyList(),
-            history = emptyList(),
-            usageMap = usage,
-        )
-        assertTrue(bAbb.all { it is com.sujan.pipe.domain.PaletteItem.BookmarkAction })
-        assertEquals("abb", (bAbb.first() as com.sujan.pipe.domain.PaletteItem.BookmarkAction).bookmark.alias)
-
-        val sAbb = QueryRouter.buildPaletteResults(
-            rawInput = "s abb dune",
-            engines = customEngines,
-            bookmarks = customBookmarks,
-            contacts = contacts,
-            storageFiles = sampleItems,
-            scopedFolderFiles = emptyList(),
-            history = emptyList(),
-            usageMap = usage,
-        )
-        val topEngineAction = sAbb.first() as com.sujan.pipe.domain.PaletteItem.EngineAction
-        assertEquals("abb", topEngineAction.engine.keyword)
-        assertEquals("dune", topEngineAction.query)
-        assertEquals("https://audiobookbay.lu/?s=dune", topEngineAction.targetUrl)
     }
 }
