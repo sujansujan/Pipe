@@ -19,7 +19,21 @@ object EngineGlyphs {
 }
 
 /**
- * User-customizable command prefixes and row badge tags for `f`, `s`, `b`, `app`, `hist`, `c`, `def`, and `clip`.
+ * Preferred WhatsApp app flavor when opening WhatsApp chats (`com.whatsapp` vs `com.whatsapp.w4b`).
+ */
+enum class WhatsAppFlavor(val label: String, val badge: String, val packageName: String?) {
+    BOTH("Show both [wa] & [wa.b] buttons", "wa/b", null),
+    PERSONAL("WhatsApp (Personal)", "wa", "com.whatsapp"),
+    BUSINESS("WhatsApp Business", "wa.b", "com.whatsapp.w4b");
+
+    companion object {
+        fun fromString(raw: String?): WhatsAppFlavor =
+            entries.firstOrNull { it.name.equals(raw, ignoreCase = true) } ?: BOTH
+    }
+}
+
+/**
+ * User-customizable command prefixes and row badge tags for `f`, `s`, `b`, `app`, `hist`, `c`, `def`, `clip`, and `set`.
  */
 data class PrefixConfig(
     val files: String = "f",
@@ -30,6 +44,7 @@ data class PrefixConfig(
     val contacts: String = "c",
     val dictionary: String = "def",
     val clipboard: String = "clip",
+    val systemSettings: String = "set",
 ) {
     val filesClean: String get() = files.trim().lowercase().ifEmpty { "f" }
     val pipesClean: String get() = pipes.trim().lowercase().ifEmpty { "s" }
@@ -39,6 +54,209 @@ data class PrefixConfig(
     val contactsClean: String get() = contacts.trim().lowercase().ifEmpty { "c" }
     val dictionaryClean: String get() = dictionary.trim().lowercase().ifEmpty { "def" }
     val clipboardClean: String get() = clipboard.trim().lowercase().ifEmpty { "clip" }
+    val systemSettingsClean: String get() = systemSettings.trim().lowercase().ifEmpty { "set" }
+}
+
+/**
+ * Deep Android system settings shortcut (`set dev`, `set spot`, `set dns`, `set notif`, etc.).
+ */
+data class SystemSettingShortcut(
+    val id: String,
+    val alias: String,
+    val title: String,
+    val subtitle: String,
+    val intentAction: String,
+    val fallbackAction: String? = null,
+    val keywords: String = "",
+) {
+    val aliasLower: String = alias.trim().lowercase()
+    val titleLower: String = title.trim().lowercase()
+    val keywordsLower: String = keywords.trim().lowercase()
+}
+
+object DefaultSystemShortcuts {
+    val LIST: List<SystemSettingShortcut> = listOf(
+        SystemSettingShortcut(
+            id = "sys_dev",
+            alias = "dev",
+            title = "Developer Options & Wireless ADB",
+            subtitle = "USB/Wireless debugging, stay awake, animation scale",
+            intentAction = "android.settings.APPLICATION_DEVELOPMENT_SETTINGS",
+            keywords = "adb debug wireless developer options build",
+        ),
+        SystemSettingShortcut(
+            id = "sys_spot",
+            alias = "spot",
+            title = "Wi-Fi Hotspot & Tethering",
+            subtitle = "Portable Wi-Fi hotspot, USB & Bluetooth tethering",
+            intentAction = "android.settings.TETHER_SETTINGS",
+            fallbackAction = "android.settings.WIRELESS_SETTINGS",
+            keywords = "hotspot tether tethering ap wifi share",
+        ),
+        SystemSettingShortcut(
+            id = "sys_dns",
+            alias = "dns",
+            title = "Private DNS & Connectivity",
+            subtitle = "Configure Private DNS (AdGuard / Cloudflare), NFC, airplane",
+            intentAction = "android.settings.WIRELESS_SETTINGS",
+            keywords = "private dns adguard cloudflare network wireless",
+        ),
+        SystemSettingShortcut(
+            id = "sys_wifi",
+            alias = "wifi",
+            title = "Wi-Fi Networks",
+            subtitle = "Connect to Wi-Fi, QR share, saved networks",
+            intentAction = "android.settings.WIFI_SETTINGS",
+            keywords = "wifi wlan internet wireless",
+        ),
+        SystemSettingShortcut(
+            id = "sys_ip",
+            alias = "ip",
+            title = "Wi-Fi IP, MAC & Advanced",
+            subtitle = "Static IP, gateway, subnet, MAC address",
+            intentAction = "android.settings.WIFI_IP_SETTINGS",
+            fallbackAction = "android.settings.WIFI_SETTINGS",
+            keywords = "ip address mac static gateway wifi",
+        ),
+        SystemSettingShortcut(
+            id = "sys_vpn",
+            alias = "vpn",
+            title = "VPN Settings",
+            subtitle = "Always-on VPN profiles & WireGuard/Tailscale toggles",
+            intentAction = "android.settings.VPN_SETTINGS",
+            keywords = "vpn wireguard tailscale tunnel",
+        ),
+        SystemSettingShortcut(
+            id = "sys_sim",
+            alias = "sim",
+            title = "SIM Cards & Mobile Network",
+            subtitle = "Preferred SIM for data/calls, VoLTE, data roaming",
+            intentAction = "android.settings.DATA_ROAMING_SETTINGS",
+            fallbackAction = "android.settings.NETWORK_OPERATOR_SETTINGS",
+            keywords = "sim ntc ncell mobile data roaming cellular lte 5g",
+        ),
+        SystemSettingShortcut(
+            id = "sys_usage",
+            alias = "usage",
+            title = "Data Usage Monitor",
+            subtitle = "Mobile & Wi-Fi data usage breakdown",
+            intentAction = "android.settings.DATA_USAGE_SETTINGS",
+            keywords = "data usage bandwidth limit",
+        ),
+        SystemSettingShortcut(
+            id = "sys_bt",
+            alias = "bt",
+            title = "Bluetooth Devices",
+            subtitle = "Pair earbuds, keyboards, and audio devices",
+            intentAction = "android.settings.BLUETOOTH_SETTINGS",
+            keywords = "bluetooth audio earbuds pair",
+        ),
+        SystemSettingShortcut(
+            id = "sys_bat",
+            alias = "bat",
+            title = "Battery Usage & Health",
+            subtitle = "Screen-on time, per-app battery drain, power saver",
+            intentAction = "android.intent.action.POWER_USAGE_SUMMARY",
+            fallbackAction = "android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS",
+            keywords = "battery power charge drain saver",
+        ),
+        SystemSettingShortcut(
+            id = "sys_opt",
+            alias = "opt",
+            title = "Battery Optimization Exceptions",
+            subtitle = "Allow background apps (Termux, Shunt, Pipe) unrestricted battery",
+            intentAction = "android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS",
+            keywords = "battery optimization unrestricted background doze",
+        ),
+        SystemSettingShortcut(
+            id = "sys_notif",
+            alias = "notif",
+            title = "Notification Listener Access",
+            subtitle = "Grant notification read/intercept access to utility apps",
+            intentAction = "android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS",
+            keywords = "notification listener access shunt intercept",
+        ),
+        SystemSettingShortcut(
+            id = "sys_draw",
+            alias = "draw",
+            title = "Display Over Other Apps",
+            subtitle = "Manage floating overlay window permissions",
+            intentAction = "android.settings.action.MANAGE_OVERLAY_PERMISSION",
+            keywords = "overlay draw floating window permission",
+        ),
+        SystemSettingShortcut(
+            id = "sys_store",
+            alias = "store",
+            title = "Storage Manager",
+            subtitle = "Internal storage breakdown and cache cleanup",
+            intentAction = "android.settings.INTERNAL_STORAGE_SETTINGS",
+            keywords = "storage disk space free clean",
+        ),
+        SystemSettingShortcut(
+            id = "sys_defaults",
+            alias = "defaults",
+            title = "Default Apps (Browser, Assist, Links)",
+            subtitle = "Choose default browser, digital assistant, and link handlers",
+            intentAction = "android.settings.MANAGE_DEFAULT_APPS_SETTINGS",
+            keywords = "default apps browser assist open with hermit",
+        ),
+        SystemSettingShortcut(
+            id = "sys_acc",
+            alias = "acc",
+            title = "Accessibility Services",
+            subtitle = "UbikiTouch, gesture overlays, and automation services",
+            intentAction = "android.settings.ACCESSIBILITY_SETTINGS",
+            keywords = "accessibility ubikitouch gesture automation",
+        ),
+        SystemSettingShortcut(
+            id = "sys_kbd",
+            alias = "kbd",
+            title = "Keyboards & Input Methods",
+            subtitle = "Manage active keyboards, Devanagari input, and autofill",
+            intentAction = "android.settings.INPUT_METHOD_SETTINGS",
+            keywords = "keyboard ime input method language typing",
+        ),
+        SystemSettingShortcut(
+            id = "sys_loc",
+            alias = "loc",
+            title = "Location & GPS Services",
+            subtitle = "Toggle GPS and location permissions",
+            intentAction = "android.settings.LOCATION_SOURCE_SETTINGS",
+            keywords = "location gps maps",
+        ),
+        SystemSettingShortcut(
+            id = "sys_snd",
+            alias = "snd",
+            title = "Sound, Vibration & DND",
+            subtitle = "Ring/media volumes, Do Not Disturb, ringtones",
+            intentAction = "android.settings.SOUND_SETTINGS",
+            keywords = "sound volume mute dnd vibration",
+        ),
+        SystemSettingShortcut(
+            id = "sys_disp",
+            alias = "disp",
+            title = "Display, Dark Mode & Refresh Rate",
+            subtitle = "Brightness, screen timeout, font size, refresh rate",
+            intentAction = "android.settings.DISPLAY_SETTINGS",
+            keywords = "display screen brightness dark mode timeout",
+        ),
+        SystemSettingShortcut(
+            id = "sys_sec",
+            alias = "sec",
+            title = "Security & Biometrics",
+            subtitle = "Fingerprint, lock screen, device admin, encryption",
+            intentAction = "android.settings.SECURITY_SETTINGS",
+            keywords = "security fingerprint lock pin biometric",
+        ),
+        SystemSettingShortcut(
+            id = "sys_date",
+            alias = "date",
+            title = "Date, Time & Time Zone",
+            subtitle = "24-hour format, automatic time zone",
+            intentAction = "android.settings.DATE_SETTINGS",
+            keywords = "date time clock timezone ntp",
+        ),
+    )
 }
 
 /**
@@ -104,6 +322,7 @@ enum class ContactQuickAction(val badge: String) {
     CALL("call"),
     SMS("sms"),
     WHATSAPP("wa"),
+    WHATSAPP_BUSINESS("wa.b"),
 }
 
 data class PipeBookmark(

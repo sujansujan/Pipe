@@ -1,5 +1,6 @@
 package com.sujan.pipe
 
+import com.sujan.pipe.domain.DirectNumberPrimaryMode
 import com.sujan.pipe.domain.FuzzyMatcher
 import com.sujan.pipe.domain.PaletteItem
 import com.sujan.pipe.domain.PromptIntentMode
@@ -74,6 +75,106 @@ class QueryRouterTest {
         assertEquals(PromptIntentMode.CONTACTS_ONLY, QueryRouter.parsePromptCommand("ct kalika", bookmarks, engines, customPrefixes).mode)
         assertEquals(PromptIntentMode.DICTIONARY_ONLY, QueryRouter.parsePromptCommand("dict serendipity", bookmarks, engines, customPrefixes).mode)
         assertEquals(PromptIntentMode.CLIPBOARD_ONLY, QueryRouter.parsePromptCommand("cp", bookmarks, engines, customPrefixes).mode)
+    }
+
+    @Test
+    fun `system settings jumper routes set dev, set spot, and sys dns to SYSTEM_SETTINGS_ONLY`() {
+        val cmdDev = QueryRouter.parsePromptCommand("set dev", bookmarks, engines)
+        assertEquals(PromptIntentMode.SYSTEM_SETTINGS_ONLY, cmdDev.mode)
+        assertEquals("dev", cmdDev.filterQuery)
+
+        val devResults = QueryRouter.buildPaletteResults(
+            rawInput = "set dev",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = emptyList(),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+        )
+        assertTrue(devResults.first() is PaletteItem.SystemSettingAction)
+        val topSys = devResults.first() as PaletteItem.SystemSettingAction
+        assertEquals("dev", topSys.shortcut.alias)
+        assertEquals("android.settings.APPLICATION_DEVELOPMENT_SETTINGS", topSys.shortcut.intentAction)
+    }
+
+    @Test
+    fun `direct unsaved number routes wa to WhatsApp Personal and wab to WhatsApp Business`() {
+        val waResults = QueryRouter.buildPaletteResults(
+            rawInput = "wa 9841234567 hello there",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = emptyList(),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+        )
+        assertTrue(waResults.first() is PaletteItem.DirectNumberAction)
+        val firstWa = waResults[0] as PaletteItem.DirectNumberAction
+        val secondWa = waResults[1] as PaletteItem.DirectNumberAction
+        assertEquals(DirectNumberPrimaryMode.WHATSAPP_PERSONAL, firstWa.primaryMode)
+        assertEquals(DirectNumberPrimaryMode.WHATSAPP_BUSINESS, secondWa.primaryMode)
+        assertEquals("9779841234567", firstWa.normalizedWhatsAppDigits)
+        assertEquals("hello there", firstWa.messageText)
+
+        val wabResults = QueryRouter.buildPaletteResults(
+            rawInput = "wab 9841234567 invoice",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = emptyList(),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+        )
+        val firstWab = wabResults[0] as PaletteItem.DirectNumberAction
+        assertEquals(DirectNumberPrimaryMode.WHATSAPP_BUSINESS, firstWab.primaryMode)
+        assertEquals("9779841234567", firstWab.normalizedWhatsAppDigits)
+        assertEquals("invoice", firstWab.messageText)
+
+        val rawPhoneResults = QueryRouter.buildPaletteResults(
+            rawInput = "9841234567",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = emptyList(),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+        )
+        assertTrue(rawPhoneResults.first() is PaletteItem.DirectNumberAction)
+    }
+
+    @Test
+    fun `timer and alarm commands parse durations and 24-hour times accurately`() {
+        val timerParsed = QueryRouter.parseDurationTimer("1h 30m baking")
+        assertNotNull(timerParsed)
+        assertEquals(5400, timerParsed!!.first)
+        assertEquals("baking", timerParsed.second)
+
+        val alarmParsed = QueryRouter.parseAlarmTime("6:30am workout")
+        assertNotNull(alarmParsed)
+        assertEquals(6, alarmParsed!!.first)
+        assertEquals(30, alarmParsed.second)
+        assertEquals("workout", alarmParsed.third)
+
+        val timerResults = QueryRouter.buildPaletteResults(
+            rawInput = "timer 12m tea",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = emptyList(),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+        )
+        assertTrue(timerResults.first() is PaletteItem.TimerAlarmAction)
+        val topTimer = timerResults.first() as PaletteItem.TimerAlarmAction
+        assertFalse(topTimer.isAlarm)
+        assertEquals(720, topTimer.totalSeconds)
+        assertEquals("tea", topTimer.label)
     }
 
     @Test

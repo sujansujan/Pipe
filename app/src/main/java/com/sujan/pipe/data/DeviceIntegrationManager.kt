@@ -733,9 +733,27 @@ object DeviceIntegrationManager {
         false
     }
 
-    fun whatsAppContact(context: Context, normalizedDigits: String): Boolean {
-        val waUri = Uri.parse("https://api.whatsapp.com/send?phone=$normalizedDigits")
-        for (pkg in listOf("com.whatsapp", "com.whatsapp.w4b")) {
+    /**
+     * Opens a chat in WhatsApp (`com.whatsapp`) or WhatsApp Business (`com.whatsapp.w4b`).
+     * - If [preferredPackage] is explicitly passed (e.g. `"com.whatsapp"` or `"com.whatsapp.w4b"`),
+     *   it tries that package first, then falls back to the other WhatsApp package if not installed.
+     * - Otherwise respects the user's saved `WhatsAppFlavor` preference in `PipeRepository`.
+     */
+    fun whatsAppContact(
+        context: Context,
+        normalizedDigits: String,
+        preferredPackage: String? = null,
+        prefillText: String = "",
+    ): Boolean {
+        val textParam = if (prefillText.isNotBlank()) "&text=${Uri.encode(prefillText)}" else ""
+        val waUri = Uri.parse("https://api.whatsapp.com/send?phone=$normalizedDigits$textParam")
+        val configuredPkg = preferredPackage ?: PipeRepository(context).loadWhatsAppFlavor().packageName
+        val candidatePackages = when (configuredPkg) {
+            "com.whatsapp.w4b" -> listOf("com.whatsapp.w4b", "com.whatsapp")
+            "com.whatsapp" -> listOf("com.whatsapp", "com.whatsapp.w4b")
+            else -> listOf("com.whatsapp", "com.whatsapp.w4b")
+        }
+        for (pkg in candidatePackages) {
             val ok = runCatching {
                 context.startActivity(
                     Intent(Intent.ACTION_VIEW, waUri).apply {
@@ -748,6 +766,114 @@ object DeviceIntegrationManager {
             if (ok) return true
         }
         return openUrlExcludingSelf(context, "https://wa.me/$normalizedDigits")
+    }
+
+    /**
+     * Feature #1: Launches a deep Android system settings screen (`Settings.ACTION_*`) with safe fallbacks.
+     */
+    fun openSystemSettingShortcut(
+        context: Context,
+        shortcut: com.sujan.pipe.model.SystemSettingShortcut,
+    ): Boolean {
+        val actionsToTry = listOfNotNull(
+            shortcut.intentAction,
+            shortcut.fallbackAction,
+            android.provider.Settings.ACTION_SETTINGS,
+        )
+        for (action in actionsToTry) {
+            val launched = runCatching {
+                val intent = Intent(action).apply {
+                    if (action == android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION) {
+                        data = Uri.parse("package:${context.packageName}")
+                    }
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                true
+            }.getOrDefault(false)
+            if (launched) return true
+        }
+        return false
+    }
+
+    /**
+     * Feature #10: Starts an Android system countdown timer via `AlarmClock.ACTION_SET_TIMER`.
+     */
+    fun startCountdownTimer(
+        context: Context,
+        totalSeconds: Int,
+        label: String = "",
+        skipUi: Boolean = true,
+    ): Boolean {
+        val secs = totalSeconds.coerceAtLeast(1)
+        val primaryIntent = Intent(android.provider.AlarmClock.ACTION_SET_TIMER).apply {
+            putExtra(android.provider.AlarmClock.EXTRA_LENGTH, secs)
+            if (label.isNotBlank()) {
+                putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, label)
+            }
+            putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, skipUi)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val ok = runCatching {
+            context.startActivity(primaryIntent)
+            true
+        }.getOrDefault(false)
+        if (ok) return true
+
+        return runCatching {
+            val fallback = Intent(android.provider.AlarmClock.ACTION_SET_TIMER).apply {
+                putExtra(android.provider.AlarmClock.EXTRA_LENGTH, secs)
+                if (label.isNotBlank()) {
+                    putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, label)
+                }
+                putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, false)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(fallback)
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Feature #10: Sets an Android system alarm via `AlarmClock.ACTION_SET_ALARM`.
+     */
+    fun setSystemAlarm(
+        context: Context,
+        hour24: Int,
+        minute: Int,
+        label: String = "",
+        skipUi: Boolean = true,
+    ): Boolean {
+        val h = hour24.coerceIn(0, 23)
+        val m = minute.coerceIn(0, 59)
+        val primaryIntent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(android.provider.AlarmClock.EXTRA_HOUR, h)
+            putExtra(android.provider.AlarmClock.EXTRA_MINUTES, m)
+            if (label.isNotBlank()) {
+                putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, label)
+            }
+            putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, skipUi)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val ok = runCatching {
+            context.startActivity(primaryIntent)
+            true
+        }.getOrDefault(false)
+        if (ok) return true
+
+        return runCatching {
+            val fallback = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
+                putExtra(android.provider.AlarmClock.EXTRA_HOUR, h)
+                putExtra(android.provider.AlarmClock.EXTRA_MINUTES, m)
+                if (label.isNotBlank()) {
+                    putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, label)
+                }
+                putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, false)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(fallback)
+            true
+        }.getOrDefault(false)
     }
 
     /**

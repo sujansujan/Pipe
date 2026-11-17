@@ -4,10 +4,11 @@
 
     <!--
       Personal Sideloaded Build Permissions (Not restricted by Play Store policy):
-      1. READ_CONTACTS: Live contact fuzzy search (`c kali` -> call, sms, whatsapp).
+      1. READ_CONTACTS: Live contact fuzzy search (`c kali` -> call, sms, whatsapp, whatsapp business).
       2. MANAGE_EXTERNAL_STORAGE + READ/WRITE_EXTERNAL_STORAGE: Full file & folder fuzzy search, bookmarking, and external dictionary file loading.
       3. QUERY_ALL_PACKAGES + REQUEST_DELETE_PACKAGES: Detect installed browsers & native apps and allow direct app uninstallation.
-      4. Zero android.permission.INTERNET (100% offline local privacy).
+      4. SET_ALARM: Start countdown timers (`timer 12m`) and set system alarms (`alarm 06:30`) with zero UI friction.
+      5. Zero android.permission.INTERNET (100% offline local privacy).
     -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
@@ -24,6 +25,7 @@
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
     <queries>
         <intent>
@@ -43,6 +45,12 @@
         <intent>
             <action android:name="android.intent.action.SENDTO" />
             <data android:scheme="smsto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SET_TIMER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SET_ALARM" />
         </intent>
         <package android:name="com.whatsapp" />
         <package android:name="com.whatsapp.w4b" />

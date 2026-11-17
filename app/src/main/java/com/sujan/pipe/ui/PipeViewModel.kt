@@ -90,6 +90,7 @@ data class PipeUiState(
     val installedApps: List<com.sujan.pipe.model.InstalledAppItem> = emptyList(),
     val installedBrowsers: List<com.sujan.pipe.model.InstalledAppItem> = emptyList(),
     val preferredBrowserPackage: String = "auto",
+    val whatsAppFlavor: com.sujan.pipe.model.WhatsAppFlavor = com.sujan.pipe.model.WhatsAppFlavor.BOTH,
     val excludedFolders: List<String> = listOf(".Statuses", ".thumbnails"),
     val searchBoxPrefix: String = "> ",
     val searchBoxPlaceholder: String = "pipe for???",
@@ -169,6 +170,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             indexedFileCount = repository.loadIndexedFileCount(),
             indexedFolderCount = repository.loadIndexedFolderCount(),
             preferredBrowserPackage = repository.loadPreferredBrowserPackage(),
+            whatsAppFlavor = repository.loadWhatsAppFlavor(),
             excludedFolders = repository.loadExcludedFolders(),
             searchBoxPrefix = repository.loadSearchBoxPrefix(),
             searchBoxPlaceholder = repository.loadSearchBoxPlaceholder(),
@@ -202,6 +204,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 prefixes = snap.prefixConfig,
                 dictionaryMatches = snap.dictionaryMatches,
                 isDictionaryInstalled = snap.isDictionaryInstalled,
+                whatsAppFlavor = snap.whatsAppFlavor,
             )
             _uiState.update { it.copy(paletteResults = computed) }
         }
@@ -250,6 +253,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             contacts = config.contactsClean,
             dictionary = config.dictionaryClean,
             clipboard = config.clipboardClean,
+            systemSettings = config.systemSettingsClean,
         )
         repository.savePrefixConfig(normalized)
         _uiState.update { it.copy(prefixConfig = normalized) }
@@ -259,7 +263,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun resetPrefixConfig() {
         val def = PrefixConfig()
         repository.savePrefixConfig(def)
-        _uiState.update { it.copy(prefixConfig = def, jsonStatusMessage = "ok: restored default prefixes (f, s, b, app, hist, c, def, clip)") }
+        _uiState.update { it.copy(prefixConfig = def, jsonStatusMessage = "ok: restored default prefixes (f, s, b, app, hist, c, def, clip, set)") }
         recomputePaletteAsync()
     }
 
@@ -439,6 +443,12 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun setPreferredBrowserPackage(pkg: String) {
         repository.savePreferredBrowserPackage(pkg)
         _uiState.update { it.copy(preferredBrowserPackage = pkg) }
+    }
+
+    fun setWhatsAppFlavor(flavor: com.sujan.pipe.model.WhatsAppFlavor) {
+        repository.saveWhatsAppFlavor(flavor)
+        _uiState.update { it.copy(whatsAppFlavor = flavor) }
+        recomputePaletteAsync()
     }
 
     fun addExcludedFolder(pattern: String) {

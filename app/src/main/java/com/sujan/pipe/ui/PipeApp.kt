@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.platform.LocalContext
 import com.sujan.pipe.data.ExternalTextMode
+import com.sujan.pipe.domain.DirectNumberPrimaryMode
 import com.sujan.pipe.domain.FuzzyMatcher
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
@@ -87,6 +88,8 @@ import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
+import com.sujan.pipe.model.SystemSettingShortcut
+import com.sujan.pipe.model.WhatsAppFlavor
 import com.sujan.pipe.ui.ascii.AsciiBox
 import com.sujan.pipe.ui.ascii.AsciiButton
 import com.sujan.pipe.ui.ascii.AsciiDropdownRow
@@ -162,6 +165,9 @@ fun PipeApp(
     onAliasPillClick: (String) -> Unit,
     onSubmitPrimaryAction: () -> Unit,
     onOpenDirectUrl: (String) -> Unit = {},
+    onOpenSystemSetting: (SystemSettingShortcut) -> Unit = {},
+    onExecuteDirectNumber: (com.sujan.pipe.domain.PaletteItem.DirectNumberAction, DirectNumberPrimaryMode) -> Unit = { _, _ -> },
+    onExecuteTimerAlarm: (com.sujan.pipe.domain.PaletteItem.TimerAlarmAction, Boolean) -> Unit = { _, _ -> },
     onSelectDictionaryItem: (com.sujan.pipe.domain.PaletteItem.DictionaryAction) -> Unit = {},
     onDismissDictionaryDialog: () -> Unit = {},
     onImportDictionaryFileClick: () -> Unit = {},
@@ -179,6 +185,7 @@ fun PipeApp(
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
+    onWhatsAppBusinessContact: (ContactItem) -> Unit = {},
     onQuickSaveContact: (String, String) -> Unit = { _, _ -> },
     onQuickSaveBookmark: (String, String, String, BookmarkKind, String, String?) -> Unit = { _, _, _, _, _, _ -> },
     onQuickSavePipe: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
@@ -235,6 +242,7 @@ fun PipeApp(
     onHourlyAutoIndexChange: (Boolean) -> Unit = {},
     onRebuildIndexNow: () -> Unit = {},
     onPreferredBrowserChange: (String) -> Unit = {},
+    onWhatsAppFlavorChange: (WhatsAppFlavor) -> Unit = {},
     onAddExcludedFolder: (String) -> Unit = {},
     onRemoveExcludedFolder: (String) -> Unit = {},
     onSearchBoxPrefixChange: (String) -> Unit = {},
@@ -269,6 +277,9 @@ fun PipeApp(
                         onAliasPillClick = onAliasPillClick,
                         onSubmitPrimaryAction = onSubmitPrimaryAction,
                         onOpenDirectUrl = onOpenDirectUrl,
+                        onOpenSystemSetting = onOpenSystemSetting,
+                        onExecuteDirectNumber = onExecuteDirectNumber,
+                        onExecuteTimerAlarm = onExecuteTimerAlarm,
                         onSelectDictionaryItem = onSelectDictionaryItem,
                         onExecuteClipboardAction = onExecuteClipboardAction,
                         onOpenBookmark = onOpenBookmark,
@@ -282,6 +293,7 @@ fun PipeApp(
                         onCallContact = onCallContact,
                         onSmsContact = onSmsContact,
                         onWhatsAppContact = onWhatsAppContact,
+                        onWhatsAppBusinessContact = onWhatsAppBusinessContact,
                         onQuickSaveContact = onQuickSaveContact,
                         onQuickSaveBookmark = onQuickSaveBookmark,
                         onQuickSavePipe = onQuickSavePipe,
@@ -361,6 +373,7 @@ fun PipeApp(
                         onHourlyAutoIndexChange = onHourlyAutoIndexChange,
                         onRebuildIndexNow = onRebuildIndexNow,
                         onPreferredBrowserChange = onPreferredBrowserChange,
+                        onWhatsAppFlavorChange = onWhatsAppFlavorChange,
                         onAddExcludedFolder = onAddExcludedFolder,
                         onRemoveExcludedFolder = onRemoveExcludedFolder,
                         onSearchBoxPrefixChange = onSearchBoxPrefixChange,
@@ -436,6 +449,9 @@ private fun PipePromptScreen(
     onAliasPillClick: (String) -> Unit,
     onSubmitPrimaryAction: () -> Unit,
     onOpenDirectUrl: (String) -> Unit,
+    onOpenSystemSetting: (SystemSettingShortcut) -> Unit,
+    onExecuteDirectNumber: (com.sujan.pipe.domain.PaletteItem.DirectNumberAction, DirectNumberPrimaryMode) -> Unit,
+    onExecuteTimerAlarm: (com.sujan.pipe.domain.PaletteItem.TimerAlarmAction, Boolean) -> Unit,
     onSelectDictionaryItem: (com.sujan.pipe.domain.PaletteItem.DictionaryAction) -> Unit,
     onExecuteClipboardAction: (com.sujan.pipe.domain.PaletteItem.ClipboardAction) -> Unit,
     onOpenBookmark: (PipeBookmark) -> Unit,
@@ -449,6 +465,7 @@ private fun PipePromptScreen(
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
+    onWhatsAppBusinessContact: (ContactItem) -> Unit,
     onQuickSaveContact: (String, String) -> Unit,
     onQuickSaveBookmark: (String, String, String, BookmarkKind, String, String?) -> Unit,
     onQuickSavePipe: (String, String, String, String?) -> Unit,
@@ -564,6 +581,9 @@ private fun PipePromptScreen(
             onExecuteItem = { item ->
                 when (item) {
                     is com.sujan.pipe.domain.PaletteItem.DirectUrlAction -> onOpenDirectUrl(item.targetUrl)
+                    is com.sujan.pipe.domain.PaletteItem.SystemSettingAction -> onOpenSystemSetting(item.shortcut)
+                    is com.sujan.pipe.domain.PaletteItem.DirectNumberAction -> onExecuteDirectNumber(item, item.primaryMode)
+                    is com.sujan.pipe.domain.PaletteItem.TimerAlarmAction -> onExecuteTimerAlarm(item, true)
                     is com.sujan.pipe.domain.PaletteItem.DictionaryAction -> onSelectDictionaryItem(item)
                     is com.sujan.pipe.domain.PaletteItem.ClipboardAction -> onExecuteClipboardAction(item)
                     is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
@@ -576,6 +596,7 @@ private fun PipePromptScreen(
                     is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
                         when (item.preferredAction) {
                             com.sujan.pipe.model.ContactQuickAction.WHATSAPP -> onWhatsAppContact(item.contact)
+                            com.sujan.pipe.model.ContactQuickAction.WHATSAPP_BUSINESS -> onWhatsAppBusinessContact(item.contact)
                             com.sujan.pipe.model.ContactQuickAction.SMS -> onSmsContact(item.contact)
                             com.sujan.pipe.model.ContactQuickAction.CALL -> onCallContact(item.contact)
                         }
@@ -601,6 +622,9 @@ private fun PipePromptScreen(
             onCallContact = onCallContact,
             onSmsContact = onSmsContact,
             onWhatsAppContact = onWhatsAppContact,
+            onWhatsAppBusinessContact = onWhatsAppBusinessContact,
+            onExecuteDirectNumber = onExecuteDirectNumber,
+            onExecuteTimerAlarm = onExecuteTimerAlarm,
             onScopeIntoFolder = { alias ->
                 onAliasPillClick(alias)
                 runCatching { focusRequester.requestFocus() }
@@ -701,6 +725,9 @@ fun AsciiRaycastPaletteWindow(
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
+    onWhatsAppBusinessContact: (ContactItem) -> Unit = {},
+    onExecuteDirectNumber: (com.sujan.pipe.domain.PaletteItem.DirectNumberAction, DirectNumberPrimaryMode) -> Unit = { _, _ -> },
+    onExecuteTimerAlarm: (com.sujan.pipe.domain.PaletteItem.TimerAlarmAction, Boolean) -> Unit = { _, _ -> },
     onScopeIntoFolder: (String) -> Unit,
     onOpenChildFile: ((LocalFileItem) -> Unit)? = null,
     onBookmarkFile: ((LocalFileItem) -> Unit)? = null,
@@ -738,10 +765,18 @@ fun AsciiRaycastPaletteWindow(
         PromptIntentMode.HISTORY_ONLY -> "${prefixes.historyClean}:history"
         PromptIntentMode.DICTIONARY_ONLY -> "${prefixes.dictionaryClean}:dictionary"
         PromptIntentMode.CLIPBOARD_ONLY -> "${prefixes.clipboardClean}:clipboard"
+        PromptIntentMode.SYSTEM_SETTINGS_ONLY -> "${prefixes.systemSettingsClean}:settings"
+        PromptIntentMode.DIRECT_NUMBER_ONLY -> "wa:number"
+        PromptIntentMode.TIMER_ALARM_ONLY -> "clk:timer"
         else -> parsedCommand.mode.scopeBadge
     }
 
     val scopeChips = listOf(
+        prefixes.systemSettingsClean to (parsedCommand.mode == PromptIntentMode.SYSTEM_SETTINGS_ONLY),
+        "wa" to (parsedCommand.mode == PromptIntentMode.DIRECT_NUMBER_ONLY && parsedCommand.directNumberMode == DirectNumberPrimaryMode.WHATSAPP_PERSONAL),
+        "wab" to (parsedCommand.mode == PromptIntentMode.DIRECT_NUMBER_ONLY && parsedCommand.directNumberMode == DirectNumberPrimaryMode.WHATSAPP_BUSINESS),
+        "timer" to (parsedCommand.mode == PromptIntentMode.TIMER_ALARM_ONLY && !parsedCommand.isAlarmCommand),
+        "alarm" to (parsedCommand.mode == PromptIntentMode.TIMER_ALARM_ONLY && parsedCommand.isAlarmCommand),
         prefixes.dictionaryClean to (parsedCommand.mode == PromptIntentMode.DICTIONARY_ONLY),
         prefixes.clipboardClean to (parsedCommand.mode == PromptIntentMode.CLIPBOARD_ONLY),
         prefixes.contactsClean to (parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY),
@@ -880,6 +915,8 @@ fun AsciiRaycastPaletteWindow(
                             onOpenChildFile = onOpenChildFile,
                             onShareChildFile = onShareFile,
                             onPreviewChildImage = onPreviewImage,
+                            onExecuteDirectNumber = onExecuteDirectNumber,
+                            onExecuteTimerAlarm = onExecuteTimerAlarm,
                         )
                     }
                 }
@@ -1021,6 +1058,14 @@ fun AsciiRaycastPaletteWindow(
             onWhatsAppContact = { contact ->
                 actionSheetItem = null
                 onWhatsAppContact(contact)
+            },
+            onWhatsAppBusinessContact = { contact ->
+                actionSheetItem = null
+                onWhatsAppBusinessContact(contact)
+            },
+            onExecuteDirectNumber = { act, mode ->
+                actionSheetItem = null
+                onExecuteDirectNumber(act, mode)
             },
             onScopeFolder = { scopeCmd ->
                 actionSheetItem = null
@@ -1851,6 +1896,8 @@ fun AsciiRaycastRow(
     onOpenChildFile: ((LocalFileItem) -> Unit)? = null,
     onShareChildFile: ((LocalFileItem) -> Unit)? = null,
     onPreviewChildImage: ((LocalFileItem) -> Unit)? = null,
+    onExecuteDirectNumber: (com.sujan.pipe.domain.PaletteItem.DirectNumberAction, DirectNumberPrimaryMode) -> Unit = { _, _ -> },
+    onExecuteTimerAlarm: (com.sujan.pipe.domain.PaletteItem.TimerAlarmAction, Boolean) -> Unit = { _, _ -> },
 ) {
     val c = LocalAscii.current
     val src = remember { MutableInteractionSource() }
@@ -1876,6 +1923,30 @@ fun AsciiRaycastRow(
             titleText = "Open ${item.displayHost}"
             subtitleText = item.targetUrl
             hasActionSheet = true
+            folderPeekPath = null
+        }
+        is com.sujan.pipe.domain.PaletteItem.SystemSettingAction -> {
+            tagText = "${prefixes.systemSettingsClean}:${item.shortcut.alias}"
+            tagColor = c.accent2
+            titleText = item.shortcut.title
+            subtitleText = item.shortcut.subtitle
+            hasActionSheet = false
+            folderPeekPath = null
+        }
+        is com.sujan.pipe.domain.PaletteItem.DirectNumberAction -> {
+            tagText = item.primaryMode.badge
+            tagColor = c.good
+            titleText = "${item.primaryMode.label}: +${item.normalizedWhatsAppDigits}"
+            subtitleText = if (item.messageText.isNotBlank()) "msg: \"${item.messageText}\" · raw: ${item.rawPhone}" else "tap [wa], [wa.b], [call], or [⋯] for SMS / Save Contact"
+            hasActionSheet = true
+            folderPeekPath = null
+        }
+        is com.sujan.pipe.domain.PaletteItem.TimerAlarmAction -> {
+            tagText = if (item.isAlarm) "alm" else "tmr"
+            tagColor = c.warn
+            titleText = item.title
+            subtitleText = item.subtitle
+            hasActionSheet = false
             folderPeekPath = null
         }
         is com.sujan.pipe.domain.PaletteItem.DictionaryAction -> {
@@ -2079,6 +2150,40 @@ fun AsciiRaycastRow(
                 )
             }
 
+            if (item is com.sujan.pipe.domain.PaletteItem.DirectNumberAction) {
+                AsciiButton(
+                    label = "wa",
+                    onClick = { onExecuteDirectNumber(item, DirectNumberPrimaryMode.WHATSAPP_PERSONAL) },
+                    primary = isTop && item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_PERSONAL,
+                )
+                AsciiButton(
+                    label = "wa.b",
+                    onClick = { onExecuteDirectNumber(item, DirectNumberPrimaryMode.WHATSAPP_BUSINESS) },
+                    primary = isTop && item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_BUSINESS,
+                )
+                AsciiButton(
+                    label = "call",
+                    onClick = { onExecuteDirectNumber(item, DirectNumberPrimaryMode.CALL) },
+                    primary = isTop && item.primaryMode == DirectNumberPrimaryMode.CALL,
+                )
+            } else if (item is com.sujan.pipe.domain.PaletteItem.TimerAlarmAction) {
+                AsciiButton(
+                    label = "ui",
+                    onClick = { onExecuteTimerAlarm(item, false) },
+                )
+                AsciiButton(
+                    label = "start",
+                    onClick = { onExecuteTimerAlarm(item, true) },
+                    primary = isTop,
+                )
+            } else if (item is com.sujan.pipe.domain.PaletteItem.SystemSettingAction) {
+                AsciiButton(
+                    label = "open",
+                    onClick = onExecute,
+                    primary = isTop,
+                )
+            }
+
             if (hasActionSheet) {
                 AsciiButton(
                     label = "⋯",
@@ -2238,6 +2343,8 @@ fun AsciiResultActionSheet(
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
+    onWhatsAppBusinessContact: (ContactItem) -> Unit = {},
+    onExecuteDirectNumber: (com.sujan.pipe.domain.PaletteItem.DirectNumberAction, DirectNumberPrimaryMode) -> Unit = { _, _ -> },
     onScopeFolder: (String) -> Unit,
     onBookmarkFile: (LocalFileItem) -> Unit,
     onShareFile: (LocalFileItem) -> Unit,
@@ -2278,6 +2385,30 @@ fun AsciiResultActionSheet(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 when (item) {
+                    is com.sujan.pipe.domain.PaletteItem.DirectNumberAction -> {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                AsciiKindBadge(item.primaryMode.badge, c.good)
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    AsciiText("+${item.normalizedWhatsAppDigits}", style = AsciiType.title, color = c.fg, maxLines = 1)
+                                    AsciiText("raw: ${item.rawPhone}", style = AsciiType.small, color = c.dim, maxLines = 1)
+                                }
+                            }
+                            AsciiButton("x", onDismiss)
+                        }
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiSheetActionRow("wa", "Open in WhatsApp (Personal)", { onExecuteDirectNumber(item, DirectNumberPrimaryMode.WHATSAPP_PERSONAL) }, isPrimary = item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_PERSONAL)
+                        AsciiSheetActionRow("wa.b", "Open in WhatsApp Business", { onExecuteDirectNumber(item, DirectNumberPrimaryMode.WHATSAPP_BUSINESS) }, isPrimary = item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_BUSINESS)
+                        AsciiSheetActionRow("call", "Dial ${item.rawPhone}", { onExecuteDirectNumber(item, DirectNumberPrimaryMode.CALL) })
+                        AsciiSheetActionRow("sms", "Send SMS to ${item.rawPhone}", { onExecuteDirectNumber(item, DirectNumberPrimaryMode.SMS) })
+                        AsciiSheetActionRow("copy", "Copy phone number", { onCopyText(item.rawPhone) })
+                    }
+
                     is com.sujan.pipe.domain.PaletteItem.DirectUrlAction -> {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -2345,7 +2476,8 @@ fun AsciiResultActionSheet(
                         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
                         AsciiSheetActionRow("call", "Call ${contact.phoneNumber}", { onCallContact(contact) }, isPrimary = true)
                         AsciiSheetActionRow("sms", "Send SMS to ${contact.displayName}", { onSmsContact(contact) })
-                        AsciiSheetActionRow("wa", "Message on WhatsApp", { onWhatsAppContact(contact) })
+                        AsciiSheetActionRow("wa", "Message on WhatsApp (Personal)", { onWhatsAppContact(contact) })
+                        AsciiSheetActionRow("wa.b", "Message on WhatsApp Business", { onWhatsAppBusinessContact(contact) })
                         AsciiSheetActionRow("copy", "Copy phone number", { onCopyText(contact.phoneNumber) })
                     }
 
@@ -3322,6 +3454,7 @@ private fun PipeSettingsScreen(
     onHourlyAutoIndexChange: (Boolean) -> Unit,
     onRebuildIndexNow: () -> Unit,
     onPreferredBrowserChange: (String) -> Unit,
+    onWhatsAppFlavorChange: (WhatsAppFlavor) -> Unit = {},
     onAddExcludedFolder: (String) -> Unit,
     onRemoveExcludedFolder: (String) -> Unit,
     onSearchBoxPrefixChange: (String) -> Unit,
@@ -3722,6 +3855,7 @@ private fun PipeSettingsScreen(
                     var contactsField by remember(p.contacts) { mutableStateOf(TextFieldValue(p.contacts, TextRange(p.contacts.length))) }
                     var dictField by remember(p.dictionary) { mutableStateOf(TextFieldValue(p.dictionary, TextRange(p.dictionary.length))) }
                     var clipField by remember(p.clipboard) { mutableStateOf(TextFieldValue(p.clipboard, TextRange(p.clipboard.length))) }
+                    var setField by remember(p.systemSettings) { mutableStateOf(TextFieldValue(p.systemSettings, TextRange(p.systemSettings.length))) }
 
                     val pushPrefixUpdate: (String, String, String, String, String, String, String, String) -> Unit = { fVal, sVal, bVal, appVal, hVal, cVal, dVal, clVal ->
                         onPrefixConfigChange(
@@ -3734,6 +3868,7 @@ private fun PipeSettingsScreen(
                                 contacts = cVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "c" },
                                 dictionary = dVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "def" },
                                 clipboard = clVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "clip" },
+                                systemSettings = setField.text.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "set" },
                             )
                         )
                     }
@@ -3864,9 +3999,32 @@ private fun PipeSettingsScreen(
                                 )
                             }
                         }
+                        Spacer(Modifier.height(6.dp))
+                        AsciiTextField(
+                            label = "system settings jumper prefix (e.g. set dev, set spot, set dns)",
+                            promptPrefix = "> ",
+                            value = setField,
+                            onValueChange = {
+                                setField = it
+                                onPrefixConfigChange(
+                                    PrefixConfig(
+                                        files = filesField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "f" },
+                                        pipes = pipesField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "s" },
+                                        bookmarks = bookmarksField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "b" },
+                                        apps = appsField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "app" },
+                                        history = histField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "hist" },
+                                        contacts = contactsField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "c" },
+                                        dictionary = dictField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "def" },
+                                        clipboard = clipField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "clip" },
+                                        systemSettings = it.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "set" },
+                                    )
+                                )
+                            },
+                            placeholder = "set",
+                        )
                         Spacer(Modifier.height(8.dp))
                         AsciiButton(
-                            label = "reset default prefixes (f, s, b, app, hist, c, def, clip)",
+                            label = "reset default prefixes (f, s, b, app, hist, c, def, clip, set)",
                             onClick = onResetPrefixConfig,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -3886,6 +4044,13 @@ private fun PipeSettingsScreen(
                             selectedValue = state.preferredBrowserPackage,
                             options = browserOptions,
                             onSelect = onPreferredBrowserChange,
+                        )
+                        AsciiDropdownRow(
+                            label = "whatsapp target (wa / wab)",
+                            subtitle = "choose default for unsaved numbers & contacts (`wa` = Personal, `wab` = Business)",
+                            selectedValue = state.whatsAppFlavor,
+                            options = WhatsAppFlavor.entries.map { it to it.label },
+                            onSelect = onWhatsAppFlavorChange,
                         )
                         AsciiDropdownRow(
                             label = "share text action",
@@ -4011,8 +4176,11 @@ private fun PipeSettingsScreen(
                         BoxWithConstraints(Modifier.fillMaxWidth()) {
                             val cols = rememberCols(AsciiType.small)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                AsciiText("pipe v2.3 (release)", style = AsciiType.title, color = c.accent)
+                                AsciiText("pipe v2.4 (release)", style = AsciiType.title, color = c.accent)
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
+                                AsciiText(leader("system settings", "${state.prefixConfig.systemSettingsClean} <dev|spot|dns|notif>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
+                                AsciiText(leader("whatsapp / biz", "wa <num> / wab <num>", cols), style = AsciiType.small, color = c.good, softWrap = false)
+                                AsciiText(leader("timer & alarm", "timer 12m / alarm 06:30", cols), style = AsciiType.small, color = c.warn, softWrap = false)
                                 AsciiText(leader("dictionary", "${state.prefixConfig.dictionaryClean} <word> (0 MB idle)", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("clipboard", "${state.prefixConfig.clipboardClean} (url / phone / text)", cols), style = AsciiType.small, color = c.accent3, softWrap = false)
                                 AsciiText(leader("bookmarks", "${state.prefixConfig.bookmarksClean} <alias>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)

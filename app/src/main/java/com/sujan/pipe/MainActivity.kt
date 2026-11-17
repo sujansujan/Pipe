@@ -154,6 +154,18 @@ class MainActivity : ComponentActivity() {
                             viewModel.recordItemUsage(top.usageKey)
                             DeviceIntegrationManager.openUrlExcludingSelf(this, top.targetUrl)
                         }
+                        is com.sujan.pipe.domain.PaletteItem.SystemSettingAction -> {
+                            viewModel.recordItemUsage(top.usageKey)
+                            DeviceIntegrationManager.openSystemSettingShortcut(this, top.shortcut)
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.DirectNumberAction -> {
+                            viewModel.recordItemUsage(top.usageKey)
+                            handleDirectNumberAction(top, top.primaryMode)
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.TimerAlarmAction -> {
+                            viewModel.recordItemUsage(top.usageKey)
+                            handleTimerAlarmAction(top, skipUi = true)
+                        }
                         is com.sujan.pipe.domain.PaletteItem.DictionaryAction -> {
                             if (top.isSetupPrompt) {
                                 handleSetupDictionaryClick { dictImportLauncher.launch(arrayOf("*/*")) }
@@ -178,7 +190,11 @@ class MainActivity : ComponentActivity() {
                             when (top.preferredAction) {
                                 com.sujan.pipe.model.ContactQuickAction.WHATSAPP -> {
                                     val digits = QueryRouter.normalizeWhatsAppPhone(top.contact.phoneNumber)
-                                    DeviceIntegrationManager.whatsAppContact(this, digits)
+                                    DeviceIntegrationManager.whatsAppContact(this, digits, "com.whatsapp")
+                                }
+                                com.sujan.pipe.model.ContactQuickAction.WHATSAPP_BUSINESS -> {
+                                    val digits = QueryRouter.normalizeWhatsAppPhone(top.contact.phoneNumber)
+                                    DeviceIntegrationManager.whatsAppContact(this, digits, "com.whatsapp.w4b")
                                 }
                                 com.sujan.pipe.model.ContactQuickAction.SMS ->
                                     DeviceIntegrationManager.smsContact(this, top.contact.phoneNumber)
@@ -236,6 +252,18 @@ class MainActivity : ComponentActivity() {
                     viewModel.recordItemUsage("url:$url")
                     DeviceIntegrationManager.openUrlExcludingSelf(this, url)
                 },
+                onOpenSystemSetting = { shortcut ->
+                    viewModel.recordItemUsage("sys:${shortcut.id}")
+                    DeviceIntegrationManager.openSystemSettingShortcut(this, shortcut)
+                },
+                onExecuteDirectNumber = { action, mode ->
+                    viewModel.recordItemUsage(action.usageKey)
+                    handleDirectNumberAction(action, mode)
+                },
+                onExecuteTimerAlarm = { action, skipUi ->
+                    viewModel.recordItemUsage(action.usageKey)
+                    handleTimerAlarmAction(action, skipUi)
+                },
                 onSelectDictionaryItem = { dictAction ->
                     if (dictAction.isSetupPrompt) {
                         handleSetupDictionaryClick { dictImportLauncher.launch(arrayOf("*/*")) }
@@ -290,7 +318,12 @@ class MainActivity : ComponentActivity() {
                 onWhatsAppContact = { c ->
                     viewModel.recordItemUsage("contact:${c.phoneNumber.filter { it.isDigit() }}")
                     val digits = QueryRouter.normalizeWhatsAppPhone(c.phoneNumber)
-                    DeviceIntegrationManager.whatsAppContact(this, digits)
+                    DeviceIntegrationManager.whatsAppContact(this, digits, "com.whatsapp")
+                },
+                onWhatsAppBusinessContact = { c ->
+                    viewModel.recordItemUsage("contact:${c.phoneNumber.filter { it.isDigit() }}")
+                    val digits = QueryRouter.normalizeWhatsAppPhone(c.phoneNumber)
+                    DeviceIntegrationManager.whatsAppContact(this, digits, "com.whatsapp.w4b")
                 },
                 onQuickSaveContact = { name, phone ->
                     if (DeviceIntegrationManager.insertContactDirect(this, name, phone)) {
@@ -380,6 +413,7 @@ class MainActivity : ComponentActivity() {
                 },
                 onRebuildIndexNow = { refreshDeviceDataAsync(forceRebuild = true) },
                 onPreferredBrowserChange = viewModel::setPreferredBrowserPackage,
+                onWhatsAppFlavorChange = viewModel::setWhatsAppFlavor,
                 onAddExcludedFolder = { folder ->
                     viewModel.addExcludedFolder(folder)
                     refreshDeviceDataAsync(forceRebuild = true)
@@ -425,7 +459,11 @@ class MainActivity : ComponentActivity() {
             ClipActionKind.CALL_NUMBER -> DeviceIntegrationManager.dialContact(this, action.payloadText)
             ClipActionKind.WA_NUMBER -> {
                 val digits = QueryRouter.normalizeWhatsAppPhone(action.payloadText)
-                DeviceIntegrationManager.whatsAppContact(this, digits)
+                DeviceIntegrationManager.whatsAppContact(this, digits, "com.whatsapp")
+            }
+            ClipActionKind.WAB_NUMBER -> {
+                val digits = QueryRouter.normalizeWhatsAppPhone(action.payloadText)
+                DeviceIntegrationManager.whatsAppContact(this, digits, "com.whatsapp.w4b")
             }
             ClipActionKind.SAVE_CONTACT -> {
                 val next = "+ c Name ${action.payloadText}"
@@ -436,6 +474,45 @@ class MainActivity : ComponentActivity() {
                     copyToClipboard(AnnotatedString(action.payloadText))
                     viewModel.setJsonStatusMessage("ok: copied \"${action.payloadText.take(28)}\"")
                 }
+            }
+        }
+    }
+
+    private fun handleDirectNumberAction(
+        action: com.sujan.pipe.domain.PaletteItem.DirectNumberAction,
+        mode: com.sujan.pipe.domain.DirectNumberPrimaryMode,
+    ) {
+        when (mode) {
+            com.sujan.pipe.domain.DirectNumberPrimaryMode.WHATSAPP_PERSONAL ->
+                DeviceIntegrationManager.whatsAppContact(this, action.normalizedWhatsAppDigits, "com.whatsapp", action.messageText)
+            com.sujan.pipe.domain.DirectNumberPrimaryMode.WHATSAPP_BUSINESS ->
+                DeviceIntegrationManager.whatsAppContact(this, action.normalizedWhatsAppDigits, "com.whatsapp.w4b", action.messageText)
+            com.sujan.pipe.domain.DirectNumberPrimaryMode.CALL ->
+                DeviceIntegrationManager.dialContact(this, action.rawPhone)
+            com.sujan.pipe.domain.DirectNumberPrimaryMode.SMS ->
+                DeviceIntegrationManager.smsContact(this, action.rawPhone)
+        }
+    }
+
+    private fun handleTimerAlarmAction(
+        action: com.sujan.pipe.domain.PaletteItem.TimerAlarmAction,
+        skipUi: Boolean,
+    ) {
+        if (action.isAlarm) {
+            val ok = DeviceIntegrationManager.setSystemAlarm(this, action.hour24, action.minute, action.label, skipUi)
+            if (ok) {
+                viewModel.setSearchTextFromExternal("")
+                viewModel.setJsonStatusMessage("ok: set alarm for ${QueryRouter.formatAlarmTime(action.hour24, action.minute)}")
+            } else {
+                viewModel.setJsonStatusMessage("! no clock app found to set alarm")
+            }
+        } else {
+            val ok = DeviceIntegrationManager.startCountdownTimer(this, action.totalSeconds, action.label, skipUi)
+            if (ok) {
+                viewModel.setSearchTextFromExternal("")
+                viewModel.setJsonStatusMessage("ok: started ${QueryRouter.formatDurationSummary(action.totalSeconds)} timer")
+            } else {
+                viewModel.setJsonStatusMessage("! no clock app found to start timer")
             }
         }
     }

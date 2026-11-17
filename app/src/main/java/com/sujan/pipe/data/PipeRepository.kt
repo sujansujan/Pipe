@@ -12,6 +12,7 @@ import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
+import com.sujan.pipe.model.WhatsAppFlavor
 import com.sujan.pipe.ui.ascii.PaletteChoice
 import com.sujan.pipe.ui.ascii.ThemeMode
 import org.json.JSONArray
@@ -71,6 +72,7 @@ class PipeRepository(context: Context) {
             contacts = prefs.getString("prefix_contacts_v1", "c")?.trim()?.ifEmpty { "c" } ?: "c",
             dictionary = prefs.getString("prefix_dictionary_v1", "def")?.trim()?.ifEmpty { "def" } ?: "def",
             clipboard = prefs.getString("prefix_clipboard_v1", "clip")?.trim()?.ifEmpty { "clip" } ?: "clip",
+            systemSettings = prefs.getString("prefix_system_settings_v1", "set")?.trim()?.ifEmpty { "set" } ?: "set",
         )
     }
 
@@ -84,7 +86,15 @@ class PipeRepository(context: Context) {
             .putString("prefix_contacts_v1", config.contactsClean)
             .putString("prefix_dictionary_v1", config.dictionaryClean)
             .putString("prefix_clipboard_v1", config.clipboardClean)
+            .putString("prefix_system_settings_v1", config.systemSettingsClean)
             .apply()
+    }
+
+    fun loadWhatsAppFlavor(): WhatsAppFlavor =
+        WhatsAppFlavor.fromString(prefs.getString("whatsapp_flavor_v1", WhatsAppFlavor.BOTH.name))
+
+    fun saveWhatsAppFlavor(flavor: WhatsAppFlavor) {
+        prefs.edit().putString("whatsapp_flavor_v1", flavor.name).apply()
     }
 
     fun loadDictionaryWordCount(): Int = prefs.getInt("dict_word_count_v1", 0)
@@ -98,6 +108,7 @@ class PipeRepository(context: Context) {
     }
 
     fun buildFullBackupBundle(): FullBackupBundle = FullBackupBundle(
+        version = 2,
         engines = loadEngines(),
         bookmarks = loadBookmarks(),
         prefixes = loadPrefixConfig(),

@@ -11,8 +11,11 @@ import com.sujan.pipe.model.InstalledAppItem
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.PrefixConfig
+import com.sujan.pipe.model.DefaultSystemShortcuts
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
+import com.sujan.pipe.model.SystemSettingShortcut
+import com.sujan.pipe.model.WhatsAppFlavor
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -349,8 +352,16 @@ enum class ClipActionKind {
     SAVE_BOOKMARK,
     CALL_NUMBER,
     WA_NUMBER,
+    WAB_NUMBER,
     SAVE_CONTACT,
     COPY_TEXT,
+}
+
+enum class DirectNumberPrimaryMode(val badge: String, val label: String, val targetPackage: String?) {
+    WHATSAPP_PERSONAL("wa", "WhatsApp", "com.whatsapp"),
+    WHATSAPP_BUSINESS("wa.b", "WhatsApp Business", "com.whatsapp.w4b"),
+    CALL("call", "Dial", null),
+    SMS("sms", "SMS", null),
 }
 
 enum class PromptIntentMode(val scopeBadge: String) {
@@ -364,6 +375,9 @@ enum class PromptIntentMode(val scopeBadge: String) {
     HISTORY_ONLY("hist:history"),
     DICTIONARY_ONLY("def:dict"),
     CLIPBOARD_ONLY("clip:tools"),
+    SYSTEM_SETTINGS_ONLY("set:sys"),
+    DIRECT_NUMBER_ONLY("wa:num"),
+    TIMER_ALARM_ONLY("clk:time"),
     SCOPED_FOLDER("b:folder"),
     ENGINE_ONLY("s:pipe"),
     ADD_COMMAND("+add"),
@@ -377,6 +391,8 @@ data class ParsedPromptCommand(
     val scopedFolderBookmark: PipeBookmark? = null,
     val matchedEngine: SearchEngine? = null,
     val contactAction: ContactQuickAction = ContactQuickAction.CALL,
+    val directNumberMode: DirectNumberPrimaryMode = DirectNumberPrimaryMode.WHATSAPP_PERSONAL,
+    val isAlarmCommand: Boolean = false,
 )
 
 sealed interface PaletteItem {
@@ -484,6 +500,36 @@ sealed interface PaletteItem {
         override val rankScore: Int,
         override val usageCount: Int,
     ) : PaletteItem
+
+    data class SystemSettingAction(
+        val shortcut: SystemSettingShortcut,
+        override val usageKey: String = "sys:${shortcut.id}",
+        override val rankScore: Int = 9200,
+        override val usageCount: Int = 0,
+    ) : PaletteItem
+
+    data class DirectNumberAction(
+        val rawPhone: String,
+        val normalizedWhatsAppDigits: String,
+        val messageText: String = "",
+        val primaryMode: DirectNumberPrimaryMode = DirectNumberPrimaryMode.WHATSAPP_PERSONAL,
+        override val usageKey: String = "num:$normalizedWhatsAppDigits:${primaryMode.name}",
+        override val rankScore: Int = 96_000,
+        override val usageCount: Int = 0,
+    ) : PaletteItem
+
+    data class TimerAlarmAction(
+        val isAlarm: Boolean,
+        val totalSeconds: Int = 0,
+        val hour24: Int = 0,
+        val minute: Int = 0,
+        val label: String = "",
+        val title: String,
+        val subtitle: String,
+        override val usageKey: String = if (isAlarm) "alarm:$hour24:$minute" else "timer:$totalSeconds",
+        override val rankScore: Int = 97_000,
+        override val usageCount: Int = 0,
+    ) : PaletteItem
 }
 
 data class EngineValidationErrors(
@@ -560,6 +606,137 @@ object QueryRouter {
         }
     }
 
+    /**
+     * Feature #3: Detects an unsaved phone number (7..15 digits) with optional trailing message text.
+     */
+    fun parseDirectPhoneInput(rawInput: String): Pair<String, String>? {
+        val trimmed = rawInput.trim()
+        if (trimmed.isEmpty()) return null
+        if (IPV4_PORT_REGEX.matches(trimmed)) return null
+
+        val tokens = trimmed.split(WHITESPACE_REGEX)
+        val phoneTokens = mutableListOf<String>()
+        var msgStartIndex = tokens.size
+
+        for ((idx, tok) in tokens.withIndex()) {
+            val isPhonePiece = tok.all { it.isDigit() || it == '+' || it == '-' || it == '(' || it == ')' || it == '.' } &&
+                tok.any { it.isDigit() }
+            if (isPhonePiece && phoneTokens.size < 3) {
+                phoneTokens.add(tok)
+            } else {
+                msgStartIndex = idx
+                break
+            }
+        }
+
+        if (phoneTokens.isEmpty()) return null
+        val combinedPhone = phoneTokens.joinToString("")
+        val digits = combinedPhone.filter { it.isDigit() }
+        if (digits.length !in 7..15) return null
+        val message = if (msgStartIndex < tokens.size) tokens.subList(msgStartIndex, tokens.size).joinToString(" ").trim() else ""
+        return combinedPhone to message
+    }
+
+    /**
+     * Feature #10: Parses countdown timer input such as `12m`, `1h 30m`, `45s`, `90s`, or `15` (minutes) + optional label.
+     */
+    fun parseDurationTimer(rawArgs: String): Pair<Int, String>? {
+        val trimmed = rawArgs.trim()
+        if (trimmed.isEmpty()) return null
+
+        val unitRegex = Regex("^(?:(\\d+(?:\\.\\d+)?)\\s*(?:h|hr|hrs|hour|hours))?\\s*(?:(\\d+(?:\\.\\d+)?)\\s*(?:m|min|mins|minute|minutes))?\\s*(?:(\\d+)\\s*(?:s|sec|secs|second|seconds))?(?:\\s+(.*))?$", RegexOption.IGNORE_CASE)
+        val m = unitRegex.find(trimmed)
+        if (m != null) {
+            val hStr = m.groupValues[1]
+            val mStr = m.groupValues[2]
+            val sStr = m.groupValues[3]
+            val label = m.groupValues[4].trim()
+            if (hStr.isNotEmpty() || mStr.isNotEmpty() || sStr.isNotEmpty()) {
+                val hours = hStr.toDoubleOrNull() ?: 0.0
+                val mins = mStr.toDoubleOrNull() ?: 0.0
+                val secs = sStr.toIntOrNull() ?: 0
+                val totalSecs = (hours * 3600.0 + mins * 60.0 + secs).toInt()
+                if (totalSecs > 0) return totalSecs to label
+            }
+        }
+
+        val tokens = trimmed.split(WHITESPACE_REGEX, limit = 2)
+        val firstNum = tokens[0].toDoubleOrNull()
+        if (firstNum != null && firstNum > 0) {
+            val totalSecs = (firstNum * 60.0).toInt().coerceAtLeast(1)
+            val label = if (tokens.size > 1) tokens[1].trim() else ""
+            return totalSecs to label
+        }
+        return null
+    }
+
+    fun formatDurationSummary(totalSeconds: Int): String {
+        val h = totalSeconds / 3600
+        val m = (totalSeconds % 3600) / 60
+        val s = totalSeconds % 60
+        return buildList {
+            if (h > 0) add("${h}h")
+            if (m > 0) add("${m}m")
+            if (s > 0 || isEmpty()) add("${s}s")
+        }.joinToString(" ")
+    }
+
+    /**
+     * Feature #10: Parses alarm time input such as `06:30`, `6:30am`, `6:30 pm`, `18:45`, `7am` + optional label.
+     */
+    fun parseAlarmTime(rawArgs: String): Triple<Int, Int, String>? {
+        val trimmed = rawArgs.trim()
+        if (trimmed.isEmpty()) return null
+        val regex = Regex("^(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?(?:\\s+(.*))?$", RegexOption.IGNORE_CASE)
+        val match = regex.find(trimmed) ?: return null
+        val rawHour = match.groupValues[1].toIntOrNull() ?: return null
+        val rawMin = if (match.groupValues[2].isNotEmpty()) match.groupValues[2].toIntOrNull() ?: return null else 0
+        val amPm = match.groupValues[3].lowercase()
+        val label = match.groupValues[4].trim()
+
+        if (rawMin !in 0..59) return null
+        val hour24 = when (amPm) {
+            "am" -> {
+                if (rawHour !in 1..12) return null
+                if (rawHour == 12) 0 else rawHour
+            }
+            "pm" -> {
+                if (rawHour !in 1..12) return null
+                if (rawHour == 12) 12 else rawHour + 12
+            }
+            else -> {
+                if (rawHour !in 0..23) return null
+                rawHour
+            }
+        }
+        return Triple(hour24, rawMin, label)
+    }
+
+    fun formatAlarmTime(hour24: Int, minute: Int): String {
+        val h24 = String.format(java.util.Locale.US, "%02d:%02d", hour24, minute)
+        val period = if (hour24 < 12) "AM" else "PM"
+        val h12 = when {
+            hour24 == 0 -> 12
+            hour24 > 12 -> hour24 - 12
+            else -> hour24
+        }
+        val mStr = String.format(java.util.Locale.US, "%02d", minute)
+        return "$h24 ($h12:$mStr $period)"
+    }
+
+    fun scoreSystemShortcut(rawQuery: String, shortcut: SystemSettingShortcut): Int {
+        val clean = rawQuery.trim().lowercase()
+        if (clean.isEmpty()) return 200
+        val aliasScore = when {
+            shortcut.aliasLower == clean -> 2400
+            shortcut.aliasLower.startsWith(clean) -> 1100
+            else -> FuzzyMatcher.scorePreLowered(clean, shortcut.aliasLower)
+        }
+        val titleScore = FuzzyMatcher.scorePreLowered(clean, shortcut.titleLower)
+        val kwScore = FuzzyMatcher.scorePreLowered(clean, shortcut.keywordsLower)
+        return maxOf(aliasScore, titleScore, kwScore)
+    }
+
     fun parsePromptCommand(
         rawInput: String,
         bookmarks: List<PipeBookmark>,
@@ -596,6 +773,7 @@ object QueryRouter {
         val histPrefix = prefixes.historyClean
         val defPrefix = prefixes.dictionaryClean
         val clipPrefix = prefixes.clipboardClean
+        val setPrefix = prefixes.systemSettingsClean
 
         // On-Demand Offline Dictionary: `def <word>` or custom dictionary prefix
         if ((firstLower == defPrefix || firstLower == "def" || firstLower == "dict" || firstLower == "define") && hasSpaceAfterFirst) {
@@ -605,6 +783,53 @@ object QueryRouter {
         // Clipboard & Text Tools: `clip` (works immediately or with space) or `txt <text>`
         if (firstLower == clipPrefix || firstLower == "clip" || ((firstLower == "txt" || firstLower == "text") && hasSpaceAfterFirst)) {
             return ParsedPromptCommand(PromptIntentMode.CLIPBOARD_ONLY, remainder)
+        }
+
+        // Feature #1: Deep Android System Settings (`set <query>` or `sys <query>`)
+        if ((firstLower == setPrefix || firstLower == "set" || firstLower == "sys" || firstLower == "settings") && hasSpaceAfterFirst) {
+            return ParsedPromptCommand(PromptIntentMode.SYSTEM_SETTINGS_ONLY, remainder)
+        }
+
+        // Feature #10: Quick Countdown Timer & Alarm (`timer 12m`, `alarm 06:30`)
+        if ((firstLower == "timer" || firstLower == "tmr") && (hasSpaceAfterFirst || trimmed.equals("timer", ignoreCase = true))) {
+            return ParsedPromptCommand(PromptIntentMode.TIMER_ALARM_ONLY, remainder, isAlarmCommand = false)
+        }
+        if ((firstLower == "alarm" || firstLower == "alm") && (hasSpaceAfterFirst || trimmed.equals("alarm", ignoreCase = true))) {
+            return ParsedPromptCommand(PromptIntentMode.TIMER_ALARM_ONLY, remainder, isAlarmCommand = true)
+        }
+
+        // Feature #3: Direct WhatsApp (`wa <num>`) & WhatsApp Business (`wab <num>`) for unsaved numbers (or saved contacts)
+        if ((firstLower == "wa" || firstLower == "whatsapp") && hasSpaceAfterFirst) {
+            val parsedPhone = parseDirectPhoneInput(remainder)
+            if (parsedPhone != null || remainder.isEmpty() || remainder.any { it.isDigit() }) {
+                return ParsedPromptCommand(
+                    mode = PromptIntentMode.DIRECT_NUMBER_ONLY,
+                    filterQuery = remainder,
+                    directNumberMode = DirectNumberPrimaryMode.WHATSAPP_PERSONAL,
+                )
+            } else {
+                return ParsedPromptCommand(
+                    mode = PromptIntentMode.CONTACTS_ONLY,
+                    filterQuery = remainder,
+                    contactAction = ContactQuickAction.WHATSAPP,
+                )
+            }
+        }
+        if ((firstLower == "wab" || firstLower == "wb" || firstLower == "w4b") && hasSpaceAfterFirst) {
+            val parsedPhone = parseDirectPhoneInput(remainder)
+            if (parsedPhone != null || remainder.isEmpty() || remainder.any { it.isDigit() }) {
+                return ParsedPromptCommand(
+                    mode = PromptIntentMode.DIRECT_NUMBER_ONLY,
+                    filterQuery = remainder,
+                    directNumberMode = DirectNumberPrimaryMode.WHATSAPP_BUSINESS,
+                )
+            } else {
+                return ParsedPromptCommand(
+                    mode = PromptIntentMode.CONTACTS_ONLY,
+                    filterQuery = remainder,
+                    contactAction = ContactQuickAction.WHATSAPP_BUSINESS,
+                )
+            }
         }
 
         // 1. Dedicated Bookmark Prefix: `<bPrefix> <query>` or `bm <query>`
@@ -674,6 +899,7 @@ object QueryRouter {
             if (subTokens.size >= 2) {
                 val lastToken = subTokens.last().lowercase()
                 val chainedAction = when (lastToken) {
+                    "wab", "wb", "w4b" -> ContactQuickAction.WHATSAPP_BUSINESS
                     "wa", "whatsapp", "w" -> ContactQuickAction.WHATSAPP
                     "sms", "text", "msg", "s" -> ContactQuickAction.SMS
                     "call", "dial", "tel" -> ContactQuickAction.CALL
@@ -766,6 +992,7 @@ object QueryRouter {
         prefixes: PrefixConfig = PrefixConfig(),
         dictionaryMatches: List<DictionaryEntry> = emptyList(),
         isDictionaryInstalled: Boolean = false,
+        whatsAppFlavor: WhatsAppFlavor = WhatsAppFlavor.BOTH,
     ): List<PaletteItem> {
         val cmd = parsePromptCommand(rawInput, bookmarks, engines, prefixes)
         fun usageOf(key: String): Int = usageMap[key] ?: 0
@@ -822,6 +1049,155 @@ object QueryRouter {
             }
 
             PromptIntentMode.CLIPBOARD_ONLY -> buildClipboardAndTextSuggestions(cmd.filterQuery, clipboardText)
+
+            PromptIntentMode.SYSTEM_SETTINGS_ONLY -> {
+                val q = cmd.filterQuery.trim()
+                DefaultSystemShortcuts.LIST.mapNotNull { sc ->
+                    val uKey = "sys:${sc.id}"
+                    val uCount = usageOf(uKey)
+                    val s = scoreSystemShortcut(q, sc)
+                    if (s > 0) {
+                        PaletteItem.SystemSettingAction(
+                            shortcut = sc,
+                            usageKey = uKey,
+                            rankScore = s * 10 + usageBonus(uKey),
+                            usageCount = uCount,
+                        )
+                    } else null
+                }.sortedWith(
+                    if (q.isEmpty()) compareByDescending<PaletteItem.SystemSettingAction> { it.usageCount }.thenByDescending { it.rankScore }
+                    else compareByDescending<PaletteItem.SystemSettingAction> { it.rankScore }.thenByDescending { it.usageCount }
+                ).take(MAX_PALETTE_RESULTS)
+            }
+
+            PromptIntentMode.DIRECT_NUMBER_ONLY -> {
+                val q = cmd.filterQuery.trim()
+                val effectiveInput = q.ifEmpty { clipboardText.trim() }
+                val parsed = parseDirectPhoneInput(effectiveInput)
+                if (parsed != null) {
+                    val (rawPhone, msg) = parsed
+                    val normDigits = normalizeWhatsAppPhone(rawPhone)
+                    val preferBiz = cmd.directNumberMode == DirectNumberPrimaryMode.WHATSAPP_BUSINESS ||
+                        (cmd.directNumberMode == DirectNumberPrimaryMode.WHATSAPP_PERSONAL && q.isEmpty() && whatsAppFlavor == WhatsAppFlavor.BUSINESS)
+                    val firstWa = if (preferBiz) DirectNumberPrimaryMode.WHATSAPP_BUSINESS else DirectNumberPrimaryMode.WHATSAPP_PERSONAL
+                    val secondWa = if (preferBiz) DirectNumberPrimaryMode.WHATSAPP_PERSONAL else DirectNumberPrimaryMode.WHATSAPP_BUSINESS
+                    listOf(
+                        PaletteItem.DirectNumberAction(
+                            rawPhone = rawPhone,
+                            normalizedWhatsAppDigits = normDigits,
+                            messageText = msg,
+                            primaryMode = firstWa,
+                            rankScore = 99_000,
+                        ),
+                        PaletteItem.DirectNumberAction(
+                            rawPhone = rawPhone,
+                            normalizedWhatsAppDigits = normDigits,
+                            messageText = msg,
+                            primaryMode = secondWa,
+                            rankScore = 98_000,
+                        ),
+                        PaletteItem.DirectNumberAction(
+                            rawPhone = rawPhone,
+                            normalizedWhatsAppDigits = normDigits,
+                            messageText = msg,
+                            primaryMode = DirectNumberPrimaryMode.CALL,
+                            rankScore = 97_000,
+                        ),
+                        PaletteItem.DirectNumberAction(
+                            rawPhone = rawPhone,
+                            normalizedWhatsAppDigits = normDigits,
+                            messageText = msg,
+                            primaryMode = DirectNumberPrimaryMode.SMS,
+                            rankScore = 96_000,
+                        ),
+                    )
+                } else {
+                    listOf(
+                        PaletteItem.DirectNumberAction(
+                            rawPhone = "9841234567",
+                            normalizedWhatsAppDigits = "9779841234567",
+                            messageText = "",
+                            primaryMode = cmd.directNumberMode,
+                            rankScore = 90_000,
+                        )
+                    )
+                }
+            }
+
+            PromptIntentMode.TIMER_ALARM_ONLY -> {
+                val q = cmd.filterQuery.trim()
+                val out = mutableListOf<PaletteItem>()
+                if (cmd.isAlarmCommand) {
+                    val parsedAlarm = parseAlarmTime(q)
+                    if (parsedAlarm != null) {
+                        val (h, m, lbl) = parsedAlarm
+                        val timeText = formatAlarmTime(h, m)
+                        val title = if (lbl.isNotBlank()) "Set Alarm: $timeText · \"$lbl\"" else "Set Alarm: $timeText"
+                        out.add(
+                            PaletteItem.TimerAlarmAction(
+                                isAlarm = true,
+                                hour24 = h,
+                                minute = m,
+                                label = lbl,
+                                title = title,
+                                subtitle = "sets system alarm immediately (skip UI)",
+                                rankScore = 99_000,
+                            )
+                        )
+                    }
+                    val presets = listOf(6 to 0, 6 to 30, 7 to 0, 7 to 30, 8 to 0, 22 to 0)
+                    presets.forEachIndexed { idx, (ph, pm) ->
+                        if (parsedAlarm == null || parsedAlarm.first != ph || parsedAlarm.second != pm) {
+                            val timeText = formatAlarmTime(ph, pm)
+                            out.add(
+                                PaletteItem.TimerAlarmAction(
+                                    isAlarm = true,
+                                    hour24 = ph,
+                                    minute = pm,
+                                    label = "",
+                                    title = "Preset Alarm: $timeText",
+                                    subtitle = "tap or press RET to set alarm",
+                                    rankScore = 90_000 - idx * 100,
+                                )
+                            )
+                        }
+                    }
+                } else {
+                    val parsedTimer = parseDurationTimer(q)
+                    if (parsedTimer != null) {
+                        val (secs, lbl) = parsedTimer
+                        val durText = formatDurationSummary(secs)
+                        val title = if (lbl.isNotBlank()) "Start Timer: $durText · \"$lbl\"" else "Start Timer: $durText"
+                        out.add(
+                            PaletteItem.TimerAlarmAction(
+                                isAlarm = false,
+                                totalSeconds = secs,
+                                label = lbl,
+                                title = title,
+                                subtitle = "starts countdown timer immediately in background",
+                                rankScore = 99_000,
+                            )
+                        )
+                    }
+                    val presetMins = listOf(5 to "5m Quick", 10 to "10m", 15 to "15m", 25 to "25m Pomodoro", 45 to "45m", 60 to "1h")
+                    presetMins.forEachIndexed { idx, (mins, tag) ->
+                        val pSecs = mins * 60
+                        if (parsedTimer == null || parsedTimer.first != pSecs) {
+                            out.add(
+                                PaletteItem.TimerAlarmAction(
+                                    isAlarm = false,
+                                    totalSeconds = pSecs,
+                                    label = tag,
+                                    title = "Preset Timer: $tag",
+                                    subtitle = "tap or press RET to start countdown",
+                                    rankScore = 90_000 - idx * 100,
+                                )
+                            )
+                        }
+                    }
+                }
+                out.take(MAX_PALETTE_RESULTS)
+            }
 
             PromptIntentMode.CONTACTS_ONLY -> {
                 val q = cmd.filterQuery.trim()
@@ -1076,7 +1452,7 @@ object QueryRouter {
                 } else {
                     val qLower = q.lowercase()
 
-                    // Feature #3: Direct URL & IP Auto-Open at #1 when input is a domain, URL, or IP
+                    // Feature #3a: Direct URL & IP Auto-Open at #1 when input is a domain, URL, or IP
                     val directUrl = detectDirectUrl(q)
                     if (directUrl != null) {
                         pool.add(
@@ -1088,6 +1464,59 @@ object QueryRouter {
                                 usageCount = usageOf("url:$directUrl"),
                             )
                         )
+                    }
+
+                    // Feature #3b: Direct Unsaved Phone Number -> WhatsApp & WhatsApp Business & Dial
+                    val directPhone = if (directUrl == null) parseDirectPhoneInput(q) else null
+                    if (directPhone != null) {
+                        val (rawPhone, msg) = directPhone
+                        val normDigits = normalizeWhatsAppPhone(rawPhone)
+                        val preferBiz = whatsAppFlavor == WhatsAppFlavor.BUSINESS
+                        val primaryWa = if (preferBiz) DirectNumberPrimaryMode.WHATSAPP_BUSINESS else DirectNumberPrimaryMode.WHATSAPP_PERSONAL
+                        val secondaryWa = if (preferBiz) DirectNumberPrimaryMode.WHATSAPP_PERSONAL else DirectNumberPrimaryMode.WHATSAPP_BUSINESS
+                        pool.add(
+                            PaletteItem.DirectNumberAction(
+                                rawPhone = rawPhone,
+                                normalizedWhatsAppDigits = normDigits,
+                                messageText = msg,
+                                primaryMode = primaryWa,
+                                rankScore = 98_500,
+                            )
+                        )
+                        pool.add(
+                            PaletteItem.DirectNumberAction(
+                                rawPhone = rawPhone,
+                                normalizedWhatsAppDigits = normDigits,
+                                messageText = msg,
+                                primaryMode = secondaryWa,
+                                rankScore = 98_000,
+                            )
+                        )
+                        pool.add(
+                            PaletteItem.DirectNumberAction(
+                                rawPhone = rawPhone,
+                                normalizedWhatsAppDigits = normDigits,
+                                messageText = msg,
+                                primaryMode = DirectNumberPrimaryMode.CALL,
+                                rankScore = 97_500,
+                            )
+                        )
+                    }
+
+                    // Feature #1: Surface matching Android System Settings shortcuts when strongly matched
+                    DefaultSystemShortcuts.LIST.forEach { sc ->
+                        val s = scoreSystemShortcut(qLower, sc)
+                        if (s >= 700) {
+                            val uKey = "sys:${sc.id}"
+                            pool.add(
+                                PaletteItem.SystemSettingAction(
+                                    shortcut = sc,
+                                    usageKey = uKey,
+                                    rankScore = s * 10 + 20 + usageBonus(uKey),
+                                    usageCount = usageOf(uKey),
+                                )
+                            )
+                        }
                     }
 
                     bookmarks.forEach { bm ->
@@ -1246,7 +1675,16 @@ object QueryRouter {
                 PaletteItem.ClipboardAction(
                     kind = ClipActionKind.WA_NUMBER,
                     title = "Message $effectiveText on WhatsApp",
-                    subtitle = "wa.me/${normalizeWhatsAppPhone(effectiveText)}",
+                    subtitle = "WhatsApp (Personal) -> +${normalizeWhatsAppPhone(effectiveText)}",
+                    payloadText = effectiveText,
+                    rankScore = 9720,
+                )
+            )
+            out.add(
+                PaletteItem.ClipboardAction(
+                    kind = ClipActionKind.WAB_NUMBER,
+                    title = "Message $effectiveText on WhatsApp Business",
+                    subtitle = "WhatsApp Business -> +${normalizeWhatsAppPhone(effectiveText)}",
                     payloadText = effectiveText,
                     rankScore = 9700,
                 )
@@ -1915,7 +2353,8 @@ object QueryRouter {
         sb.append("    \"history\": \"${escapeJson(p.historyClean)}\",\n")
         sb.append("    \"contacts\": \"${escapeJson(p.contactsClean)}\",\n")
         sb.append("    \"dictionary\": \"${escapeJson(p.dictionaryClean)}\",\n")
-        sb.append("    \"clipboard\": \"${escapeJson(p.clipboardClean)}\"\n")
+        sb.append("    \"clipboard\": \"${escapeJson(p.clipboardClean)}\",\n")
+        sb.append("    \"systemSettings\": \"${escapeJson(p.systemSettingsClean)}\"\n")
         sb.append("  },\n")
         sb.append("  \"excludedFolders\": [")
         bundle.excludedFolders.forEachIndexed { idx, f ->
@@ -1984,6 +2423,7 @@ object QueryRouter {
                 contacts = extractJsonString(prefixesSection, "contacts") ?: "c",
                 dictionary = extractJsonString(prefixesSection, "dictionary") ?: "def",
                 clipboard = extractJsonString(prefixesSection, "clipboard") ?: "clip",
+                systemSettings = extractJsonString(prefixesSection, "systemSettings") ?: "set",
             )
         } else null
 

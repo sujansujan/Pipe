@@ -55,6 +55,7 @@ import com.sujan.pipe.data.DeviceIntegrationManager
 import com.sujan.pipe.data.OfflineDictionaryManager
 import com.sujan.pipe.data.PipeRepository
 import com.sujan.pipe.domain.ClipActionKind
+import com.sujan.pipe.domain.DirectNumberPrimaryMode
 import com.sujan.pipe.domain.PaletteItem
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
@@ -70,6 +71,8 @@ import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
+import com.sujan.pipe.model.SystemSettingShortcut
+import com.sujan.pipe.model.WhatsAppFlavor
 import com.sujan.pipe.ui.AsciiContactAvatar
 import com.sujan.pipe.ui.AsciiDictionaryDetailDialog
 import com.sujan.pipe.ui.AsciiImagePreviewDialog
@@ -118,6 +121,7 @@ class PipeOverlayActivity : ComponentActivity() {
         val placeholderText = repository.loadSearchBoxPlaceholder()
         val showScopeBadge = repository.loadShowSearchBoxScopeBadge()
         val showMenuBtn = repository.loadShowSearchBoxMenuBtn()
+        val whatsAppFlavor = repository.loadWhatsAppFlavor()
 
         setContent {
             PipeTheme(
@@ -140,6 +144,7 @@ class PipeOverlayActivity : ComponentActivity() {
                     placeholderText = placeholderText,
                     showScopeBadge = showScopeBadge,
                     showMenuBtn = showMenuBtn,
+                    whatsAppFlavor = whatsAppFlavor,
                     initialCachedFiles = DeviceIntegrationManager.peekMemoryStorageFiles(),
                     initialCachedApps = DeviceIntegrationManager.peekMemoryInstalledApps(),
                     isDictionaryInstalled = { OfflineDictionaryManager.isDictionaryInstalled(applicationContext) },
@@ -209,14 +214,38 @@ class PipeOverlayActivity : ComponentActivity() {
                     onWhatsAppContact = { contact ->
                         repository.incrementUsage("contact:${contact.cleanPhone}")
                         val digits = QueryRouter.normalizeWhatsAppPhone(contact.phoneNumber)
-                        if (DeviceIntegrationManager.whatsAppContact(this, digits)) finish()
+                        if (DeviceIntegrationManager.whatsAppContact(this, digits, "com.whatsapp")) finish()
+                    },
+                    onWhatsAppBusinessContact = { contact ->
+                        repository.incrementUsage("contact:${contact.cleanPhone}")
+                        val digits = QueryRouter.normalizeWhatsAppPhone(contact.phoneNumber)
+                        if (DeviceIntegrationManager.whatsAppContact(this, digits, "com.whatsapp.w4b")) finish()
                     },
                     onDialNumber = { phone ->
                         if (DeviceIntegrationManager.dialContact(this, phone)) finish()
                     },
+                    onSmsNumber = { phone ->
+                        if (DeviceIntegrationManager.smsContact(this, phone)) finish()
+                    },
                     onWhatsAppNumber = { phone ->
                         val digits = QueryRouter.normalizeWhatsAppPhone(phone)
-                        if (DeviceIntegrationManager.whatsAppContact(this, digits)) finish()
+                        if (DeviceIntegrationManager.whatsAppContact(this, digits, "com.whatsapp")) finish()
+                    },
+                    onWhatsAppBusinessNumber = { phone ->
+                        val digits = QueryRouter.normalizeWhatsAppPhone(phone)
+                        if (DeviceIntegrationManager.whatsAppContact(this, digits, "com.whatsapp.w4b")) finish()
+                    },
+                    onWhatsAppDirectWithMsg = { digits, pkg, msg ->
+                        if (DeviceIntegrationManager.whatsAppContact(this, digits, pkg, msg)) finish()
+                    },
+                    onOpenSystemSetting = { shortcut ->
+                        if (DeviceIntegrationManager.openSystemSettingShortcut(this, shortcut)) finish()
+                    },
+                    onStartTimer = { secs, lbl, skipUi ->
+                        if (DeviceIntegrationManager.startCountdownTimer(this, secs, lbl, skipUi)) finish()
+                    },
+                    onSetAlarm = { h, m, lbl, skipUi ->
+                        if (DeviceIntegrationManager.setSystemAlarm(this, h, m, lbl, skipUi)) finish()
                     },
                     onSaveNewContact = { name, phone ->
                         DeviceIntegrationManager.insertContactDirect(this, name, phone)
@@ -267,6 +296,7 @@ private fun SleekRaycastOverlay(
     placeholderText: String,
     showScopeBadge: Boolean,
     showMenuBtn: Boolean,
+    whatsAppFlavor: WhatsAppFlavor = WhatsAppFlavor.BOTH,
     initialCachedFiles: List<LocalFileItem>,
     initialCachedApps: List<InstalledAppItem>,
     isDictionaryInstalled: () -> Boolean,
@@ -284,8 +314,15 @@ private fun SleekRaycastOverlay(
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
+    onWhatsAppBusinessContact: (ContactItem) -> Unit = {},
     onDialNumber: (String) -> Unit,
+    onSmsNumber: (String) -> Unit = {},
     onWhatsAppNumber: (String) -> Unit,
+    onWhatsAppBusinessNumber: (String) -> Unit = {},
+    onWhatsAppDirectWithMsg: (String, String?, String) -> Unit = { _, _, _ -> },
+    onOpenSystemSetting: (SystemSettingShortcut) -> Unit = {},
+    onStartTimer: (Int, String, Boolean) -> Unit = { _, _, _ -> },
+    onSetAlarm: (Int, Int, String, Boolean) -> Unit = { _, _, _, _ -> },
     onSaveNewContact: (String, String) -> Boolean,
     onSaveBookmarksList: (List<PipeBookmark>) -> Unit,
     onSaveEnginesList: (List<SearchEngine>) -> Unit,
@@ -348,6 +385,7 @@ private fun SleekRaycastOverlay(
                 prefixes = prefixes,
                 dictionaryMatches = emptyList(),
                 isDictionaryInstalled = dictInstalled,
+                whatsAppFlavor = whatsAppFlavor,
             )
         )
     }
@@ -368,6 +406,7 @@ private fun SleekRaycastOverlay(
                 prefixes = prefixes,
                 dictionaryMatches = dictionaryMatches,
                 isDictionaryInstalled = dictInstalled,
+                whatsAppFlavor = whatsAppFlavor,
             )
         }
         results = computed
@@ -483,6 +522,28 @@ private fun SleekRaycastOverlay(
             is PaletteItem.DirectUrlAction -> {
                 if (!onDispatchUrl(item.displayHost, item.targetUrl)) errorMsg = "! no browser found"
             }
+            is PaletteItem.SystemSettingAction -> {
+                onOpenSystemSetting(item.shortcut)
+            }
+            is PaletteItem.DirectNumberAction -> {
+                when (item.primaryMode) {
+                    DirectNumberPrimaryMode.WHATSAPP_PERSONAL ->
+                        onWhatsAppDirectWithMsg(item.normalizedWhatsAppDigits, "com.whatsapp", item.messageText)
+                    DirectNumberPrimaryMode.WHATSAPP_BUSINESS ->
+                        onWhatsAppDirectWithMsg(item.normalizedWhatsAppDigits, "com.whatsapp.w4b", item.messageText)
+                    DirectNumberPrimaryMode.CALL ->
+                        onDialNumber(item.rawPhone)
+                    DirectNumberPrimaryMode.SMS ->
+                        onSmsNumber(item.rawPhone)
+                }
+            }
+            is PaletteItem.TimerAlarmAction -> {
+                if (item.isAlarm) {
+                    onSetAlarm(item.hour24, item.minute, item.label, true)
+                } else {
+                    onStartTimer(item.totalSeconds, item.label, true)
+                }
+            }
             is PaletteItem.DictionaryAction -> {
                 if (item.isSetupPrompt) {
                     onOpenFullApp(input.text)
@@ -511,6 +572,7 @@ private fun SleekRaycastOverlay(
                     }
                     ClipActionKind.CALL_NUMBER -> onDialNumber(item.payloadText)
                     ClipActionKind.WA_NUMBER -> onWhatsAppNumber(item.payloadText)
+                    ClipActionKind.WAB_NUMBER -> onWhatsAppBusinessNumber(item.payloadText)
                     ClipActionKind.SAVE_CONTACT -> {
                         inlineQuickAdd = PaletteItem.QuickAddAction(
                             kind = QuickAddKind.CONTACT,
@@ -543,6 +605,7 @@ private fun SleekRaycastOverlay(
             is PaletteItem.ContactAction -> {
                 when (item.preferredAction) {
                     ContactQuickAction.WHATSAPP -> onWhatsAppContact(item.contact)
+                    ContactQuickAction.WHATSAPP_BUSINESS -> onWhatsAppBusinessContact(item.contact)
                     ContactQuickAction.SMS -> onSmsContact(item.contact)
                     ContactQuickAction.CALL -> onCallContact(item.contact)
                 }
@@ -595,6 +658,9 @@ private fun SleekRaycastOverlay(
         PromptIntentMode.HISTORY_ONLY -> "${prefixes.historyClean}:history"
         PromptIntentMode.DICTIONARY_ONLY -> "${prefixes.dictionaryClean}:dict"
         PromptIntentMode.CLIPBOARD_ONLY -> "${prefixes.clipboardClean}:tools"
+        PromptIntentMode.SYSTEM_SETTINGS_ONLY -> "${prefixes.systemSettingsClean}:sys"
+        PromptIntentMode.DIRECT_NUMBER_ONLY -> "wa:num"
+        PromptIntentMode.TIMER_ALARM_ONLY -> "clk:time"
         else -> parsedCommand.mode.scopeBadge
     }
     val shouldShowList = input.text.isNotBlank() || showIdleSuggestions
@@ -863,6 +929,24 @@ private fun SleekRaycastOverlay(
                             onCallContact = onCallContact,
                             onSmsContact = onSmsContact,
                             onWhatsAppContact = onWhatsAppContact,
+                            onWhatsAppBusinessContact = onWhatsAppBusinessContact,
+                            onDirectWhatsAppPersonal = { digits, msg -> onWhatsAppDirectWithMsg(digits, "com.whatsapp", msg) },
+                            onDirectWhatsAppBusiness = { digits, msg -> onWhatsAppDirectWithMsg(digits, "com.whatsapp.w4b", msg) },
+                            onDirectDial = onDialNumber,
+                            onDirectSms = onSmsNumber,
+                            onDirectSaveContact = { rawPhone ->
+                                inlineQuickAdd = PaletteItem.QuickAddAction(
+                                    kind = QuickAddKind.CONTACT,
+                                    title = "Save Contact",
+                                    subtitle = rawPhone,
+                                    isReadyToCommit = false,
+                                    arg2 = rawPhone,
+                                )
+                            },
+                            onOpenTimerAlarmClockUi = { tItem ->
+                                if (tItem.isAlarm) onSetAlarm(tItem.hour24, tItem.minute, tItem.label, false)
+                                else onStartTimer(tItem.totalSeconds, tItem.label, false)
+                            },
                         )
                     }
                 }
@@ -930,6 +1014,13 @@ private fun SleekOverlayRow(
     onCallContact: (ContactItem) -> Unit,
     onSmsContact: (ContactItem) -> Unit,
     onWhatsAppContact: (ContactItem) -> Unit,
+    onWhatsAppBusinessContact: (ContactItem) -> Unit = {},
+    onDirectWhatsAppPersonal: (String, String) -> Unit = { _, _ -> },
+    onDirectWhatsAppBusiness: (String, String) -> Unit = { _, _ -> },
+    onDirectDial: (String) -> Unit = {},
+    onDirectSms: (String) -> Unit = {},
+    onDirectSaveContact: (String) -> Unit = {},
+    onOpenTimerAlarmClockUi: (PaletteItem.TimerAlarmAction) -> Unit = {},
 ) {
     val c = LocalAscii.current
     val clipboard = LocalClipboardManager.current
@@ -961,6 +1052,77 @@ private fun SleekOverlayRow(
                     AsciiText(item.targetUrl, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
                 }
                 AsciiButton("open", onExecute, primary = isTop)
+            }
+        }
+
+        is PaletteItem.SystemSettingAction -> {
+            val sc = item.shortcut
+            val titleAnn = remember(sc.title, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+                buildFzfHighlightedText(sc.title, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr [${prefixes.systemSettingsClean}:${sc.alias}] ", style = AsciiType.small, color = if (pressed) c.bg else c.accent2)
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
+                    AsciiText(sc.subtitle, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                }
+                AsciiButton("open", onExecute, primary = isTop)
+            }
+        }
+
+        is PaletteItem.DirectNumberAction -> {
+            val titleText = "${item.primaryMode.label}: +${item.normalizedWhatsAppDigits}"
+            val subText = if (item.messageText.isNotBlank()) "msg: \"${item.messageText}\" · raw: ${item.rawPhone}" else "choose [wa], [wa.b], [call], [sms], or [+c]"
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr [${item.primaryMode.badge}] ", style = AsciiType.small, color = if (pressed) c.bg else c.good)
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(titleText, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
+                    AsciiText(subText, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                }
+                AsciiButton("wa", { onDirectWhatsAppPersonal(item.normalizedWhatsAppDigits, item.messageText) }, primary = isTop && item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_PERSONAL)
+                AsciiButton("wa.b", { onDirectWhatsAppBusiness(item.normalizedWhatsAppDigits, item.messageText) }, primary = isTop && item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_BUSINESS)
+                AsciiButton("call", { onDirectDial(item.rawPhone) }, primary = isTop && item.primaryMode == DirectNumberPrimaryMode.CALL)
+                AsciiButton("+c", { onDirectSaveContact(item.rawPhone) })
+            }
+        }
+
+        is PaletteItem.TimerAlarmAction -> {
+            val badge = if (item.isAlarm) "alm" else "tmr"
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr [$badge] ", style = AsciiType.small, color = if (pressed) c.bg else c.warn)
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(item.title, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
+                    AsciiText(item.subtitle, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                }
+                AsciiButton("ui", { onOpenTimerAlarmClockUi(item) })
+                AsciiButton("start", onExecute, primary = isTop)
             }
         }
 
@@ -1048,6 +1210,7 @@ private fun SleekOverlayRow(
                 AsciiButton("call", { onCallContact(contact) }, primary = isTop && pref == ContactQuickAction.CALL)
                 AsciiButton("sms", { onSmsContact(contact) }, primary = isTop && pref == ContactQuickAction.SMS)
                 AsciiButton("wa", { onWhatsAppContact(contact) }, primary = isTop && pref == ContactQuickAction.WHATSAPP)
+                AsciiButton("wa.b", { onWhatsAppBusinessContact(contact) }, primary = isTop && pref == ContactQuickAction.WHATSAPP_BUSINESS)
             }
         }
 
