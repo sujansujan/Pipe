@@ -12,6 +12,7 @@ import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
+import com.sujan.pipe.model.UniversalAlias
 import com.sujan.pipe.model.WhatsAppFlavor
 import com.sujan.pipe.ui.ascii.PaletteChoice
 import com.sujan.pipe.ui.ascii.ThemeMode
@@ -107,6 +108,47 @@ class PipeRepository(context: Context) {
             .apply()
     }
 
+    fun loadUniversalAliases(): List<UniversalAlias> {
+        val raw = prefs.getString("universal_aliases_json_v1", null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val targetKey = o.optString("targetKey", "").trim()
+                    val alias = o.optString("alias", "").trim().lowercase()
+                    val label = o.optString("label", "").trim()
+                    val category = o.optString("category", "item").trim()
+                    val subtitle = o.optString("subtitle", "").trim()
+                    if (targetKey.isNotEmpty() && alias.isNotEmpty()) {
+                        add(UniversalAlias(targetKey, alias, label, category, subtitle))
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun saveUniversalAliases(aliases: List<UniversalAlias>) {
+        val arr = JSONArray()
+        aliases.forEach { item ->
+            val cleanAlias = item.alias.trim().lowercase().filter { !it.isWhitespace() }
+            if (item.targetKey.isNotBlank() && cleanAlias.isNotEmpty()) {
+                arr.put(
+                    JSONObject().apply {
+                        put("targetKey", item.targetKey.trim())
+                        put("alias", cleanAlias)
+                        put("label", item.label.trim())
+                        put("category", item.category.trim())
+                        put("subtitle", item.subtitle.trim())
+                    }
+                )
+            }
+        }
+        prefs.edit().putString("universal_aliases_json_v1", arr.toString()).apply()
+    }
+
     fun buildFullBackupBundle(): FullBackupBundle = FullBackupBundle(
         version = 2,
         engines = loadEngines(),
@@ -114,6 +156,7 @@ class PipeRepository(context: Context) {
         prefixes = loadPrefixConfig(),
         excludedFolders = loadExcludedFolders(),
         usageCounts = loadUsageCounts(),
+        universalAliases = loadUniversalAliases(),
     )
 
     fun applyFullBackupBundle(bundle: FullBackupBundle) {
@@ -131,6 +174,9 @@ class PipeRepository(context: Context) {
             val obj = JSONObject()
             bundle.usageCounts.forEach { (k, v) -> obj.put(k, v) }
             prefs.edit().putString("usage_counts_json_v1", obj.toString()).apply()
+        }
+        if (bundle.universalAliases.isNotEmpty()) {
+            saveUniversalAliases(bundle.universalAliases)
         }
     }
 

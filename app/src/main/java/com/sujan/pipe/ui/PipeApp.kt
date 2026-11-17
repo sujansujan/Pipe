@@ -88,7 +88,11 @@ import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
+import com.sujan.pipe.model.AppShortcutItem
+import com.sujan.pipe.model.AppShortcutKind
+import com.sujan.pipe.model.DefaultSystemShortcuts
 import com.sujan.pipe.model.SystemSettingShortcut
+import com.sujan.pipe.model.UniversalAlias
 import com.sujan.pipe.model.WhatsAppFlavor
 import com.sujan.pipe.ui.ascii.AsciiBox
 import com.sujan.pipe.ui.ascii.AsciiRule
@@ -157,6 +161,165 @@ fun buildFzfHighlightedText(
     }
 }
 
+/**
+ * Extracts a [UniversalAlias] descriptor for any searchable [ com.sujan.pipe.domain.PaletteItem ] so the user can assign
+ * a custom quick alias to system settings, pipe settings, apps, app shortcuts, app settings, files, folders, contacts, bookmarks, or pipes.
+ */
+fun extractAliasTargetInfo(
+    item: com.sujan.pipe.domain.PaletteItem,
+    existingAliases: List<UniversalAlias>,
+): UniversalAlias? {
+    val current = existingAliases.firstOrNull { it.targetKey == item.usageKey }?.alias.orEmpty()
+    return when (item) {
+        is com.sujan.pipe.domain.PaletteItem.SystemSettingAction -> UniversalAlias(
+            targetKey = item.usageKey,
+            alias = current,
+            label = item.shortcut.title,
+            category = if (item.shortcut.internalPipeSection != null) "pipe:set" else "sys:${item.shortcut.alias}",
+            subtitle = item.shortcut.subtitle,
+        )
+        is com.sujan.pipe.domain.PaletteItem.AppShortcutAction -> UniversalAlias(
+            targetKey = item.usageKey,
+            alias = current,
+            label = "${item.shortcut.appLabel} · ${item.shortcut.shortLabel}",
+            category = "app:${item.shortcut.kind.badge}",
+            subtitle = item.shortcut.longLabel,
+        )
+        is com.sujan.pipe.domain.PaletteItem.AppAction -> UniversalAlias(
+            targetKey = item.usageKey,
+            alias = current,
+            label = item.app.label,
+            category = "app",
+            subtitle = item.app.packageName,
+        )
+        is com.sujan.pipe.domain.PaletteItem.FileAction -> UniversalAlias(
+            targetKey = item.usageKey,
+            alias = current,
+            label = item.file.name,
+            category = if (item.file.isDirectory) "dir" else "file",
+            subtitle = item.file.absolutePath,
+        )
+        is com.sujan.pipe.domain.PaletteItem.ContactAction -> UniversalAlias(
+            targetKey = item.usageKey,
+            alias = current,
+            label = item.contact.displayName,
+            category = "contact",
+            subtitle = item.contact.phoneNumber,
+        )
+        is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> UniversalAlias(
+            targetKey = item.usageKey,
+            alias = current,
+            label = item.bookmark.title,
+            category = "bookmark",
+            subtitle = item.bookmark.target,
+        )
+        is com.sujan.pipe.domain.PaletteItem.EngineAction -> UniversalAlias(
+            targetKey = item.usageKey,
+            alias = current,
+            label = item.engine.name,
+            category = "pipe:${item.engine.keyword}",
+            subtitle = item.engine.urlTemplate,
+        )
+        is com.sujan.pipe.domain.PaletteItem.DirectUrlAction -> UniversalAlias(
+            targetKey = item.usageKey,
+            alias = current,
+            label = item.displayHost,
+            category = "url",
+            subtitle = item.targetUrl,
+        )
+        is com.sujan.pipe.domain.PaletteItem.HistoryAction -> UniversalAlias(
+            targetKey = item.usageKey,
+            alias = current,
+            label = item.entry.rawInput,
+            category = "hist",
+            subtitle = item.entry.resolvedUrl,
+        )
+        else -> null
+    }
+}
+
+@Composable
+fun AsciiSetAliasDialog(
+    target: UniversalAlias,
+    onSave: (String) -> Unit,
+    onRemove: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = LocalAscii.current
+    var aliasField by remember(target) {
+        mutableStateOf(TextFieldValue(target.alias, TextRange(target.alias.length)))
+    }
+    val clean = aliasField.text.trim().lowercase()
+    val hasSpace = clean.any { it.isWhitespace() }
+    val err = if (hasSpace) "! alias cannot contain spaces" else null
+
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(c.bg)
+                .padding(12.dp)
+                .imePadding(),
+        ) {
+            AsciiBox(title = "set universal alias") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AsciiText(
+                        text = "[${target.category}] ${target.label}",
+                        style = AsciiType.title,
+                        color = c.accent,
+                        maxLines = 1,
+                    )
+                    if (target.subtitle.isNotBlank()) {
+                        AsciiText(
+                            text = target.subtitle,
+                            style = AsciiType.small,
+                            color = c.dim,
+                            maxLines = 1,
+                        )
+                    }
+                    AsciiTextField(
+                        label = "quick alias (type in prompt or overlay to rank #1)",
+                        promptPrefix = "@",
+                        value = aliasField,
+                        onValueChange = { aliasField = it },
+                        placeholder = "e.g. wcfg, mix, citi, dev",
+                        errorText = err,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Ascii,
+                            imeAction = ImeAction.Done,
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                if (!hasSpace) onSave(clean)
+                            }
+                        ),
+                    )
+                    AsciiLivePreviewLine(
+                        previewText = if (clean.isNotEmpty()) "$clean -> ${target.label} (#1 top match)" else "empty alias removes custom shortcut",
+                        isValid = clean.isNotEmpty() && !hasSpace,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AsciiButton("cancel", onDismiss)
+                        if (target.alias.isNotBlank()) {
+                            AsciiButton("remove @${target.alias}", onRemove)
+                        }
+                        AsciiButton(
+                            label = "save @alias",
+                            enabled = !hasSpace,
+                            primary = true,
+                            onClick = { onSave(clean) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun PipeApp(
     state: PipeUiState,
@@ -167,6 +330,9 @@ fun PipeApp(
     onSubmitPrimaryAction: () -> Unit,
     onOpenDirectUrl: (String) -> Unit = {},
     onOpenSystemSetting: (SystemSettingShortcut) -> Unit = {},
+    onLaunchAppShortcut: (AppShortcutItem) -> Unit = {},
+    onSaveUniversalAlias: (String, String, String, String, String) -> Unit = { _, _, _, _, _ -> },
+    onRemoveUniversalAlias: (String) -> Unit = {},
     onExecuteDirectNumber: (com.sujan.pipe.domain.PaletteItem.DirectNumberAction, DirectNumberPrimaryMode) -> Unit = { _, _ -> },
     onExecuteTimerAlarm: (com.sujan.pipe.domain.PaletteItem.TimerAlarmAction, Boolean) -> Unit = { _, _ -> },
     onSelectDictionaryItem: (com.sujan.pipe.domain.PaletteItem.DictionaryAction) -> Unit = {},
@@ -279,6 +445,9 @@ fun PipeApp(
                         onSubmitPrimaryAction = onSubmitPrimaryAction,
                         onOpenDirectUrl = onOpenDirectUrl,
                         onOpenSystemSetting = onOpenSystemSetting,
+                        onLaunchAppShortcut = onLaunchAppShortcut,
+                        onSaveUniversalAlias = onSaveUniversalAlias,
+                        onRemoveUniversalAlias = onRemoveUniversalAlias,
                         onExecuteDirectNumber = onExecuteDirectNumber,
                         onExecuteTimerAlarm = onExecuteTimerAlarm,
                         onSelectDictionaryItem = onSelectDictionaryItem,
@@ -312,7 +481,11 @@ fun PipeApp(
                         engines = state.engines,
                         bookmarks = state.bookmarks,
                         history = state.history,
+                        universalAliases = state.universalAliases,
                         prefixes = state.prefixConfig,
+                        onSaveUniversalAlias = onSaveUniversalAlias,
+                        onRemoveUniversalAlias = onRemoveUniversalAlias,
+                        onOpenSystemSetting = onOpenSystemSetting,
                         engineForm = state.engineForm,
                         bookmarkForm = state.bookmarkForm,
                         onBack = { onNavigate(PipeView.PROMPT) },
@@ -391,6 +564,9 @@ fun PipeApp(
                         onOpenDefaultAppsSettings = onOpenDefaultAppsSettings,
                         onRequestContactsPermission = onRequestContactsPermission,
                         onRequestFilesPermission = onRequestFilesPermission,
+                        onOpenSystemSetting = onOpenSystemSetting,
+                        onSaveUniversalAlias = onSaveUniversalAlias,
+                        onRemoveUniversalAlias = onRemoveUniversalAlias,
                     )
                 }
             }
@@ -451,6 +627,9 @@ private fun PipePromptScreen(
     onSubmitPrimaryAction: () -> Unit,
     onOpenDirectUrl: (String) -> Unit,
     onOpenSystemSetting: (SystemSettingShortcut) -> Unit,
+    onLaunchAppShortcut: (AppShortcutItem) -> Unit = {},
+    onSaveUniversalAlias: (String, String, String, String, String) -> Unit = { _, _, _, _, _ -> },
+    onRemoveUniversalAlias: (String) -> Unit = {},
     onExecuteDirectNumber: (com.sujan.pipe.domain.PaletteItem.DirectNumberAction, DirectNumberPrimaryMode) -> Unit,
     onExecuteTimerAlarm: (com.sujan.pipe.domain.PaletteItem.TimerAlarmAction, Boolean) -> Unit,
     onSelectDictionaryItem: (com.sujan.pipe.domain.PaletteItem.DictionaryAction) -> Unit,
@@ -502,7 +681,10 @@ private fun PipePromptScreen(
             onSearchInputChange = onSearchInputChange,
             parsedCommand = state.parsedCommand,
             results = state.paletteResults,
+            universalAliases = state.universalAliases,
             prefixes = p,
+            onSaveUniversalAlias = onSaveUniversalAlias,
+            onRemoveUniversalAlias = onRemoveUniversalAlias,
             hasContactsPermission = state.hasContactsPermission,
             hasFilesPermission = state.hasFilesPermission,
             launchError = state.launchError ?: state.jsonStatusMessage,
@@ -583,6 +765,7 @@ private fun PipePromptScreen(
                 when (item) {
                     is com.sujan.pipe.domain.PaletteItem.DirectUrlAction -> onOpenDirectUrl(item.targetUrl)
                     is com.sujan.pipe.domain.PaletteItem.SystemSettingAction -> onOpenSystemSetting(item.shortcut)
+                    is com.sujan.pipe.domain.PaletteItem.AppShortcutAction -> onLaunchAppShortcut(item.shortcut)
                     is com.sujan.pipe.domain.PaletteItem.DirectNumberAction -> onExecuteDirectNumber(item, item.primaryMode)
                     is com.sujan.pipe.domain.PaletteItem.TimerAlarmAction -> onExecuteTimerAlarm(item, true)
                     is com.sujan.pipe.domain.PaletteItem.DictionaryAction -> onSelectDictionaryItem(item)
@@ -698,7 +881,10 @@ fun AsciiRaycastPaletteWindow(
     onSearchInputChange: (TextFieldValue) -> Unit,
     parsedCommand: com.sujan.pipe.domain.ParsedPromptCommand,
     results: List<com.sujan.pipe.domain.PaletteItem>,
+    universalAliases: List<UniversalAlias> = emptyList(),
     prefixes: PrefixConfig = PrefixConfig(),
+    onSaveUniversalAlias: (String, String, String, String, String) -> Unit = { _, _, _, _, _ -> },
+    onRemoveUniversalAlias: (String) -> Unit = {},
     hasContactsPermission: Boolean,
     hasFilesPermission: Boolean,
     launchError: String?,
@@ -742,6 +928,7 @@ fun AsciiRaycastPaletteWindow(
     val c = LocalAscii.current
     val clipboard = LocalClipboardManager.current
     var actionSheetItem by remember { mutableStateOf<com.sujan.pipe.domain.PaletteItem?>(null) }
+    var aliasDialogTarget by remember { mutableStateOf<UniversalAlias?>(null) }
     var expandedFolderPath by remember { mutableStateOf<String?>(null) }
     var expandedFolderChildren by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
 
@@ -901,15 +1088,23 @@ fun AsciiRaycastPaletteWindow(
                                 }
                             },
                     ) {
+                        val itemCustomAlias = universalAliases.firstOrNull { it.targetKey == item.usageKey }?.alias
+                        val rowAliasTarget = remember(item, universalAliases) {
+                            extractAliasTargetInfo(item, universalAliases)
+                        }
                         AsciiRaycastRow(
                             item = item,
                             isTop = isTop,
                             prefixes = prefixes,
+                            customAlias = itemCustomAlias,
                             highlightQuery = parsedCommand.filterQuery,
                             isFolderExpanded = folderPath != null && expandedFolderPath == folderPath,
                             expandedChildren = if (folderPath != null && expandedFolderPath == folderPath) expandedFolderChildren else emptyList(),
                             onExecute = { onExecuteItem(item) },
                             onOpenActionSheet = { actionSheetItem = item },
+                            onOpenAliasDialog = if (rowAliasTarget != null) {
+                                { aliasDialogTarget = rowAliasTarget }
+                            } else null,
                             onToggleFolderPeek = if (folderPath != null) {
                                 { path -> expandedFolderPath = if (expandedFolderPath == path) null else path }
                             } else null,
@@ -1037,11 +1232,37 @@ fun AsciiRaycastPaletteWindow(
         }
     }
 
+    if (aliasDialogTarget != null) {
+        val target = aliasDialogTarget!!
+        AsciiSetAliasDialog(
+            target = target,
+            onSave = { newAlias ->
+                onSaveUniversalAlias(target.targetKey, newAlias, target.label, target.category, target.subtitle)
+                aliasDialogTarget = null
+            },
+            onRemove = {
+                onRemoveUniversalAlias(target.targetKey)
+                aliasDialogTarget = null
+            },
+            onDismiss = { aliasDialogTarget = null },
+        )
+    }
+
     if (actionSheetItem != null) {
         val currentSheetItem = actionSheetItem!!
+        val sheetAliasTarget = remember(currentSheetItem, universalAliases) {
+            extractAliasTargetInfo(currentSheetItem, universalAliases)
+        }
         AsciiResultActionSheet(
             item = currentSheetItem,
             prefixes = prefixes,
+            currentAlias = sheetAliasTarget?.alias,
+            onSetAliasClick = {
+                actionSheetItem = null
+                if (sheetAliasTarget != null) {
+                    aliasDialogTarget = sheetAliasTarget
+                }
+            },
             canDeleteEngine = existingEngines.size > 1,
             onDismiss = { actionSheetItem = null },
             onPrimaryExecute = {
@@ -1877,7 +2098,9 @@ fun AsciiRaycastRow(
     isTop: Boolean,
     onExecute: () -> Unit,
     onOpenActionSheet: () -> Unit = {},
+    onOpenAliasDialog: (() -> Unit)? = null,
     prefixes: PrefixConfig = PrefixConfig(),
+    customAlias: String? = null,
     highlightQuery: String = "",
     isFolderExpanded: Boolean = false,
     expandedChildren: List<LocalFileItem> = emptyList(),
@@ -1916,10 +2139,22 @@ fun AsciiRaycastRow(
         }
         is com.sujan.pipe.domain.PaletteItem.SystemSettingAction -> {
             tagText = "${prefixes.systemSettingsClean}:${item.shortcut.alias}"
-            tagColor = c.accent2
+            tagColor = if (item.shortcut.internalPipeSection != null) c.accent else c.accent2
             titleText = item.shortcut.title
             subtitleText = item.shortcut.subtitle
-            hasActionSheet = false
+            hasActionSheet = true
+            folderPeekPath = null
+        }
+        is com.sujan.pipe.domain.PaletteItem.AppShortcutAction -> {
+            val sc = item.shortcut
+            tagText = "${prefixes.appsClean}:${sc.kind.badge}"
+            tagColor = when (sc.kind) {
+                AppShortcutKind.APP_PREFERENCES, AppShortcutKind.APP_SYSTEM_INFO -> c.accent2
+                else -> c.accent
+            }
+            titleText = "${sc.appLabel} · ${sc.shortLabel}"
+            subtitleText = sc.longLabel
+            hasActionSheet = true
             folderPeekPath = null
         }
         is com.sujan.pipe.domain.PaletteItem.DirectNumberAction -> {
@@ -2044,9 +2279,10 @@ fun AsciiRaycastRow(
         }
     }
 
-    val titleAnnotated = remember(titleText, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+    val effectiveTitleText = if (!customAlias.isNullOrBlank()) "$titleText (@$customAlias)" else titleText
+    val titleAnnotated = remember(effectiveTitleText, highlightQuery, pressed, c.fg, c.accent, c.bg) {
         buildFzfHighlightedText(
-            text = titleText,
+            text = effectiveTitleText,
             highlightQuery = highlightQuery,
             baseColor = if (pressed) c.bg else c.fg,
             highlightColor = if (pressed) c.bg else c.accent,
@@ -2126,6 +2362,14 @@ fun AsciiRaycastRow(
                     label = if (isFolderExpanded) "-" else "+",
                     onClick = { onToggleFolderPeek(folderPeekPath) },
                     spokenLabel = "peek inside $titleText",
+                )
+            }
+
+            if (onOpenAliasDialog != null && (!customAlias.isNullOrBlank() || isTop)) {
+                AsciiButton(
+                    label = if (!customAlias.isNullOrBlank()) "@$customAlias" else "@+",
+                    onClick = onOpenAliasDialog,
+                    spokenLabel = "set alias for $titleText",
                 )
             }
 
@@ -2325,6 +2569,8 @@ fun AsciiSheetActionRow(
 @Composable
 fun AsciiResultActionSheet(
     item: com.sujan.pipe.domain.PaletteItem,
+    currentAlias: String? = null,
+    onSetAliasClick: () -> Unit = {},
     canDeleteEngine: Boolean,
     onDismiss: () -> Unit,
     onPrimaryExecute: () -> Unit,
@@ -2413,7 +2659,9 @@ fun AsciiResultActionSheet(
                             AsciiButton("x", onDismiss)
                         }
                         AsciiRule(glyph = "-", color = c.border)
+                        val aliasLabel = if (!currentAlias.isNullOrBlank()) "Edit alias (@$currentAlias)" else "Set quick alias (@...)"
                         AsciiSheetActionRow("open", "Open ${item.targetUrl}", onPrimaryExecute, isPrimary = true)
+                        AsciiSheetActionRow("alias", aliasLabel, onSetAliasClick)
                         AsciiSheetActionRow("copy", "Copy clean URL", { onCopyText(QueryRouter.stripTrackingParams(item.targetUrl)) })
                     }
 
@@ -2461,10 +2709,12 @@ fun AsciiResultActionSheet(
                             AsciiButton("x", onDismiss)
                         }
                         AsciiRule(glyph = "-", color = c.border)
+                        val aliasLabel = if (!currentAlias.isNullOrBlank()) "Edit alias (@$currentAlias)" else "Set quick alias (@...)"
                         AsciiSheetActionRow("call", "Call ${contact.phoneNumber}", { onCallContact(contact) }, isPrimary = true)
                         AsciiSheetActionRow("sms", "Send SMS to ${contact.displayName}", { onSmsContact(contact) })
                         AsciiSheetActionRow("wa", "Message on WhatsApp (Personal)", { onWhatsAppContact(contact) })
                         AsciiSheetActionRow("wa.b", "Message on WhatsApp Business", { onWhatsAppBusinessContact(contact) })
+                        AsciiSheetActionRow("alias", aliasLabel, onSetAliasClick)
                         AsciiSheetActionRow("copy", "Copy phone number", { onCopyText(contact.phoneNumber) })
                     }
 
@@ -2496,6 +2746,8 @@ fun AsciiResultActionSheet(
                         if (bm.kind == BookmarkKind.FOLDER && bm.alias.isNotBlank()) {
                             AsciiSheetActionRow("ls", "Scope inside folder ($bPre ${bm.alias})", { onScopeFolder("$bPre ${bm.alias}") })
                         }
+                        val aliasLabel = if (!currentAlias.isNullOrBlank()) "Edit alias (@$currentAlias)" else "Set quick alias (@...)"
+                        AsciiSheetActionRow("alias", aliasLabel, onSetAliasClick)
                         AsciiSheetActionRow("edit", "Edit bookmark", { onEditBookmark(bm) })
                         AsciiSheetActionRow("copy", "Copy target URL / path", { onCopyText(bm.target) })
                         AsciiSheetActionRow("delete", "Delete bookmark", { onDeleteBookmark(bm) }, isDestructive = true)
@@ -2525,6 +2777,8 @@ fun AsciiResultActionSheet(
                         if (f.isDirectory) {
                             AsciiSheetActionRow("ls", "Filter inside folder ($fPre ${f.name})", { onScopeFolder("$fPre ${f.name}") })
                         }
+                        val aliasLabel = if (!currentAlias.isNullOrBlank()) "Edit alias (@$currentAlias)" else "Set quick alias (@...)"
+                        AsciiSheetActionRow("alias", aliasLabel, onSetAliasClick)
                         AsciiSheetActionRow("bookmark", "Save as bookmark", { onBookmarkFile(f) })
                         if (!f.isDirectory) {
                             AsciiSheetActionRow("share", "Share file", { onShareFile(f) })
@@ -2559,6 +2813,8 @@ fun AsciiResultActionSheet(
                             onClick = onPrimaryExecute,
                             isPrimary = true,
                         )
+                        val aliasLabel = if (!currentAlias.isNullOrBlank()) "Edit alias (@$currentAlias)" else "Set quick alias (@...)"
+                        AsciiSheetActionRow("alias", aliasLabel, onSetAliasClick)
                         AsciiSheetActionRow("edit", "Edit search pipe", { onEditEngine(eng) })
                         if (canDeleteEngine) {
                             AsciiSheetActionRow("delete", "Delete search pipe", { onDeleteEngine(eng) }, isDestructive = true)
@@ -2583,10 +2839,65 @@ fun AsciiResultActionSheet(
                             AsciiButton("x", onDismiss)
                         }
                         AsciiRule(glyph = "-", color = c.border)
+                        val aliasLabel = if (!currentAlias.isNullOrBlank()) "Edit alias (@$currentAlias)" else "Set quick alias (@...)"
                         AsciiSheetActionRow("open", "Launch ${app.label}", onPrimaryExecute, isPrimary = true)
+                        AsciiSheetActionRow("alias", aliasLabel, onSetAliasClick)
                         AsciiSheetActionRow("info", "Open Android App Info", { onAppInfoInstalledApp(app) })
                         AsciiSheetActionRow("copy", "Copy package name", { onCopyText(app.packageName) })
                         AsciiSheetActionRow("uninstall", "Uninstall ${app.label}", { onUninstallInstalledApp(app) }, isDestructive = true)
+                    }
+
+                    is com.sujan.pipe.domain.PaletteItem.AppShortcutAction -> {
+                        val sc = item.shortcut
+                        val aliasLabel = if (!currentAlias.isNullOrBlank()) "Edit alias (@$currentAlias)" else "Set quick alias (@...)"
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                AsciiKindBadge("${prefixes.appsClean}:${sc.kind.badge}", c.accent2)
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    AsciiText("${sc.appLabel} · ${sc.shortLabel}", style = AsciiType.title, color = c.fg, maxLines = 1)
+                                    AsciiText(sc.longLabel, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                }
+                            }
+                            AsciiButton("x", onDismiss)
+                        }
+                        AsciiRule(glyph = "-", color = c.border)
+                        AsciiSheetActionRow("open", "Launch ${sc.shortLabel}", onPrimaryExecute, isPrimary = true)
+                        AsciiSheetActionRow("alias", aliasLabel, onSetAliasClick)
+                        AsciiSheetActionRow("info", "Open ${sc.appLabel} App Info", {
+                            onAppInfoInstalledApp(InstalledAppItem(sc.appLabel, sc.packageName))
+                        })
+                        AsciiSheetActionRow("copy", "Copy package (${sc.packageName})", { onCopyText(sc.packageName) })
+                    }
+
+                    is com.sujan.pipe.domain.PaletteItem.SystemSettingAction -> {
+                        val sc = item.shortcut
+                        val aliasLabel = if (!currentAlias.isNullOrBlank()) "Edit alias (@$currentAlias)" else "Set quick alias (@...)"
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                AsciiKindBadge("${prefixes.systemSettingsClean}:${sc.alias}", if (sc.internalPipeSection != null) c.accent else c.accent2)
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    AsciiText(sc.title, style = AsciiType.title, color = c.fg, maxLines = 1)
+                                    AsciiText(sc.subtitle, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                }
+                            }
+                            AsciiButton("x", onDismiss)
+                        }
+                        AsciiRule(glyph = "-", color = c.border)
+                        AsciiSheetActionRow("open", "Open ${sc.title}", onPrimaryExecute, isPrimary = true)
+                        AsciiSheetActionRow("alias", aliasLabel, onSetAliasClick)
+                        AsciiSheetActionRow("copy", "Copy command (${prefixes.systemSettingsClean} ${sc.alias})", {
+                            onCopyText("${prefixes.systemSettingsClean} ${sc.alias}")
+                        })
                     }
 
                     is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
@@ -2624,6 +2935,7 @@ fun AsciiResultActionSheet(
 enum class LibraryTab(val label: String) {
     PIPES("pipes"),
     BOOKMARKS("bookmarks"),
+    ALIASES("aliases"),
     HISTORY("history"),
 }
 
@@ -2643,7 +2955,11 @@ fun PipeLibraryScreen(
     engines: List<SearchEngine>,
     bookmarks: List<PipeBookmark>,
     history: List<SearchHistoryEntry>,
+    universalAliases: List<UniversalAlias> = emptyList(),
     prefixes: PrefixConfig = PrefixConfig(),
+    onSaveUniversalAlias: (String, String, String, String, String) -> Unit = { _, _, _, _, _ -> },
+    onRemoveUniversalAlias: (String) -> Unit = {},
+    onOpenSystemSetting: (SystemSettingShortcut) -> Unit = {},
     engineForm: EngineFormState,
     bookmarkForm: BookmarkFormState,
     onBack: () -> Unit,
@@ -2683,6 +2999,7 @@ fun PipeLibraryScreen(
 
     var activeTab by remember(initialTab) { mutableStateOf(initialTab) }
     var sheetTarget by remember { mutableStateOf<LibrarySheetTarget?>(null) }
+    var editingAliasTarget by remember { mutableStateOf<UniversalAlias?>(null) }
 
     Column(Modifier.fillMaxSize().background(c.bg)) {
         AsciiTopHeader(
@@ -2705,6 +3022,7 @@ fun PipeLibraryScreen(
                 val count = when (tab) {
                     LibraryTab.PIPES -> engines.size
                     LibraryTab.BOOKMARKS -> bookmarks.size
+                    LibraryTab.ALIASES -> universalAliases.size
                     LibraryTab.HISTORY -> history.size
                 }
                 AsciiScopeChip(
@@ -2939,6 +3257,124 @@ fun PipeLibraryScreen(
                 }
             }
 
+            LibraryTab.ALIASES -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    item {
+                        AsciiText(
+                            text = "universal aliases (@alias) boost any setting, app, shortcut, file, contact, bookmark, or pipe to #1:",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                    }
+                    if (universalAliases.isEmpty()) {
+                        item {
+                            AsciiText(
+                                text = "no custom aliases yet. tap [@+] or [⋯] -> [alias] on any search result in ~/pipe or the overlay to set one.",
+                                style = AsciiType.small,
+                                color = c.accent2,
+                                modifier = Modifier.padding(vertical = 8.dp),
+                            )
+                        }
+                    } else {
+                        items(universalAliases, key = { it.targetKey }) { ua ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 50.dp)
+                                    .background(c.bg)
+                                    .clickable { editingAliasTarget = ua }
+                                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                AsciiKindBadge(tag = "@${ua.alias}", color = c.accent)
+                                Spacer(Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    AsciiText(
+                                        text = "${ua.label} [${ua.category}]",
+                                        style = AsciiType.title,
+                                        color = c.fg,
+                                        maxLines = 1,
+                                    )
+                                    if (ua.subtitle.isNotBlank()) {
+                                        AsciiText(
+                                            text = ua.subtitle,
+                                            style = AsciiType.small,
+                                            color = c.dim,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                }
+                                AsciiButton("edit", { editingAliasTarget = ua })
+                                AsciiButton("x", { onRemoveUniversalAlias(ua.targetKey) })
+                            }
+                        }
+                    }
+
+                    item {
+                        AsciiRule(glyph = "-", color = c.border)
+                        AsciiText(
+                            text = "+- pipe & android settings jumpers (tap [@+] to set custom alias):",
+                            style = AsciiType.title,
+                            color = c.accent2,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+
+                    items(DefaultSystemShortcuts.ALL_LIST, key = { it.id }) { sc ->
+                        val tKey = "sys:${sc.id}"
+                        val curAlias = universalAliases.firstOrNull { it.targetKey == tKey }?.alias
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 46.dp)
+                                .background(c.bg)
+                                .clickable { onOpenSystemSetting(sc) }
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AsciiKindBadge(
+                                tag = "${prefixes.systemSettingsClean}:${sc.alias}",
+                                color = if (sc.internalPipeSection != null) c.accent else c.accent2,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                AsciiText(
+                                    text = if (!curAlias.isNullOrBlank()) "${sc.title} (@$curAlias)" else sc.title,
+                                    style = AsciiType.body,
+                                    color = c.fg,
+                                    maxLines = 1,
+                                )
+                                AsciiText(
+                                    text = sc.subtitle,
+                                    style = AsciiType.small,
+                                    color = c.dim,
+                                    maxLines = 1,
+                                )
+                            }
+                            AsciiButton(
+                                label = if (!curAlias.isNullOrBlank()) "@$curAlias" else "@+",
+                                onClick = {
+                                    editingAliasTarget = UniversalAlias(
+                                        targetKey = tKey,
+                                        alias = curAlias.orEmpty(),
+                                        label = sc.title,
+                                        category = if (sc.internalPipeSection != null) "pipe:set" else "sys:${sc.alias}",
+                                        subtitle = sc.subtitle,
+                                    )
+                                },
+                            )
+                            AsciiButton("open", { onOpenSystemSetting(sc) })
+                        }
+                    }
+                }
+            }
+
             LibraryTab.HISTORY -> {
                 LazyColumn(
                     modifier = Modifier
@@ -3167,6 +3603,22 @@ fun PipeLibraryScreen(
                 }
             }
         }
+    }
+
+    if (editingAliasTarget != null) {
+        val t = editingAliasTarget!!
+        AsciiSetAliasDialog(
+            target = t,
+            onSave = { newAlias ->
+                onSaveUniversalAlias(t.targetKey, newAlias, t.label, t.category, t.subtitle)
+                editingAliasTarget = null
+            },
+            onRemove = {
+                onRemoveUniversalAlias(t.targetKey)
+                editingAliasTarget = null
+            },
+            onDismiss = { editingAliasTarget = null },
+        )
     }
 
     if (bookmarkForm.isOpen) {
@@ -3460,10 +3912,14 @@ private fun PipeSettingsScreen(
     onOpenDefaultAppsSettings: () -> Unit,
     onRequestContactsPermission: () -> Unit,
     onRequestFilesPermission: () -> Unit,
+    onOpenSystemSetting: (SystemSettingShortcut) -> Unit = {},
+    onSaveUniversalAlias: (String, String, String, String, String) -> Unit = { _, _, _, _, _ -> },
+    onRemoveUniversalAlias: (String) -> Unit = {},
 ) {
     val c = LocalAscii.current
     val clipboard = LocalClipboardManager.current
     val activeSection = state.settingsSection
+    var settingsAliasTarget by remember { mutableStateOf<UniversalAlias?>(null) }
 
     Column(Modifier.fillMaxSize().background(c.bg)) {
         AsciiTopHeader(
@@ -4069,6 +4525,80 @@ private fun PipeSettingsScreen(
                             )
                         }
                     }
+
+                    AsciiBox(title = "routing · pipe & android settings jumpers (${DefaultSystemShortcuts.ALL_LIST.size})") {
+                        var filterSys by remember { mutableStateOf(TextFieldValue("")) }
+                        AsciiText(
+                            text = "search or alias pipe's own settings (ovl, idx, thm, rte, bak) and Android system settings:",
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        AsciiTextField(
+                            label = "filter settings jumpers",
+                            promptPrefix = "${p.systemSettingsClean} ",
+                            value = filterSys,
+                            onValueChange = { filterSys = it },
+                            placeholder = "ovl, thm, dev, spot, dns, wifi...",
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        val q = filterSys.text.trim().lowercase()
+                        val filteredShortcuts = remember(q) {
+                            if (q.isEmpty()) DefaultSystemShortcuts.ALL_LIST
+                            else DefaultSystemShortcuts.ALL_LIST.filter {
+                                it.alias.contains(q, ignoreCase = true) ||
+                                    it.title.contains(q, ignoreCase = true) ||
+                                    it.keywords.contains(q, ignoreCase = true)
+                            }
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            filteredShortcuts.forEach { sc ->
+                                val tKey = "sys:${sc.id}"
+                                val curAlias = state.universalAliases.firstOrNull { it.targetKey == tKey }?.alias
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 44.dp)
+                                        .clickable { onOpenSystemSetting(sc) }
+                                        .padding(vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    AsciiKindBadge(
+                                        tag = "${p.systemSettingsClean}:${sc.alias}",
+                                        color = if (sc.internalPipeSection != null) c.accent else c.accent2,
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        AsciiText(
+                                            text = if (!curAlias.isNullOrBlank()) "${sc.title} (@$curAlias)" else sc.title,
+                                            style = AsciiType.body,
+                                            color = c.fg,
+                                            maxLines = 1,
+                                        )
+                                        AsciiText(
+                                            text = sc.subtitle,
+                                            style = AsciiType.small,
+                                            color = c.dim,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                    AsciiButton(
+                                        label = if (!curAlias.isNullOrBlank()) "@$curAlias" else "@+",
+                                        onClick = {
+                                            settingsAliasTarget = UniversalAlias(
+                                                targetKey = tKey,
+                                                alias = curAlias.orEmpty(),
+                                                label = sc.title,
+                                                category = if (sc.internalPipeSection != null) "pipe:set" else "sys:${sc.alias}",
+                                                subtitle = sc.subtitle,
+                                            )
+                                        },
+                                    )
+                                    AsciiButton("open", { onOpenSystemSetting(sc) })
+                                }
+                            }
+                        }
+                    }
                 }
 
                 SettingsSection.BACKUP -> {
@@ -4155,7 +4685,7 @@ private fun PipeSettingsScreen(
                         BoxWithConstraints(Modifier.fillMaxWidth()) {
                             val cols = rememberCols(AsciiType.small)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                AsciiText("pipe v2.5 (release)", style = AsciiType.title, color = c.accent)
+                                AsciiText("pipe v2.6 (release)", style = AsciiType.title, color = c.accent)
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
                                 AsciiText(leader("system settings", "${state.prefixConfig.systemSettingsClean} <dev|spot|dns|notif>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("whatsapp / biz", "wa <num> / wab <num>", cols), style = AsciiType.small, color = c.good, softWrap = false)
@@ -4171,6 +4701,22 @@ private fun PipeSettingsScreen(
                 }
             }
         }
+    }
+
+    if (settingsAliasTarget != null) {
+        val t = settingsAliasTarget!!
+        AsciiSetAliasDialog(
+            target = t,
+            onSave = { newAlias ->
+                onSaveUniversalAlias(t.targetKey, newAlias, t.label, t.category, t.subtitle)
+                settingsAliasTarget = null
+            },
+            onRemove = {
+                onRemoveUniversalAlias(t.targetKey)
+                settingsAliasTarget = null
+            },
+            onDismiss = { settingsAliasTarget = null },
+        )
     }
 
     if (state.jsonDialogMode != null) {

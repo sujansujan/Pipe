@@ -70,6 +70,8 @@ import com.sujan.pipe.domain.PaletteItem
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.domain.QuickAddKind
+import com.sujan.pipe.model.AppShortcutItem
+import com.sujan.pipe.model.AppShortcutKind
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.ContactQuickAction
@@ -82,6 +84,7 @@ import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.model.SystemSettingShortcut
+import com.sujan.pipe.model.UniversalAlias
 import com.sujan.pipe.model.WhatsAppFlavor
 import com.sujan.pipe.ui.AsciiContactAvatar
 import com.sujan.pipe.ui.AsciiDictionaryDetailDialog
@@ -90,11 +93,13 @@ import com.sujan.pipe.ui.AsciiThumbnailBadge
 import com.sujan.pipe.ui.QuickAddInlineCard
 import com.sujan.pipe.ui.ascii.AsciiButton
 import com.sujan.pipe.ui.ascii.AsciiText
+import com.sujan.pipe.ui.ascii.AsciiTextField
 import com.sujan.pipe.ui.ascii.AsciiType
 import com.sujan.pipe.ui.ascii.LocalAscii
 import com.sujan.pipe.ui.ascii.PipeTheme
 import com.sujan.pipe.ui.ascii.ThemeMode
 import com.sujan.pipe.ui.buildFzfHighlightedText
+import com.sujan.pipe.ui.extractAliasTargetInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -121,6 +126,7 @@ class PipeOverlayActivity : ComponentActivity() {
         val prefixes = repository.loadPrefixConfig()
         val history = repository.loadHistory()
         val initialUsage = repository.loadUsageCounts()
+        val initialUniversalAliases = repository.loadUniversalAliases()
 
         val forceDark = repository.loadOverlayForceDark()
         val resolvedMode = if (forceDark) ThemeMode.Dark else repository.loadThemeMode()
@@ -148,6 +154,7 @@ class PipeOverlayActivity : ComponentActivity() {
                     prefixes = prefixes,
                     history = history,
                     initialUsage = initialUsage,
+                    initialUniversalAliases = initialUniversalAliases,
                     cardOpacity = cardOpacity,
                     cornerRadiusDp = cornerRadiusDp,
                     bottomAnchored = bottomAnchored,
@@ -160,6 +167,7 @@ class PipeOverlayActivity : ComponentActivity() {
                     initialCachedContacts = DeviceIntegrationManager.peekMemoryContacts(),
                     initialCachedFiles = DeviceIntegrationManager.peekMemoryStorageFiles(),
                     initialCachedApps = DeviceIntegrationManager.peekMemoryInstalledApps(),
+                    initialCachedShortcuts = DeviceIntegrationManager.peekMemoryAppShortcuts(),
                     initialDictInstalled = OfflineDictionaryManager.isDictionaryInstalled(applicationContext),
                     searchDictionaryOnDemand = { q ->
                         withContext(Dispatchers.IO) {
@@ -176,6 +184,11 @@ class PipeOverlayActivity : ComponentActivity() {
                             DeviceIntegrationManager.loadInstalledApps(applicationContext)
                         }
                     },
+                    loadShortcuts = {
+                        withContext(Dispatchers.IO) {
+                            DeviceIntegrationManager.loadAppShortcuts(applicationContext)
+                        }
+                    },
                     loadFiles = { scopedPath ->
                         withContext(Dispatchers.IO) {
                             if (scopedPath != null) {
@@ -186,6 +199,7 @@ class PipeOverlayActivity : ComponentActivity() {
                         }
                     },
                     onRecordUsage = { key -> repository.incrementUsage(key) },
+                    onSaveUniversalAliases = { updated -> repository.saveUniversalAliases(updated) },
                     onDispatchUrl = { rawInput, url ->
                         val ok = DeviceIntegrationManager.openUrlExcludingSelf(this, url)
                         if (ok) {
@@ -204,6 +218,9 @@ class PipeOverlayActivity : ComponentActivity() {
                     },
                     onLaunchApp = { pkg ->
                         if (DeviceIntegrationManager.launchInstalledApp(this, pkg)) finish()
+                    },
+                    onLaunchAppShortcut = { sc ->
+                        if (DeviceIntegrationManager.launchAppShortcut(this, sc)) finish()
                     },
                     onAppInfoApp = { pkg ->
                         if (DeviceIntegrationManager.openAppInfoSettings(this, pkg)) finish()
@@ -247,7 +264,22 @@ class PipeOverlayActivity : ComponentActivity() {
                         if (DeviceIntegrationManager.whatsAppContact(this, digits, pkg, msg)) finish()
                     },
                     onOpenSystemSetting = { shortcut ->
-                        if (DeviceIntegrationManager.openSystemSettingShortcut(this, shortcut)) finish()
+                        val internalSec = shortcut.internalPipeSection
+                        if (internalSec != null) {
+                            if (internalSec == "APP_INFO") {
+                                if (DeviceIntegrationManager.openAppInfoSettings(this, packageName)) finish()
+                            } else {
+                                startActivity(
+                                    Intent(this, MainActivity::class.java).apply {
+                                        putExtra(MainActivity.EXTRA_OPEN_SETTINGS_SECTION, internalSec)
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                    }
+                                )
+                                finish()
+                            }
+                        } else {
+                            if (DeviceIntegrationManager.openSystemSettingShortcut(this, shortcut)) finish()
+                        }
                     },
                     onStartTimer = { secs, lbl, skipUi ->
                         if (DeviceIntegrationManager.startCountdownTimer(this, secs, lbl, skipUi)) finish()
@@ -301,6 +333,7 @@ private fun SleekRaycastOverlay(
     prefixes: PrefixConfig,
     history: List<SearchHistoryEntry>,
     initialUsage: Map<String, Int>,
+    initialUniversalAliases: List<UniversalAlias> = emptyList(),
     cardOpacity: Float,
     cornerRadiusDp: Int,
     bottomAnchored: Boolean,
@@ -313,16 +346,20 @@ private fun SleekRaycastOverlay(
     initialCachedContacts: List<ContactItem> = emptyList(),
     initialCachedFiles: List<LocalFileItem>,
     initialCachedApps: List<InstalledAppItem>,
+    initialCachedShortcuts: List<AppShortcutItem> = emptyList(),
     initialDictInstalled: Boolean = false,
     searchDictionaryOnDemand: suspend (String) -> List<DictionaryEntry>,
     loadContacts: suspend () -> List<ContactItem>,
     loadApps: suspend () -> List<InstalledAppItem>,
+    loadShortcuts: suspend () -> List<AppShortcutItem> = { emptyList() },
     loadFiles: suspend (String?) -> List<LocalFileItem>,
     onRecordUsage: (String) -> Map<String, Int>,
+    onSaveUniversalAliases: (List<UniversalAlias>) -> Unit = {},
     onDispatchUrl: (String, String) -> Boolean,
     onOpenPath: (String) -> Boolean,
     onShareFile: (String) -> Unit,
     onLaunchApp: (String) -> Unit,
+    onLaunchAppShortcut: (AppShortcutItem) -> Unit = {},
     onAppInfoApp: (String) -> Unit,
     onUninstallApp: (String) -> Unit,
     onCallContact: (ContactItem) -> Unit,
@@ -353,12 +390,16 @@ private fun SleekRaycastOverlay(
     }
     var activeEngines by remember { mutableStateOf(engines) }
     var activeBookmarks by remember { mutableStateOf(bookmarks) }
+    var universalAliases by remember { mutableStateOf(initialUniversalAliases) }
+    var aliasEditTarget by remember { mutableStateOf<UniversalAlias?>(null) }
+    var aliasEditText by remember { mutableStateOf(TextFieldValue("")) }
     var usageMap by remember { mutableStateOf(initialUsage) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var statusMsg by remember { mutableStateOf<String?>(null) }
     var inlineQuickAdd by remember { mutableStateOf<PaletteItem.QuickAddAction?>(null) }
     var contacts by remember { mutableStateOf(initialCachedContacts) }
     var installedApps by remember { mutableStateOf(initialCachedApps) }
+    var appShortcuts by remember { mutableStateOf(initialCachedShortcuts) }
     var storageFiles by remember { mutableStateOf(initialCachedFiles) }
     var scopedFiles by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
     var dictionaryMatches by remember { mutableStateOf<List<DictionaryEntry>>(emptyList()) }
@@ -422,12 +463,14 @@ private fun SleekRaycastOverlay(
                     dictionaryMatches = emptyList(),
                     isDictionaryInstalled = dictInstalled,
                     whatsAppFlavor = whatsAppFlavor,
+                    appShortcuts = initialCachedShortcuts,
+                    universalAliases = initialUniversalAliases,
                 )
             }
         )
     }
 
-    LaunchedEffect(input.text, showIdleSuggestions, activeEngines, activeBookmarks, contacts, installedApps, storageFiles, scopedFiles, history, usageMap, clipText, prefixes, dictionaryMatches, dictInstalled) {
+    LaunchedEffect(input.text, showIdleSuggestions, activeEngines, activeBookmarks, contacts, installedApps, appShortcuts, universalAliases, storageFiles, scopedFiles, history, usageMap, clipText, prefixes, dictionaryMatches, dictInstalled) {
         if (input.text.isBlank() && !showIdleSuggestions) {
             if (results.isNotEmpty()) results = emptyList()
             return@LaunchedEffect
@@ -448,6 +491,8 @@ private fun SleekRaycastOverlay(
                 dictionaryMatches = dictionaryMatches,
                 isDictionaryInstalled = dictInstalled,
                 whatsAppFlavor = whatsAppFlavor,
+                appShortcuts = appShortcuts,
+                universalAliases = universalAliases,
             )
         }
         results = computed
@@ -464,13 +509,15 @@ private fun SleekRaycastOverlay(
             animationSpec = tween(durationMillis = 185, easing = FastOutSlowInEasing),
         )
         // 2. Only load cold caches AFTER the 185ms entrance + keyboard animation is 100% finished
-        if (contacts.isEmpty() || installedApps.isEmpty() || storageFiles.isEmpty()) {
+        if (contacts.isEmpty() || installedApps.isEmpty() || appShortcuts.isEmpty() || storageFiles.isEmpty()) {
             delay(30L)
             val loadedContacts = if (contacts.isEmpty()) loadContacts() else contacts
             val loadedApps = if (installedApps.isEmpty()) loadApps() else installedApps
+            val loadedShortcuts = if (appShortcuts.isEmpty()) loadShortcuts() else appShortcuts
             val loadedFiles = if (storageFiles.isEmpty()) loadFiles(null) else storageFiles
             contacts = loadedContacts
             installedApps = loadedApps
+            appShortcuts = loadedShortcuts
             storageFiles = loadedFiles
         }
     }
@@ -491,6 +538,22 @@ private fun SleekRaycastOverlay(
         } else {
             emptyList()
         }
+    }
+
+    val saveOverlayAlias: (UniversalAlias, String) -> Unit = { target, rawAlias ->
+        val cleanAlias = rawAlias.trim().lowercase().filter { !it.isWhitespace() }
+        val updated = if (cleanAlias.isEmpty()) {
+            universalAliases.filterNot { it.targetKey == target.targetKey }
+        } else {
+            val withoutDup = universalAliases.filterNot {
+                it.targetKey == target.targetKey || it.alias.equals(cleanAlias, ignoreCase = true)
+            }
+            withoutDup + target.copy(alias = cleanAlias)
+        }
+        universalAliases = updated
+        onSaveUniversalAliases(updated)
+        aliasEditTarget = null
+        statusMsg = if (cleanAlias.isEmpty()) "ok: removed alias for ${target.label}" else "ok: set [@$cleanAlias] -> ${target.label}"
     }
 
     val commitNewContact: (String, String) -> Unit = { name, phone ->
@@ -577,6 +640,9 @@ private fun SleekRaycastOverlay(
             }
             is PaletteItem.SystemSettingAction -> {
                 onOpenSystemSetting(item.shortcut)
+            }
+            is PaletteItem.AppShortcutAction -> {
+                onLaunchAppShortcut(item.shortcut)
             }
             is PaletteItem.DirectNumberAction -> {
                 when (item.primaryMode) {
@@ -877,6 +943,52 @@ private fun SleekRaycastOverlay(
                 )
             }
 
+            if (aliasEditTarget != null) {
+                val target = aliasEditTarget!!
+                Spacer(Modifier.height(4.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(glassSurface, RoundedCornerShape(6.dp))
+                        .padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AsciiText(
+                            text = "alias for [${target.category}] ${target.label}",
+                            style = AsciiType.small,
+                            color = c.accent2,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f),
+                        )
+                        AsciiButton("x", { aliasEditTarget = null })
+                    }
+                    AsciiTextField(
+                        label = "type quick alias (no spaces) to jump to #1",
+                        promptPrefix = "@",
+                        value = aliasEditText,
+                        onValueChange = { aliasEditText = it },
+                        placeholder = "e.g. wcfg, mix, citi, dev",
+                        trailingControl = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (target.alias.isNotBlank()) {
+                                    AsciiButton("rm", { saveOverlayAlias(target, "") })
+                                }
+                                AsciiButton(
+                                    label = "save",
+                                    primary = true,
+                                    onClick = { saveOverlayAlias(target, aliasEditText.text) },
+                                )
+                            }
+                        },
+                    )
+                }
+            }
+
             if (inlineQuickAdd != null) {
                 Spacer(Modifier.height(4.dp))
                 QuickAddInlineCard(
@@ -904,7 +1016,7 @@ private fun SleekRaycastOverlay(
                 )
             }
 
-            if (inlineQuickAdd == null && shouldShowList && results.isNotEmpty()) {
+            if (inlineQuickAdd == null && aliasEditTarget == null && shouldShowList && results.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
                 Box(
                     modifier = Modifier
@@ -920,15 +1032,26 @@ private fun SleekRaycastOverlay(
                 ) {
                     itemsIndexed(results, key = { idx, item -> "${idx}_${item.usageKey}" }) { index, item ->
                         val isTop = index == 0
+                        val itemCustomAlias = universalAliases.firstOrNull { it.targetKey == item.usageKey }?.alias
+                        val aliasTarget = remember(item, universalAliases) {
+                            extractAliasTargetInfo(item, universalAliases)
+                        }
                         SleekOverlayRow(
                             item = item,
                             isTop = isTop,
                             highlightBg = glassSurface,
                             highlightQuery = parsedCommand.filterQuery,
                             prefixes = prefixes,
+                            customAlias = itemCustomAlias,
                             expandedFolderPath = expandedFolderPath,
                             expandedFolderChildren = expandedFolderChildren,
                             onExecute = { executeItem(item) },
+                            onOpenAliasEditor = if (aliasTarget != null) {
+                                {
+                                    aliasEditTarget = aliasTarget
+                                    aliasEditText = TextFieldValue(aliasTarget.alias, TextRange(aliasTarget.alias.length))
+                                }
+                            } else null,
                             onToggleFolderPeek = { folderPath ->
                                 expandedFolderPath = if (expandedFolderPath == folderPath) null else folderPath
                             },
@@ -1063,9 +1186,11 @@ private fun SleekOverlayRow(
     highlightBg: Color,
     highlightQuery: String,
     prefixes: PrefixConfig,
+    customAlias: String? = null,
     expandedFolderPath: String?,
     expandedFolderChildren: List<LocalFileItem>,
     onExecute: () -> Unit,
+    onOpenAliasEditor: (() -> Unit)? = null,
     onToggleFolderPeek: (String) -> Unit,
     onOpenChildFile: (LocalFileItem) -> Unit,
     onShareFile: (LocalFileItem) -> Unit,
@@ -1099,6 +1224,8 @@ private fun SleekOverlayRow(
         else -> Color.Transparent
     }
     val ptr = if (isTop) ">" else " "
+    val aliasSuffix = if (!customAlias.isNullOrBlank()) " (@$customAlias)" else ""
+    val aliasBtnLabel = if (!customAlias.isNullOrBlank()) "@$customAlias" else "@+"
 
     when (item) {
         is PaletteItem.DirectUrlAction -> {
@@ -1114,8 +1241,11 @@ private fun SleekOverlayRow(
             ) {
                 AsciiText("$ptr [url] ", style = AsciiType.small, color = if (pressed) c.bg else c.good)
                 Column(modifier = Modifier.weight(1f)) {
-                    AsciiText("Open ${item.displayHost}", style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
+                    AsciiText("Open ${item.displayHost}$aliasSuffix", style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
                     AsciiText(item.targetUrl, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                }
+                if (onOpenAliasEditor != null) {
+                    AsciiButton(aliasBtnLabel, onOpenAliasEditor)
                 }
                 AsciiButton("open", onExecute, primary = isTop)
             }
@@ -1123,8 +1253,42 @@ private fun SleekOverlayRow(
 
         is PaletteItem.SystemSettingAction -> {
             val sc = item.shortcut
-            val titleAnn = remember(sc.title, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(sc.title, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+            val dispTitle = "${sc.title}$aliasSuffix"
+            val titleAnn = remember(dispTitle, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+                buildFzfHighlightedText(dispTitle, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+            }
+            val badgeCol = if (sc.internalPipeSection != null) c.accent else c.accent2
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr [${prefixes.systemSettingsClean}:${sc.alias}] ", style = AsciiType.small, color = if (pressed) c.bg else badgeCol)
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
+                    AsciiText(sc.subtitle, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                }
+                if (onOpenAliasEditor != null) {
+                    AsciiButton(aliasBtnLabel, onOpenAliasEditor)
+                }
+                AsciiButton("open", onExecute, primary = isTop)
+            }
+        }
+
+        is PaletteItem.AppShortcutAction -> {
+            val sc = item.shortcut
+            val dispTitle = "${sc.appLabel} · ${sc.shortLabel}$aliasSuffix"
+            val titleAnn = remember(dispTitle, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+                buildFzfHighlightedText(dispTitle, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+            }
+            val badgeCol = when (sc.kind) {
+                AppShortcutKind.APP_PREFERENCES, AppShortcutKind.APP_SYSTEM_INFO -> c.accent2
+                else -> c.accent
             }
             Row(
                 modifier = Modifier
@@ -1136,10 +1300,13 @@ private fun SleekOverlayRow(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText("$ptr [${prefixes.systemSettingsClean}:${sc.alias}] ", style = AsciiType.small, color = if (pressed) c.bg else c.accent2)
+                AsciiText("$ptr [${prefixes.appsClean}:${sc.kind.badge}] ", style = AsciiType.small, color = if (pressed) c.bg else badgeCol)
                 Column(modifier = Modifier.weight(1f)) {
                     AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
-                    AsciiText(sc.subtitle, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                    AsciiText(sc.longLabel, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                }
+                if (onOpenAliasEditor != null) {
+                    AsciiButton(aliasBtnLabel, onOpenAliasEditor)
                 }
                 AsciiButton("open", onExecute, primary = isTop)
             }
@@ -1251,8 +1418,9 @@ private fun SleekOverlayRow(
         is PaletteItem.ContactAction -> {
             val contact = item.contact
             val pref = item.preferredAction
-            val titleAnn = remember(contact.displayName, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(contact.displayName, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+            val dispName = "${contact.displayName}$aliasSuffix"
+            val titleAnn = remember(dispName, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+                buildFzfHighlightedText(dispName, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
             }
             val subAnn = remember(contact.phoneNumber, highlightQuery, pressed, c.dim, c.accent2, c.bg) {
                 buildFzfHighlightedText(contact.phoneNumber, highlightQuery, if (pressed) c.bg else c.dim, if (pressed) c.bg else c.accent2)
@@ -1273,6 +1441,9 @@ private fun SleekOverlayRow(
                     AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
                     AsciiText(subAnn, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
                 }
+                if (onOpenAliasEditor != null) {
+                    AsciiButton(aliasBtnLabel, onOpenAliasEditor)
+                }
                 AsciiButton("call", { onCallContact(contact) }, primary = isTop && pref == ContactQuickAction.CALL)
                 AsciiButton("sms", { onSmsContact(contact) }, primary = isTop && pref == ContactQuickAction.SMS)
                 AsciiButton("wa", { onWhatsAppContact(contact) }, primary = isTop && pref == ContactQuickAction.WHATSAPP)
@@ -1283,8 +1454,9 @@ private fun SleekOverlayRow(
         is PaletteItem.FileAction -> {
             val f = item.file
             val isExpanded = f.isDirectory && expandedFolderPath == f.absolutePath
-            val titleAnn = remember(f.name, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(f.name, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+            val dispName = "${f.name}$aliasSuffix"
+            val titleAnn = remember(dispName, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+                buildFzfHighlightedText(dispName, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
             }
             val subText = "${f.parentName} · ${f.formattedSize}"
             val subAnn = remember(subText, highlightQuery, pressed, c.dim, c.accent2, c.bg) {
@@ -1325,6 +1497,9 @@ private fun SleekOverlayRow(
                             color = if (pressed) c.bg else c.dim,
                             maxLines = 1,
                         )
+                    }
+                    if (onOpenAliasEditor != null) {
+                        AsciiButton(aliasBtnLabel, onOpenAliasEditor)
                     }
                     if (f.isImageFile) {
                         AsciiButton("view", { onPreviewImage(f) })
@@ -1393,7 +1568,8 @@ private fun SleekOverlayRow(
         is PaletteItem.BookmarkAction -> {
             val bm = item.bookmark
             val isExpanded = bm.kind == BookmarkKind.FOLDER && expandedFolderPath == bm.target
-            val rawTitle = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title
+            val baseTitle = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title
+            val rawTitle = "$baseTitle$aliasSuffix"
             val titleAnn = remember(rawTitle, highlightQuery, pressed, c.fg, c.accent, c.bg) {
                 buildFzfHighlightedText(rawTitle, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
             }
@@ -1425,6 +1601,9 @@ private fun SleekOverlayRow(
                         if (bm.tags.isNotBlank()) {
                             AsciiText(text = bm.tags, style = AsciiType.small, color = if (pressed) c.bg else c.accent, maxLines = 1)
                         }
+                    }
+                    if (onOpenAliasEditor != null) {
+                        AsciiButton(aliasBtnLabel, onOpenAliasEditor)
                     }
                     if (bm.kind == BookmarkKind.FOLDER) {
                         AsciiButton(
@@ -1478,11 +1657,12 @@ private fun SleekOverlayRow(
             }
         }
 
-        // Feature #7: App Management Actions (`[info]` and `[unin]`) directly on App rows in the simple overlay!
+        // Feature #7: App Management Actions (`[@+]`, `[info]`, and `[unin]`) directly on App rows in the simple overlay!
         is PaletteItem.AppAction -> {
             val app = item.app
-            val titleAnn = remember(app.label, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(app.label, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+            val dispLabel = "${app.label}$aliasSuffix"
+            val titleAnn = remember(dispLabel, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+                buildFzfHighlightedText(dispLabel, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
             }
             Row(
                 modifier = Modifier
@@ -1496,6 +1676,9 @@ private fun SleekOverlayRow(
             ) {
                 AsciiText("$ptr [${prefixes.appsClean}] ", style = AsciiType.small, color = if (pressed) c.bg else c.accent)
                 AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
+                if (onOpenAliasEditor != null) {
+                    AsciiButton(aliasBtnLabel, onOpenAliasEditor)
+                }
                 AsciiButton("info", { onAppInfo(app.packageName) }, spokenLabel = "app info for ${app.label}")
                 AsciiButton("unin", { onUninstallApp(app.packageName) }, spokenLabel = "uninstall ${app.label}")
             }
@@ -1503,7 +1686,7 @@ private fun SleekOverlayRow(
 
         is PaletteItem.EngineAction -> {
             val eng = item.engine
-            val desc = if (item.isHome) "${eng.name} (open home)" else "${eng.name}: \"${item.query}\""
+            val desc = (if (item.isHome) "${eng.name} (open home)" else "${eng.name}: \"${item.query}\"") + aliasSuffix
             val titleAnn = remember(desc, highlightQuery, pressed, c.fg, c.accent, c.bg) {
                 buildFzfHighlightedText(desc, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
             }
@@ -1520,6 +1703,9 @@ private fun SleekOverlayRow(
                 AsciiText("$ptr [${prefixes.pipesClean}:${eng.keyword}] ", style = AsciiType.small, color = if (pressed) c.bg else c.forRole(eng.colorRole))
                 AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
                 if (item.isHome) {
+                    if (onOpenAliasEditor != null) {
+                        AsciiButton(aliasBtnLabel, onOpenAliasEditor)
+                    }
                     if (onEditEngine != null) {
                         AsciiButton("edit", { onEditEngine(eng) })
                     }

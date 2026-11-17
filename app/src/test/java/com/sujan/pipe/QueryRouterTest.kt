@@ -5,12 +5,15 @@ import com.sujan.pipe.domain.FuzzyMatcher
 import com.sujan.pipe.domain.PaletteItem
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
+import com.sujan.pipe.model.AppShortcutItem
+import com.sujan.pipe.model.AppShortcutKind
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.DefaultBookmarks
 import com.sujan.pipe.model.DefaultEngines
 import com.sujan.pipe.model.DictionaryEntry
 import com.sujan.pipe.model.FullBackupBundle
 import com.sujan.pipe.model.PrefixConfig
+import com.sujan.pipe.model.UniversalAlias
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -78,7 +81,7 @@ class QueryRouterTest {
     }
 
     @Test
-    fun `system settings jumper routes set dev, set spot, and sys dns to SYSTEM_SETTINGS_ONLY`() {
+    fun `system settings jumper routes both Android settings and internal pipe settings`() {
         val cmdDev = QueryRouter.parsePromptCommand("set dev", bookmarks, engines)
         assertEquals(PromptIntentMode.SYSTEM_SETTINGS_ONLY, cmdDev.mode)
         assertEquals("dev", cmdDev.filterQuery)
@@ -97,6 +100,134 @@ class QueryRouterTest {
         val topSys = devResults.first() as PaletteItem.SystemSettingAction
         assertEquals("dev", topSys.shortcut.alias)
         assertEquals("android.settings.APPLICATION_DEVELOPMENT_SETTINGS", topSys.shortcut.intentAction)
+
+        val pipeThmResults = QueryRouter.buildPaletteResults(
+            rawInput = "set thm",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = emptyList(),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+        )
+        assertTrue(pipeThmResults.first() is PaletteItem.SystemSettingAction)
+        val topPipeSet = pipeThmResults.first() as PaletteItem.SystemSettingAction
+        assertEquals("thm", topPipeSet.shortcut.alias)
+        assertEquals("THEME", topPipeSet.shortcut.internalPipeSection)
+    }
+
+    @Test
+    fun `app search includes app shortcuts and per-app settings alongside installed apps`() {
+        val sampleShortcuts = listOf(
+            AppShortcutItem(
+                id = "static:com.whatsapp:new_chat",
+                packageName = "com.whatsapp",
+                appLabel = "WhatsApp",
+                shortLabel = "New Chat",
+                longLabel = "WhatsApp · Start a new conversation",
+                kind = AppShortcutKind.STATIC_SHORTCUT,
+                targetAction = "android.intent.action.MAIN",
+            ),
+            AppShortcutItem(
+                id = "prefs:org.telegram.messenger:org.telegram.ui.LaunchActivity",
+                packageName = "org.telegram.messenger",
+                appLabel = "Telegram",
+                shortLabel = "Telegram Preferences",
+                longLabel = "Open in-app settings for Telegram",
+                kind = AppShortcutKind.APP_PREFERENCES,
+            ),
+        )
+
+        val appScoped = QueryRouter.buildPaletteResults(
+            rawInput = "app new chat",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = emptyList(),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+            appShortcuts = sampleShortcuts,
+        )
+        assertTrue(appScoped.first() is PaletteItem.AppShortcutAction)
+        val topSc = appScoped.first() as PaletteItem.AppShortcutAction
+        assertEquals("New Chat", topSc.shortcut.shortLabel)
+
+        val rootPrefs = QueryRouter.buildPaletteResults(
+            rawInput = "telegram preferences",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = emptyList(),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+            appShortcuts = sampleShortcuts,
+        )
+        assertTrue(rootPrefs.any { it is PaletteItem.AppShortcutAction })
+    }
+
+    @Test
+    fun `universalAliases boost any aliased item to rank 1 across files, app shortcuts, settings, and contacts`() {
+        val sampleFile = com.sujan.pipe.model.LocalFileItem(
+            name = "citizenship_scan.pdf",
+            absolutePath = "/storage/emulated/0/Documents/citizenship_scan.pdf",
+            isDirectory = false,
+            parentName = "Documents",
+        )
+        val sampleShortcut = AppShortcutItem(
+            id = "appinfo:com.whatsapp",
+            packageName = "com.whatsapp",
+            appLabel = "WhatsApp",
+            shortLabel = "App Settings & Permissions",
+            longLabel = "WhatsApp · Storage, permissions, battery & force stop",
+            kind = AppShortcutKind.APP_SYSTEM_INFO,
+        )
+        val aliases = listOf(
+            UniversalAlias(
+                targetKey = "file:/storage/emulated/0/Documents/citizenship_scan.pdf",
+                alias = "myid",
+                label = "citizenship_scan.pdf",
+                category = "file",
+            ),
+            UniversalAlias(
+                targetKey = "appshortcut:appinfo:com.whatsapp",
+                alias = "waset",
+                label = "WhatsApp · App Settings & Permissions",
+                category = "app:cfg",
+            ),
+        )
+
+        val fileHit = QueryRouter.buildPaletteResults(
+            rawInput = "myid",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = listOf(sampleFile),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+            appShortcuts = listOf(sampleShortcut),
+            universalAliases = aliases,
+        )
+        assertTrue(fileHit.first() is PaletteItem.FileAction)
+        assertEquals("citizenship_scan.pdf", (fileHit.first() as PaletteItem.FileAction).file.name)
+
+        val scHit = QueryRouter.buildPaletteResults(
+            rawInput = "waset",
+            engines = engines,
+            bookmarks = bookmarks,
+            contacts = emptyList(),
+            storageFiles = listOf(sampleFile),
+            scopedFolderFiles = emptyList(),
+            history = emptyList(),
+            usageMap = emptyMap(),
+            appShortcuts = listOf(sampleShortcut),
+            universalAliases = aliases,
+        )
+        assertTrue(scHit.first() is PaletteItem.AppShortcutAction)
+        assertEquals("appinfo:com.whatsapp", (scHit.first() as PaletteItem.AppShortcutAction).shortcut.id)
     }
 
     @Test
@@ -239,8 +370,9 @@ class QueryRouterTest {
     }
 
     @Test
-    fun `full v2 backup export and import round-trip preserves engines, bookmarks, prefixes, and excluded folders`() {
+    fun `full v2 backup export and import round-trip preserves engines, bookmarks, prefixes, universalAliases, and excluded folders`() {
         val customPrefixes = PrefixConfig(files = "fl", dictionary = "d", clipboard = "cl")
+        val customAliases = listOf(UniversalAlias("sys:sys_dev", "dv", "Developer Options", "sys"))
         val bundle = FullBackupBundle(
             version = 2,
             engines = engines,
@@ -248,6 +380,7 @@ class QueryRouterTest {
             prefixes = customPrefixes,
             excludedFolders = listOf("Telegram", "WhatsApp"),
             usageCounts = mapOf("bm:bm_dl" to 9),
+            universalAliases = customAliases,
         )
         val json = QueryRouter.exportFullBackupToJson(bundle)
         val restored = QueryRouter.importFullBackupFromJson(json)
@@ -259,6 +392,8 @@ class QueryRouterTest {
         assertEquals("cl", restored.prefixes?.clipboard)
         assertEquals(listOf("Telegram", "WhatsApp"), restored.excludedFolders)
         assertEquals(9, restored.usageCounts["bm:bm_dl"])
+        assertEquals(1, restored.universalAliases.size)
+        assertEquals("dv", restored.universalAliases.first().alias)
     }
 
     @Test

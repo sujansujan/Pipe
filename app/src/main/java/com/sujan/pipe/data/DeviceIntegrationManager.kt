@@ -407,7 +407,12 @@ object DeviceIntegrationManager {
     @Volatile
     private var memoryAppsIndex: List<com.sujan.pipe.model.InstalledAppItem>? = null
 
+    @Volatile
+    private var memoryShortcutsIndex: List<com.sujan.pipe.model.AppShortcutItem>? = null
+
     fun peekMemoryInstalledApps(): List<com.sujan.pipe.model.InstalledAppItem> = memoryAppsIndex ?: emptyList()
+
+    fun peekMemoryAppShortcuts(): List<com.sujan.pipe.model.AppShortcutItem> = memoryShortcutsIndex ?: emptyList()
 
     fun loadInstalledApps(context: Context): List<com.sujan.pipe.model.InstalledAppItem> {
         memoryAppsIndex?.let { if (it.isNotEmpty()) return it }
@@ -431,6 +436,235 @@ object DeviceIntegrationManager {
             memoryAppsIndex = apps
         }
         return apps
+    }
+
+    /**
+     * Discovers App Shortcuts, App Preferences screens, and Per-App System Settings across installed apps:
+     * 1. Parses static `android.app.shortcuts` XML resources from launcher activities (`GET_META_DATA`).
+     * 2. Queries `Intent.ACTION_APPLICATION_PREFERENCES` activities (in-app settings screens).
+     * 3. Queries `LauncherApps` shortcuts when accessible.
+     * 4. Generates an `App Info & Permissions` shortcut entry for each installed app so app settings are searchable and aliasable.
+     */
+    fun loadAppShortcuts(context: Context): List<com.sujan.pipe.model.AppShortcutItem> {
+        memoryShortcutsIndex?.let { if (it.isNotEmpty()) return it }
+        val pm = context.packageManager
+        val selfPkg = context.packageName
+        val results = mutableListOf<com.sujan.pipe.model.AppShortcutItem>()
+        val seenKeys = HashSet<String>()
+        val androidNs = "http://schemas.android.com/apk/res/android"
+
+        // 1. Static XML shortcuts (`android.app.shortcuts`) + per-app system settings entries
+        val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+        val resolveList = runCatching {
+            pm.queryIntentActivities(mainIntent, PackageManager.GET_META_DATA)
+        }.getOrDefault(emptyList())
+
+        for (ri in resolveList) {
+            val ai = ri.activityInfo ?: continue
+            val pkg = ai.packageName ?: continue
+            if (pkg == selfPkg) continue
+            val appLabel = runCatching { ri.loadLabel(pm)?.toString()?.trim().orEmpty() }.getOrDefault("")
+            if (appLabel.isEmpty()) continue
+
+            // Parse static XML shortcuts if present on this launcher activity
+            val meta = ai.metaData
+            val shortcutResId = meta?.getInt("android.app.shortcuts", 0) ?: 0
+            if (shortcutResId != 0) {
+                runCatching {
+                    val res = pm.getResourcesForApplication(pkg)
+                    val parser = res.getXml(shortcutResId)
+                    var currentId = ""
+                    var currentLabel = ""
+                    var intentAction: String? = null
+                    var targetPkg: String? = null
+                    var targetCls: String? = null
+                    var dataUri: String? = null
+                    var inShortcut = false
+
+                    var event = parser.eventType
+                    while (event != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                        when (event) {
+                            org.xmlpull.v1.XmlPullParser.START_TAG -> {
+                                if (parser.name == "shortcut") {
+                                    val enabled = parser.getAttributeBooleanValue(androidNs, "enabled", true)
+                                    if (enabled) {
+                                        inShortcut = true
+                                        currentId = parser.getAttributeValue(androidNs, "shortcutId").orEmpty()
+                                        val shortRes = parser.getAttributeResourceValue(androidNs, "shortcutShortLabel", 0)
+                                        val longRes = parser.getAttributeResourceValue(androidNs, "shortcutLongLabel", 0)
+                                        currentLabel = when {
+                                            shortRes != 0 -> runCatching { res.getString(shortRes) }.getOrDefault("")
+                                            longRes != 0 -> runCatching { res.getString(longRes) }.getOrDefault("")
+                                            else -> parser.getAttributeValue(androidNs, "shortcutShortLabel").orEmpty()
+                                        }.trim()
+                                        intentAction = null
+                                        targetPkg = null
+                                        targetCls = null
+                                        dataUri = null
+                                    }
+                                } else if (inShortcut && parser.name == "intent" && intentAction == null && targetCls == null) {
+                                    intentAction = parser.getAttributeValue(androidNs, "action")
+                                    targetPkg = parser.getAttributeValue(androidNs, "targetPackage")
+                                    targetCls = parser.getAttributeValue(androidNs, "targetClass")
+                                    dataUri = parser.getAttributeValue(androidNs, "data")
+                                }
+                            }
+                            org.xmlpull.v1.XmlPullParser.END_TAG -> {
+                                if (parser.name == "shortcut" && inShortcut) {
+                                    inShortcut = false
+                                    if (currentId.isNotEmpty() && currentLabel.isNotEmpty() && (targetCls != null || dataUri != null || intentAction != null)) {
+                                        val effPkg = targetPkg?.takeIf { it.isNotBlank() } ?: pkg
+                                        val key = "static:$effPkg:$currentId"
+                                        if (seenKeys.add(key)) {
+                                            results.add(
+                                                com.sujan.pipe.model.AppShortcutItem(
+                                                    id = currentId,
+                                                    packageName = effPkg,
+                                                    appLabel = appLabel,
+                                                    shortcutLabel = currentLabel,
+                                                    kind = com.sujan.pipe.model.AppShortcutKind.STATIC_SHORTCUT,
+                                                    targetClass = targetCls,
+                                                    intentAction = intentAction,
+                                                    dataUri = dataUri,
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        event = parser.next()
+                    }
+                    parser.close()
+                }
+            }
+
+            // Per-app Android System App Info & Permissions shortcut
+            val infoKey = "appinfo:$pkg"
+            if (seenKeys.add(infoKey)) {
+                results.add(
+                    com.sujan.pipe.model.AppShortcutItem(
+                        id = "app_info",
+                        packageName = pkg,
+                        appLabel = appLabel,
+                        shortcutLabel = "App Settings & Permissions",
+                        kind = com.sujan.pipe.model.AppShortcutKind.APP_SYSTEM_INFO,
+                    )
+                )
+            }
+        }
+
+        // 2. Exported In-App Preferences screens (`Intent.ACTION_APPLICATION_PREFERENCES`)
+        val prefsIntent = Intent(Intent.ACTION_APPLICATION_PREFERENCES)
+        val prefsActivities = runCatching {
+            pm.queryIntentActivities(prefsIntent, 0)
+        }.getOrDefault(emptyList())
+        for (ri in prefsActivities) {
+            val ai = ri.activityInfo ?: continue
+            val pkg = ai.packageName ?: continue
+            val cls = ai.name ?: continue
+            if (pkg == selfPkg) continue
+            val appLabel = runCatching { ai.applicationInfo.loadLabel(pm)?.toString()?.trim().orEmpty() }.getOrDefault(pkg)
+            val key = "prefs:$pkg:$cls"
+            if (seenKeys.add(key)) {
+                results.add(
+                    com.sujan.pipe.model.AppShortcutItem(
+                        id = "prefs_${cls.substringAfterLast('.')}",
+                        packageName = pkg,
+                        appLabel = appLabel,
+                        shortcutLabel = "In-App Preferences",
+                        kind = com.sujan.pipe.model.AppShortcutKind.APP_PREFERENCES,
+                        targetClass = cls,
+                        intentAction = Intent.ACTION_APPLICATION_PREFERENCES,
+                    )
+                )
+            }
+        }
+
+        // 3. Dynamic/Manifest LauncherApps shortcuts if host permission is available
+        runCatching {
+            val launcherApps = context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as? android.content.pm.LauncherApps
+            if (launcherApps != null && launcherApps.hasShortcutHostPermission()) {
+                val query = android.content.pm.LauncherApps.ShortcutQuery().apply {
+                    setQueryFlags(
+                        android.content.pm.LauncherApps.ShortcutQuery.FLAG_MATCH_DYNAMIC or
+                            android.content.pm.LauncherApps.ShortcutQuery.FLAG_MATCH_MANIFEST or
+                            android.content.pm.LauncherApps.ShortcutQuery.FLAG_MATCH_PINNED
+                    )
+                }
+                val shortcuts = launcherApps.getShortcuts(query, android.os.Process.myUserHandle()).orEmpty()
+                for (si in shortcuts) {
+                    val pkg = si.`package`
+                    val sId = si.id
+                    val sLabel = si.shortLabel?.toString()?.trim().orEmpty()
+                    if (sLabel.isNotEmpty() && seenKeys.add("static:$pkg:$sId")) {
+                        val appName = runCatching {
+                            pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+                        }.getOrDefault(pkg)
+                        results.add(
+                            com.sujan.pipe.model.AppShortcutItem(
+                                id = sId,
+                                packageName = pkg,
+                                appLabel = appName,
+                                shortcutLabel = sLabel,
+                                kind = com.sujan.pipe.model.AppShortcutKind.DYNAMIC_SHORTCUT,
+                                launcherShortcutId = sId,
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        val sorted = results.sortedWith(
+            compareBy<com.sujan.pipe.model.AppShortcutItem> { it.kind == com.sujan.pipe.model.AppShortcutKind.APP_SYSTEM_INFO }
+                .thenBy { it.appLabelLower }
+                .thenBy { it.shortcutLabelLower }
+        )
+        if (sorted.isNotEmpty()) {
+            memoryShortcutsIndex = sorted
+        }
+        return sorted
+    }
+
+    /**
+     * Launches an [AppShortcutItem] (static XML shortcut, in-app preferences screen, dynamic shortcut, or Android App Info).
+     */
+    fun launchAppShortcut(context: Context, item: com.sujan.pipe.model.AppShortcutItem): Boolean {
+        if (item.kind == com.sujan.pipe.model.AppShortcutKind.APP_SYSTEM_INFO) {
+            return openAppInfoSettings(context, item.packageName)
+        }
+        if (item.launcherShortcutId != null) {
+            val launchedViaHost = runCatching {
+                val launcherApps = context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as? android.content.pm.LauncherApps
+                if (launcherApps != null && launcherApps.hasShortcutHostPermission()) {
+                    launcherApps.startShortcut(item.packageName, item.launcherShortcutId, null, null, android.os.Process.myUserHandle())
+                    true
+                } else false
+            }.getOrDefault(false)
+            if (launchedViaHost) return true
+        }
+        val launchedExplicit = runCatching {
+            val intent = Intent(item.intentAction ?: Intent.ACTION_VIEW).apply {
+                if (!item.dataUri.isNullOrBlank()) {
+                    data = Uri.parse(item.dataUri)
+                }
+                if (!item.targetClass.isNullOrBlank()) {
+                    val fullCls = if (item.targetClass.startsWith(".")) "${item.packageName}${item.targetClass}" else item.targetClass
+                    setClassName(item.packageName, fullCls)
+                } else {
+                    setPackage(item.packageName)
+                }
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
+        if (launchedExplicit) return true
+
+        return launchInstalledApp(context, item.packageName)
     }
 
     fun launchInstalledApp(context: Context, packageName: String): Boolean {

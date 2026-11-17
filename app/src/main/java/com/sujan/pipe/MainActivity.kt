@@ -32,10 +32,12 @@ import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.PipeBookmark
+import com.sujan.pipe.model.SystemSettingShortcut
 import com.sujan.pipe.ui.JsonDialogMode
 import com.sujan.pipe.ui.PipeApp
 import com.sujan.pipe.ui.PipeView
 import com.sujan.pipe.ui.PipeViewModel
+import com.sujan.pipe.ui.SettingsSection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -156,7 +158,11 @@ class MainActivity : ComponentActivity() {
                         }
                         is com.sujan.pipe.domain.PaletteItem.SystemSettingAction -> {
                             viewModel.recordItemUsage(top.usageKey)
-                            DeviceIntegrationManager.openSystemSettingShortcut(this, top.shortcut)
+                            handleSystemOrPipeSettingShortcut(top.shortcut)
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.AppShortcutAction -> {
+                            viewModel.recordItemUsage(top.usageKey)
+                            DeviceIntegrationManager.launchAppShortcut(this, top.shortcut)
                         }
                         is com.sujan.pipe.domain.PaletteItem.DirectNumberAction -> {
                             viewModel.recordItemUsage(top.usageKey)
@@ -254,8 +260,14 @@ class MainActivity : ComponentActivity() {
                 },
                 onOpenSystemSetting = { shortcut ->
                     viewModel.recordItemUsage("sys:${shortcut.id}")
-                    DeviceIntegrationManager.openSystemSettingShortcut(this, shortcut)
+                    handleSystemOrPipeSettingShortcut(shortcut)
                 },
+                onLaunchAppShortcut = { shortcutItem ->
+                    viewModel.recordItemUsage("appshortcut:${shortcutItem.id}")
+                    DeviceIntegrationManager.launchAppShortcut(this, shortcutItem)
+                },
+                onSaveUniversalAlias = viewModel::setUniversalAlias,
+                onRemoveUniversalAlias = viewModel::removeUniversalAlias,
                 onExecuteDirectNumber = { action, mode ->
                     viewModel.recordItemUsage(action.usageKey)
                     handleDirectNumberAction(action, mode)
@@ -437,6 +449,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun handleSystemOrPipeSettingShortcut(shortcut: SystemSettingShortcut) {
+        val internalSec = shortcut.internalPipeSection
+        if (internalSec != null) {
+            if (internalSec == "APP_INFO") {
+                DeviceIntegrationManager.openAppInfoSettings(this, packageName)
+            } else {
+                val sec = runCatching { SettingsSection.valueOf(internalSec) }.getOrNull()
+                if (sec != null) {
+                    viewModel.selectSettingsSection(sec)
+                    viewModel.navigateTo(PipeView.SETTINGS)
+                }
+            }
+        } else {
+            DeviceIntegrationManager.openSystemSettingShortcut(this, shortcut)
+        }
+    }
+
     private fun handleClipboardAction(
         action: com.sujan.pipe.domain.PaletteItem.ClipboardAction,
         copyToClipboard: (AnnotatedString) -> Unit,
@@ -597,6 +626,7 @@ class MainActivity : ComponentActivity() {
             val cachedFiles = if (hasFiles) DeviceIntegrationManager.getCachedStorageFiles(applicationContext) else emptyList()
             val contacts = if (hasContacts) DeviceIntegrationManager.getCachedOrLoadContacts(applicationContext) else emptyList()
             val apps = DeviceIntegrationManager.loadInstalledApps(applicationContext)
+            val appShortcuts = DeviceIntegrationManager.loadAppShortcuts(applicationContext)
             val browsers = DeviceIntegrationManager.listInstalledBrowsers(applicationContext)
             val needsRebuild = hasFiles && (forceRebuild || cachedFiles.isEmpty() || DeviceIntegrationManager.isIndexStale(applicationContext))
 
@@ -606,6 +636,7 @@ class MainActivity : ComponentActivity() {
                 contacts = contacts,
                 files = cachedFiles,
                 apps = apps,
+                appShortcuts = appShortcuts,
                 browsers = browsers,
                 isIndexing = needsRebuild,
             )
@@ -631,6 +662,7 @@ class MainActivity : ComponentActivity() {
                     contacts = freshContacts,
                     files = freshFiles,
                     apps = apps,
+                    appShortcuts = appShortcuts,
                     browsers = browsers,
                     isIndexing = false,
                 )
@@ -671,6 +703,19 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
+        val openSection = intent.getStringExtra(EXTRA_OPEN_SETTINGS_SECTION)
+        if (!openSection.isNullOrEmpty()) {
+            if (openSection == "APP_INFO") {
+                DeviceIntegrationManager.openAppInfoSettings(this, packageName)
+            } else {
+                val sec = runCatching { SettingsSection.valueOf(openSection) }.getOrNull()
+                if (sec != null) {
+                    viewModel.selectSettingsSection(sec)
+                    viewModel.navigateTo(PipeView.SETTINGS)
+                }
+            }
+            return
+        }
         val prefill = intent.getStringExtra(EXTRA_PREFILL_QUERY) ?: intent.getStringExtra(SearchManager.QUERY)
         if (!prefill.isNullOrEmpty()) {
             viewModel.setSearchTextFromExternal(prefill)
@@ -719,5 +764,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_PREFILL_QUERY = "com.sujan.pipe.EXTRA_PREFILL_QUERY"
+        const val EXTRA_OPEN_SETTINGS_SECTION = "com.sujan.pipe.EXTRA_OPEN_SETTINGS_SECTION"
     }
 }

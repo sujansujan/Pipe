@@ -1,6 +1,8 @@
 package com.sujan.pipe.domain
 
+import com.sujan.pipe.model.AppShortcutItem
 import com.sujan.pipe.model.BookmarkKind
+import com.sujan.pipe.model.UniversalAlias
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.ContactQuickAction
 import com.sujan.pipe.model.DefaultEngines
@@ -432,6 +434,13 @@ sealed interface PaletteItem {
         override val usageCount: Int,
     ) : PaletteItem
 
+    data class AppShortcutAction(
+        val shortcut: AppShortcutItem,
+        override val usageKey: String = shortcut.usageKey,
+        override val rankScore: Int = 8800,
+        override val usageCount: Int = 0,
+    ) : PaletteItem
+
     data class DictionaryAction(
         val entry: DictionaryEntry?,
         val query: String,
@@ -737,6 +746,16 @@ object QueryRouter {
         return maxOf(aliasScore, titleScore, kwScore)
     }
 
+    fun scoreAppShortcut(rawQuery: String, item: AppShortcutItem): Int {
+        val clean = rawQuery.trim().lowercase()
+        if (clean.isEmpty()) return 120
+        val shortcutScore = FuzzyMatcher.scorePreLowered(clean, item.shortcutLabelLower)
+        val combinedScore = FuzzyMatcher.scorePreLowered(clean, item.combinedLower)
+        val appScore = FuzzyMatcher.scorePreLowered(clean, item.appLabelLower)
+        val effectiveAppScore = if (appScore >= 600) (appScore - 120).coerceAtLeast(150) else 0
+        return maxOf(shortcutScore, combinedScore, effectiveAppScore)
+    }
+
     fun parsePromptCommand(
         rawInput: String,
         bookmarks: List<PipeBookmark>,
@@ -988,6 +1007,8 @@ object QueryRouter {
         history: List<SearchHistoryEntry>,
         usageMap: Map<String, Int>,
         installedApps: List<InstalledAppItem> = emptyList(),
+        appShortcuts: List<AppShortcutItem> = emptyList(),
+        universalAliases: List<UniversalAlias> = emptyList(),
         clipboardText: String = "",
         prefixes: PrefixConfig = PrefixConfig(),
         dictionaryMatches: List<DictionaryEntry> = emptyList(),
@@ -995,8 +1016,19 @@ object QueryRouter {
         whatsAppFlavor: WhatsAppFlavor = WhatsAppFlavor.BOTH,
     ): List<PaletteItem> {
         val cmd = parsePromptCommand(rawInput, bookmarks, engines, prefixes)
+        val aliasByTargetKey = universalAliases.associate { it.targetKey to it.aliasLower }
         fun usageOf(key: String): Int = usageMap[key] ?: 0
         fun usageBonus(key: String): Int = (usageMap[key] ?: 0) * 35
+        fun customAliasScore(targetKey: String, rawQuery: String): Int {
+            val clean = rawQuery.trim().lowercase()
+            if (clean.isEmpty()) return 0
+            val alias = aliasByTargetKey[targetKey] ?: return 0
+            return when {
+                alias == clean -> 12_000
+                alias.startsWith(clean) -> 1_600
+                else -> FuzzyMatcher.scorePreLowered(clean, alias)
+            }
+        }
 
         return when (cmd.mode) {
             PromptIntentMode.ADD_COMMAND -> buildQuickAddSuggestions(cmd.filterQuery, clipboardText, prefixes)
@@ -1055,7 +1087,7 @@ object QueryRouter {
                 DefaultSystemShortcuts.LIST.mapNotNull { sc ->
                     val uKey = "sys:${sc.id}"
                     val uCount = usageOf(uKey)
-                    val s = scoreSystemShortcut(q, sc)
+                    val s = maxOf(scoreSystemShortcut(q, sc), customAliasScore(uKey, q))
                     if (s > 0) {
                         PaletteItem.SystemSettingAction(
                             shortcut = sc,
@@ -1204,7 +1236,7 @@ object QueryRouter {
                 contacts.mapNotNull { c ->
                     val uKey = "contact:${c.cleanPhone}"
                     val uCount = usageOf(uKey)
-                    val fScore = FuzzyMatcher.scoreContact(q, c)
+                    val fScore = maxOf(FuzzyMatcher.scoreContact(q, c), customAliasScore(uKey, q))
                     if (fScore > 0) {
                         PaletteItem.ContactAction(
                             contact = c,
@@ -1222,19 +1254,35 @@ object QueryRouter {
 
             PromptIntentMode.APPS_ONLY -> {
                 val q = cmd.filterQuery.trim().lowercase()
-                installedApps.mapNotNull { app ->
+                val out = mutableListOf<PaletteItem>()
+                installedApps.forEach { app ->
                     val uKey = "app:${app.packageName}"
                     val uCount = usageOf(uKey)
-                    val fScore = if (q.isEmpty()) 100 else maxOf(
+                    val baseScore = if (q.isEmpty()) 200 else maxOf(
                         FuzzyMatcher.scorePreLowered(q, app.labelLower),
                         FuzzyMatcher.scorePreLowered(q, app.pkgLower.substringAfterLast('.')),
                     )
+                    val fScore = maxOf(baseScore, customAliasScore(uKey, q))
                     if (fScore > 0) {
-                        PaletteItem.AppAction(app, uKey, fScore * 10 + usageBonus(uKey), uCount)
-                    } else null
-                }.sortedWith(
-                    if (q.isEmpty()) compareByDescending<PaletteItem.AppAction> { it.usageCount }.thenByDescending { it.rankScore }
-                    else compareByDescending<PaletteItem.AppAction> { it.rankScore }.thenByDescending { it.usageCount }
+                        out.add(PaletteItem.AppAction(app, uKey, fScore * 10 + 15 + usageBonus(uKey), uCount))
+                    }
+                }
+                appShortcuts.forEach { sc ->
+                    val uKey = sc.usageKey
+                    val uCount = usageOf(uKey)
+                    val baseScore = if (q.isEmpty()) {
+                        if (uCount > 0 || sc.kind != com.sujan.pipe.model.AppShortcutKind.APP_SYSTEM_INFO) 120 else 0
+                    } else {
+                        scoreAppShortcut(q, sc)
+                    }
+                    val fScore = maxOf(baseScore, customAliasScore(uKey, q))
+                    if (fScore > 0) {
+                        out.add(PaletteItem.AppShortcutAction(sc, uKey, fScore * 10 + usageBonus(uKey), uCount))
+                    }
+                }
+                out.sortedWith(
+                    if (q.isEmpty()) compareByDescending<PaletteItem> { it.usageCount }.thenByDescending { it.rankScore }
+                    else compareByDescending<PaletteItem> { it.rankScore }.thenByDescending { it.usageCount }
                 ).take(MAX_PALETTE_RESULTS)
             }
 
@@ -1243,7 +1291,7 @@ object QueryRouter {
                 storageFiles.mapNotNull { f ->
                     val uKey = "file:${f.absolutePath}"
                     val uCount = usageOf(uKey)
-                    val fScore = FuzzyMatcher.scoreFileItemPreLowered(q, f)
+                    val fScore = maxOf(FuzzyMatcher.scoreFileItemPreLowered(q, f), customAliasScore(uKey, q))
                     if (fScore > 0) {
                         PaletteItem.FileAction(f, uKey, fScore * 10 + usageBonus(uKey), uCount)
                     } else null
@@ -1503,11 +1551,12 @@ object QueryRouter {
                         )
                     }
 
-                    // Feature #1: Surface matching Android System Settings shortcuts when strongly matched
+                    // Feature #1: Surface matching Android System Settings & Pipe Settings shortcuts (or custom alias match)
                     DefaultSystemShortcuts.LIST.forEach { sc ->
-                        val s = scoreSystemShortcut(qLower, sc)
-                        if (s >= 700) {
-                            val uKey = "sys:${sc.id}"
+                        val uKey = "sys:${sc.id}"
+                        val aliasScore = customAliasScore(uKey, qLower)
+                        val s = maxOf(scoreSystemShortcut(qLower, sc), aliasScore)
+                        if (s >= 700 || aliasScore > 0) {
                             pool.add(
                                 PaletteItem.SystemSettingAction(
                                     shortcut = sc,
@@ -1520,21 +1569,22 @@ object QueryRouter {
                     }
 
                     bookmarks.forEach { bm ->
-                        val s = FuzzyMatcher.scoreBookmark(q, bm)
+                        val uKey = "bm:${bm.id}"
+                        val s = maxOf(FuzzyMatcher.scoreBookmark(q, bm), customAliasScore(uKey, qLower))
                         if (s > 0) {
-                            val uKey = "bm:${bm.id}"
                             val tieBonus = if (s >= 500) usageBonus(uKey) else 0
                             pool.add(PaletteItem.BookmarkAction(bm, uKey, s * 10 + 40 + tieBonus, usageOf(uKey)))
                         }
                     }
                     engines.forEach { eng ->
-                        val isExactKw = eng.keyword.equals(qLower, ignoreCase = true)
+                        val uKey = "eng:${eng.id}"
+                        val isExactKw = eng.keyword.equals(qLower, ignoreCase = true) || aliasByTargetKey[uKey] == qLower
                         val s = if (isExactKw) 2150 else maxOf(
                             FuzzyMatcher.scorePreLowered(qLower, eng.keyword.lowercase()),
                             FuzzyMatcher.scorePreLowered(qLower, eng.name.lowercase()),
+                            customAliasScore(uKey, qLower),
                         )
                         if (s > 0) {
-                            val uKey = "eng:${eng.id}"
                             val tieBonus = if (s >= 500) usageBonus(uKey) else 0
                             pool.add(
                                 PaletteItem.EngineAction(
@@ -1550,29 +1600,39 @@ object QueryRouter {
                         }
                     }
                     contacts.forEach { c ->
-                        val s = FuzzyMatcher.scoreContact(qLower, c)
+                        val uKey = "contact:${c.cleanPhone}"
+                        val s = maxOf(FuzzyMatcher.scoreContact(qLower, c), customAliasScore(uKey, qLower))
                         if (s > 0) {
-                            val uKey = "contact:${c.cleanPhone}"
                             val tieBonus = if (s >= 500) usageBonus(uKey) else 0
                             pool.add(PaletteItem.ContactAction(c, ContactQuickAction.CALL, uKey, s * 10 + 30 + tieBonus, usageOf(uKey)))
                         }
                     }
                     installedApps.forEach { app ->
+                        val uKey = "app:${app.packageName}"
                         val s = maxOf(
                             FuzzyMatcher.scorePreLowered(qLower, app.labelLower),
                             FuzzyMatcher.scorePreLowered(qLower, app.pkgLower.substringAfterLast('.')),
+                            customAliasScore(uKey, qLower),
                         )
                         if (s > 0) {
-                            val uKey = "app:${app.packageName}"
                             val tieBonus = if (s >= 500) usageBonus(uKey) else 0
                             pool.add(PaletteItem.AppAction(app, uKey, s * 10 + 25 + tieBonus, usageOf(uKey)))
                         }
                     }
+                    appShortcuts.forEach { sc ->
+                        val uKey = sc.usageKey
+                        val aliasScore = customAliasScore(uKey, qLower)
+                        val s = maxOf(scoreAppShortcut(qLower, sc), aliasScore)
+                        if (s >= 650 || aliasScore > 0) {
+                            val tieBonus = if (s >= 500) usageBonus(uKey) else 0
+                            pool.add(PaletteItem.AppShortcutAction(sc, uKey, s * 10 + 18 + tieBonus, usageOf(uKey)))
+                        }
+                    }
                     storageFiles.forEach { f ->
                         if (f.pathLower.trimEnd('/') !in bookmarkedPaths) {
-                            val s = FuzzyMatcher.scoreFileItemPreLowered(qLower, f)
+                            val uKey = "file:${f.absolutePath}"
+                            val s = maxOf(FuzzyMatcher.scoreFileItemPreLowered(qLower, f), customAliasScore(uKey, qLower))
                             if (s > 0) {
-                                val uKey = "file:${f.absolutePath}"
                                 val tieBonus = if (s >= 500) usageBonus(uKey) else 0
                                 pool.add(PaletteItem.FileAction(f, uKey, s * 10 + tieBonus, usageOf(uKey)))
                             }
@@ -2373,7 +2433,20 @@ object QueryRouter {
             }
             sb.append("  ")
         }
-        sb.append("}\n")
+        sb.append("},\n")
+        sb.append("  \"universalAliases\": [\n")
+        bundle.universalAliases.forEachIndexed { idx, ua ->
+            sb.append("    {\n")
+            sb.append("      \"targetKey\": \"${escapeJson(ua.targetKey)}\",\n")
+            sb.append("      \"alias\": \"${escapeJson(ua.aliasLower)}\",\n")
+            sb.append("      \"label\": \"${escapeJson(ua.label)}\",\n")
+            sb.append("      \"category\": \"${escapeJson(ua.category)}\",\n")
+            sb.append("      \"subtitle\": \"${escapeJson(ua.subtitle)}\"\n")
+            sb.append("    }")
+            if (idx < bundle.universalAliases.lastIndex) sb.append(",")
+            sb.append("\n")
+        }
+        sb.append("  ]\n")
         sb.append("}")
         return sb.toString()
     }
@@ -2448,6 +2521,23 @@ object QueryRouter {
 
         val parsedVersion = Regex("\"version\"\\s*:\\s*(\\d+)").find(trimmed)?.groupValues?.get(1)?.toIntOrNull() ?: 2
 
+        val aliasesSection = extractJsonArraySection(trimmed, "universalAliases")
+        val parsedAliases = if (aliasesSection != null) {
+            val blocks = extractTopLevelJsonObjects(aliasesSection)
+            blocks.mapNotNull { block ->
+                val tKey = extractJsonString(block, "targetKey")?.trim().orEmpty()
+                val al = extractJsonString(block, "alias")?.trim()?.lowercase().orEmpty()
+                if (tKey.isEmpty() || al.isEmpty()) null
+                else UniversalAlias(
+                    targetKey = tKey,
+                    alias = al,
+                    label = extractJsonString(block, "label")?.trim().orEmpty(),
+                    category = extractJsonString(block, "category")?.trim() ?: "item",
+                    subtitle = extractJsonString(block, "subtitle")?.trim().orEmpty(),
+                )
+            }
+        } else emptyList()
+
         return FullBackupBundle(
             version = parsedVersion,
             engines = parsedEngines,
@@ -2455,6 +2545,7 @@ object QueryRouter {
             prefixes = parsedPrefixes,
             excludedFolders = parsedExcluded,
             usageCounts = parsedUsage,
+            universalAliases = parsedAliases,
         )
     }
 

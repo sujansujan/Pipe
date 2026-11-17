@@ -58,7 +58,50 @@ data class PrefixConfig(
 }
 
 /**
- * Deep Android system settings shortcut (`set dev`, `set spot`, `set dns`, `set notif`, etc.).
+ * Universal Alias entry allowing ANY item that `pipe` searches (system settings, app settings,
+ * apps, app shortcuts, files, folders, contacts, bookmarks, pipes) to be assigned a short alias.
+ */
+data class UniversalAlias(
+    val targetKey: String,
+    val alias: String,
+    val label: String,
+    val category: String,
+    val subtitle: String = "",
+) {
+    val aliasLower: String = alias.trim().lowercase()
+}
+
+/**
+ * Discoverable App Shortcut or App Settings activity (parsed from static `android.app.shortcuts` XML,
+ * `LauncherApps`, `ACTION_APPLICATION_PREFERENCES`, or per-app Android App Info settings).
+ */
+enum class AppShortcutKind(val badge: String) {
+    STATIC_SHORTCUT("cut"),
+    DYNAMIC_SHORTCUT("cut"),
+    APP_PREFERENCES("cfg"),
+    APP_SYSTEM_INFO("inf"),
+}
+
+data class AppShortcutItem(
+    val id: String,
+    val packageName: String,
+    val appLabel: String,
+    val shortcutLabel: String,
+    val kind: AppShortcutKind = AppShortcutKind.STATIC_SHORTCUT,
+    val targetClass: String? = null,
+    val intentAction: String? = null,
+    val dataUri: String? = null,
+    val launcherShortcutId: String? = null,
+) {
+    val usageKey: String = "shortcut:$packageName:$id"
+    val appLabelLower: String = appLabel.trim().lowercase()
+    val shortcutLabelLower: String = shortcutLabel.trim().lowercase()
+    val combinedLower: String = "$appLabelLower $shortcutLabelLower"
+}
+
+/**
+ * Deep Android system settings shortcut (`set dev`, `set spot`, `set dns`, `set notif`, etc.)
+ * as well as internal `pipe` settings sections (`pipe://settings/overlay`, etc.).
  */
 data class SystemSettingShortcut(
     val id: String,
@@ -68,6 +111,7 @@ data class SystemSettingShortcut(
     val intentAction: String,
     val fallbackAction: String? = null,
     val keywords: String = "",
+    val internalPipeSection: String? = null,
 ) {
     val aliasLower: String = alias.trim().lowercase()
     val titleLower: String = title.trim().lowercase()
@@ -75,7 +119,64 @@ data class SystemSettingShortcut(
 }
 
 object DefaultSystemShortcuts {
-    val LIST: List<SystemSettingShortcut> = listOf(
+    val PIPE_INTERNAL_LIST: List<SystemSettingShortcut> = listOf(
+        SystemSettingShortcut(
+            id = "pipe_set_overlay",
+            alias = "ovl",
+            title = "Pipe Settings: Floating Overlay",
+            subtitle = "Opacity, position, corner radius, placeholder text",
+            intentAction = "pipe://settings/OVERLAY",
+            keywords = "pipe settings overlay opacity corner radius placeholder",
+            internalPipeSection = "OVERLAY",
+        ),
+        SystemSettingShortcut(
+            id = "pipe_set_index",
+            alias = "idx",
+            title = "Pipe Settings: Storage & Offline Dictionary",
+            subtitle = "Permissions, storage index, excluded folders, offline dictionary",
+            intentAction = "pipe://settings/INDEX",
+            keywords = "pipe settings index dictionary permissions storage",
+            internalPipeSection = "INDEX",
+        ),
+        SystemSettingShortcut(
+            id = "pipe_set_theme",
+            alias = "thm",
+            title = "Pipe Settings: Theme & Color Palette",
+            subtitle = "System/Dark/Light mode, Dracula, Alucard, Moss, Lagoon palettes",
+            intentAction = "pipe://settings/THEME",
+            keywords = "pipe settings theme palette color dark light dracula",
+            internalPipeSection = "THEME",
+        ),
+        SystemSettingShortcut(
+            id = "pipe_set_routing",
+            alias = "rte",
+            title = "Pipe Settings: Routing, Prefixes & WhatsApp",
+            subtitle = "Custom prefixes (f, s, b, app, set), default browser, WhatsApp flavor",
+            intentAction = "pipe://settings/ROUTING",
+            keywords = "pipe settings routing prefix browser whatsapp",
+            internalPipeSection = "ROUTING",
+        ),
+        SystemSettingShortcut(
+            id = "pipe_set_backup",
+            alias = "bak",
+            title = "Pipe Settings: JSON Backup & Restore",
+            subtitle = "Export/import full v2 JSON backup (pipes, bookmarks, aliases)",
+            intentAction = "pipe://settings/BACKUP",
+            keywords = "pipe settings backup export import json restore",
+            internalPipeSection = "BACKUP",
+        ),
+        SystemSettingShortcut(
+            id = "pipe_app_info",
+            alias = "pipeinfo",
+            title = "Pipe System App Info & Permissions",
+            subtitle = "Open Android App Info screen for com.sujan.pipe",
+            intentAction = "pipe://appinfo",
+            keywords = "pipe app info permissions system settings",
+            internalPipeSection = "APP_INFO",
+        ),
+    )
+
+    val ANDROID_SYSTEM_LIST: List<SystemSettingShortcut> = listOf(
         SystemSettingShortcut(
             id = "sys_dev",
             alias = "dev",
@@ -257,6 +358,8 @@ object DefaultSystemShortcuts {
             keywords = "date time clock timezone ntp",
         ),
     )
+
+    val LIST: List<SystemSettingShortcut> = PIPE_INTERNAL_LIST + ANDROID_SYSTEM_LIST
 }
 
 /**
@@ -273,7 +376,7 @@ data class DictionaryEntry(
 }
 
 /**
- * Full v2 JSON backup bundle containing search pipes, bookmarks, custom prefixes, excluded folders, and usage counts.
+ * Full v2 JSON backup bundle containing search pipes, bookmarks, custom prefixes, excluded folders, usage counts, and universal aliases.
  */
 data class FullBackupBundle(
     val version: Int = 2,
@@ -282,6 +385,7 @@ data class FullBackupBundle(
     val prefixes: PrefixConfig? = null,
     val excludedFolders: List<String> = emptyList(),
     val usageCounts: Map<String, Int> = emptyMap(),
+    val universalAliases: List<UniversalAlias> = emptyList(),
 )
 
 data class SearchEngine(

@@ -14,6 +14,7 @@ import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.domain.QuickAddKind
 import com.sujan.pipe.domain.RouteResolution
+import com.sujan.pipe.model.AppShortcutItem
 import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.DefaultBookmarks
@@ -25,6 +26,7 @@ import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
+import com.sujan.pipe.model.UniversalAlias
 import com.sujan.pipe.ui.ascii.PaletteChoice
 import com.sujan.pipe.ui.ascii.ThemeMode
 import kotlinx.coroutines.Job
@@ -88,6 +90,8 @@ data class PipeUiState(
     val prefixConfig: PrefixConfig = PrefixConfig(),
     val contacts: List<ContactItem> = emptyList(),
     val installedApps: List<com.sujan.pipe.model.InstalledAppItem> = emptyList(),
+    val appShortcuts: List<AppShortcutItem> = emptyList(),
+    val universalAliases: List<UniversalAlias> = emptyList(),
     val installedBrowsers: List<com.sujan.pipe.model.InstalledAppItem> = emptyList(),
     val preferredBrowserPackage: String = "auto",
     val whatsAppFlavor: com.sujan.pipe.model.WhatsAppFlavor = com.sujan.pipe.model.WhatsAppFlavor.BOTH,
@@ -151,6 +155,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             engines = repository.loadEngines(),
             bookmarks = repository.loadBookmarks(),
             prefixConfig = repository.loadPrefixConfig(),
+            universalAliases = repository.loadUniversalAliases(),
             dictionaryWordCount = repository.loadDictionaryWordCount(),
             dictionarySourceName = repository.loadDictionarySourceName(),
             history = repository.loadHistory(),
@@ -205,9 +210,59 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 dictionaryMatches = snap.dictionaryMatches,
                 isDictionaryInstalled = snap.isDictionaryInstalled,
                 whatsAppFlavor = snap.whatsAppFlavor,
+                appShortcuts = snap.appShortcuts,
+                universalAliases = snap.universalAliases,
             )
             _uiState.update { it.copy(paletteResults = computed) }
         }
+    }
+
+    fun setUniversalAlias(
+        targetKey: String,
+        alias: String,
+        label: String,
+        category: String,
+        subtitle: String = "",
+    ) {
+        val cleanAlias = alias.trim().lowercase().filter { !it.isWhitespace() }
+        val current = _uiState.value.universalAliases
+        val updated = if (cleanAlias.isEmpty()) {
+            current.filterNot { it.targetKey == targetKey }
+        } else {
+            val entry = UniversalAlias(
+                targetKey = targetKey,
+                alias = cleanAlias,
+                label = label.trim().ifEmpty { cleanAlias },
+                category = category,
+                subtitle = subtitle,
+            )
+            val withoutTargetOrDup = current.filterNot {
+                it.targetKey == targetKey || it.alias.equals(cleanAlias, ignoreCase = true)
+            }
+            withoutTargetOrDup + entry
+        }
+        repository.saveUniversalAliases(updated)
+        _uiState.update {
+            it.copy(
+                universalAliases = updated,
+                jsonStatusMessage = if (cleanAlias.isEmpty()) "ok: removed alias for $label" else "ok: set alias [@$cleanAlias] -> $label",
+            )
+        }
+        recomputePaletteAsync()
+    }
+
+    fun removeUniversalAlias(targetKey: String) {
+        val current = _uiState.value.universalAliases
+        val removed = current.firstOrNull { it.targetKey == targetKey }
+        val updated = current.filterNot { it.targetKey == targetKey }
+        repository.saveUniversalAliases(updated)
+        _uiState.update {
+            it.copy(
+                universalAliases = updated,
+                jsonStatusMessage = if (removed != null) "ok: removed alias [@${removed.alias}]" else null,
+            )
+        }
+        recomputePaletteAsync()
     }
 
     fun updateClipboardPreviewText(clip: String) {
@@ -273,6 +328,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         contacts: List<ContactItem>,
         files: List<LocalFileItem>,
         apps: List<com.sujan.pipe.model.InstalledAppItem> = _uiState.value.installedApps,
+        appShortcuts: List<AppShortcutItem> = _uiState.value.appShortcuts,
         browsers: List<com.sujan.pipe.model.InstalledAppItem> = _uiState.value.installedBrowsers,
         isIndexing: Boolean = false,
     ) {
@@ -282,6 +338,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 hasFilesPermission = hasFilesPerm,
                 contacts = contacts,
                 installedApps = apps,
+                appShortcuts = appShortcuts,
                 installedBrowsers = browsers,
                 storageFiles = files,
                 isIndexingInProgress = isIndexing,
@@ -858,7 +915,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun openJsonDialog(m: JsonDialogMode) = _uiState.update { it.copy(jsonDialogMode = m, jsonStatusMessage = null) }
     fun closeJsonDialog() = _uiState.update { it.copy(jsonDialogMode = null) }
 
-    // Feature #4: Full v2 JSON Backup (bundles pipes, bookmarks, custom prefixes, and excluded folders)
+    // Feature #4: Full v2 JSON Backup (bundles pipes, bookmarks, custom prefixes, universal aliases, and excluded folders)
     fun exportJsonString(): String = QueryRouter.exportFullBackupToJson(
         com.sujan.pipe.model.FullBackupBundle(
             engines = _uiState.value.engines,
@@ -866,6 +923,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             prefixes = _uiState.value.prefixConfig,
             excludedFolders = _uiState.value.excludedFolders,
             usageCounts = _uiState.value.usageCounts,
+            universalAliases = _uiState.value.universalAliases,
         )
     )
 
@@ -878,9 +936,11 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 bookmarks = repository.loadBookmarks(),
                 prefixConfig = repository.loadPrefixConfig(),
                 excludedFolders = repository.loadExcludedFolders(),
+                universalAliases = repository.loadUniversalAliases(),
                 jsonDialogMode = null,
                 jsonStatusMessage = "ok: imported ${bundle.engines.size} pipes" +
-                    (if (bundle.bookmarks.isNotEmpty()) " & ${bundle.bookmarks.size} bookmarks" else ""),
+                    (if (bundle.bookmarks.isNotEmpty()) " & ${bundle.bookmarks.size} bookmarks" else "") +
+                    (if (bundle.universalAliases.isNotEmpty()) " & ${bundle.universalAliases.size} aliases" else ""),
             )
         }
         recomputePaletteAsync()
