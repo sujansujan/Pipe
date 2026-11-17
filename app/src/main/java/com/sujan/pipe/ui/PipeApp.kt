@@ -3282,7 +3282,7 @@ fun PipeLibraryScreen(
                             )
                         }
                     } else {
-                        items(universalAliases, key = { it.targetKey }) { ua ->
+                        items(universalAliases, key = { it.targetKey }) { ua: UniversalAlias ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -3326,7 +3326,7 @@ fun PipeLibraryScreen(
                         )
                     }
 
-                    items(DefaultSystemShortcuts.ALL_LIST, key = { it.id }) { sc ->
+                    items(DefaultSystemShortcuts.LIST, key = { it.id }) { sc: SystemSettingShortcut ->
                         val tKey = "sys:${sc.id}"
                         val curAlias = universalAliases.firstOrNull { it.targetKey == tKey }?.alias
                         Row(
@@ -4526,7 +4526,7 @@ private fun PipeSettingsScreen(
                         }
                     }
 
-                    AsciiBox(title = "routing · pipe & android settings jumpers (${DefaultSystemShortcuts.ALL_LIST.size})") {
+                    AsciiBox(title = "routing · pipe & android settings jumpers (${DefaultSystemShortcuts.LIST.size})") {
                         var filterSys by remember { mutableStateOf(TextFieldValue("")) }
                         AsciiText(
                             text = "search or alias pipe's own settings (ovl, idx, thm, rte, bak) and Android system settings:",
@@ -4543,16 +4543,16 @@ private fun PipeSettingsScreen(
                         )
                         Spacer(Modifier.height(6.dp))
                         val q = filterSys.text.trim().lowercase()
-                        val filteredShortcuts = remember(q) {
-                            if (q.isEmpty()) DefaultSystemShortcuts.ALL_LIST
-                            else DefaultSystemShortcuts.ALL_LIST.filter {
+                        val filteredShortcuts: List<SystemSettingShortcut> = remember(q) {
+                            if (q.isEmpty()) DefaultSystemShortcuts.LIST
+                            else DefaultSystemShortcuts.LIST.filter {
                                 it.alias.contains(q, ignoreCase = true) ||
                                     it.title.contains(q, ignoreCase = true) ||
                                     it.keywords.contains(q, ignoreCase = true)
                             }
                         }
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            filteredShortcuts.forEach { sc ->
+                            filteredShortcuts.forEach { sc: SystemSettingShortcut ->
                                 val tKey = "sys:${sc.id}"
                                 val curAlias = state.universalAliases.firstOrNull { it.targetKey == tKey }?.alias
                                 Row(

@@ -360,6 +360,7 @@ object DefaultSystemShortcuts {
     )
 
     val LIST: List<SystemSettingShortcut> = PIPE_INTERNAL_LIST + ANDROID_SYSTEM_LIST
+    val ALL_LIST: List<SystemSettingShortcut> = LIST
 }
 
 /**
