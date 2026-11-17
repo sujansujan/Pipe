@@ -54,6 +54,8 @@ object DeviceIntegrationManager {
      */
     fun peekMemoryStorageFiles(): List<LocalFileItem> = memoryFileIndex ?: emptyList()
 
+    fun peekMemoryContacts(): List<ContactItem> = memoryContactsIndex ?: emptyList()
+
     fun getCachedStorageFiles(context: Context): List<LocalFileItem> {
         memoryFileIndex?.let { if (it.isNotEmpty()) return it }
         val cacheFile = File(context.filesDir, FILE_INDEX_CACHE_NAME)

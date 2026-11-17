@@ -20,9 +20,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
+import androidx.core.view.WindowCompat
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -93,10 +103,12 @@ class PipeOverlayActivity : ComponentActivity() {
     private val repository by lazy { PipeRepository(applicationContext) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        overridePendingTransition(0, 0)
         super.onCreate(savedInstanceState)
 
         val dimAmount = repository.loadOverlayDimAmount()
         window?.let { w ->
+            WindowCompat.setDecorFitsSystemWindows(w, false)
             w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
             w.attributes = w.attributes.apply {
                 this.dimAmount = dimAmount
@@ -145,9 +157,10 @@ class PipeOverlayActivity : ComponentActivity() {
                     showScopeBadge = showScopeBadge,
                     showMenuBtn = showMenuBtn,
                     whatsAppFlavor = whatsAppFlavor,
+                    initialCachedContacts = DeviceIntegrationManager.peekMemoryContacts(),
                     initialCachedFiles = DeviceIntegrationManager.peekMemoryStorageFiles(),
                     initialCachedApps = DeviceIntegrationManager.peekMemoryInstalledApps(),
-                    isDictionaryInstalled = { OfflineDictionaryManager.isDictionaryInstalled(applicationContext) },
+                    initialDictInstalled = OfflineDictionaryManager.isDictionaryInstalled(applicationContext),
                     searchDictionaryOnDemand = { q ->
                         withContext(Dispatchers.IO) {
                             OfflineDictionaryManager.searchOnDemand(applicationContext, q, limit = 10)
@@ -168,12 +181,7 @@ class PipeOverlayActivity : ComponentActivity() {
                             if (scopedPath != null) {
                                 DeviceIntegrationManager.scanStorageFiles(applicationContext, bookmarks, scopedPath)
                             } else {
-                                val cached = DeviceIntegrationManager.getCachedStorageFiles(applicationContext)
-                                if (cached.isEmpty() || DeviceIntegrationManager.isIndexStale(applicationContext)) {
-                                    DeviceIntegrationManager.rebuildAndSaveStorageIndex(applicationContext, bookmarks)
-                                } else {
-                                    cached
-                                }
+                                DeviceIntegrationManager.getCachedStorageFiles(applicationContext)
                             }
                         }
                     },
@@ -271,6 +279,11 @@ class PipeOverlayActivity : ComponentActivity() {
         }
     }
 
+    override fun finish() {
+        super.finish()
+        overridePendingTransition(0, 0)
+    }
+
     private fun extractPrefill(intent: Intent?): String {
         if (intent == null) return ""
         return intent.getStringExtra(MainActivity.EXTRA_PREFILL_QUERY)
@@ -297,9 +310,10 @@ private fun SleekRaycastOverlay(
     showScopeBadge: Boolean,
     showMenuBtn: Boolean,
     whatsAppFlavor: WhatsAppFlavor = WhatsAppFlavor.BOTH,
+    initialCachedContacts: List<ContactItem> = emptyList(),
     initialCachedFiles: List<LocalFileItem>,
     initialCachedApps: List<InstalledAppItem>,
-    isDictionaryInstalled: () -> Boolean,
+    initialDictInstalled: Boolean = false,
     searchDictionaryOnDemand: suspend (String) -> List<DictionaryEntry>,
     loadContacts: suspend () -> List<ContactItem>,
     loadApps: suspend () -> List<InstalledAppItem>,
@@ -343,7 +357,7 @@ private fun SleekRaycastOverlay(
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var statusMsg by remember { mutableStateOf<String?>(null) }
     var inlineQuickAdd by remember { mutableStateOf<PaletteItem.QuickAddAction?>(null) }
-    var contacts by remember { mutableStateOf<List<ContactItem>>(emptyList()) }
+    var contacts by remember { mutableStateOf(initialCachedContacts) }
     var installedApps by remember { mutableStateOf(initialCachedApps) }
     var storageFiles by remember { mutableStateOf(initialCachedFiles) }
     var scopedFiles by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
@@ -352,12 +366,31 @@ private fun SleekRaycastOverlay(
     var expandedFolderPath by remember { mutableStateOf<String?>(null) }
     var expandedFolderChildren by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
     var previewImageFile by remember { mutableStateOf<LocalFileItem?>(null) }
+    var clipText by remember { mutableStateOf("") }
+    val dictInstalled = initialDictInstalled
 
-    val clipText = remember(input.text) { clipboard.getText()?.text?.trim().orEmpty() }
-    val dictInstalled = remember(input.text) { isDictionaryInstalled() }
+    // Synchronized 185ms FastOutSlowIn entrance curve matching Android system IME animation
+    val enterAnim = remember { Animatable(0f) }
+    val density = LocalDensity.current
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val imeTargetRefPx = remember(density) { with(density) { 260.dp.toPx().coerceAtLeast(1f) } }
+    val slideDistancePx = remember(density, bottomAnchored) {
+        with(density) { (if (bottomAnchored) 22.dp else -18.dp).toPx() }
+    }
 
     val parsedCommand = remember(input.text, activeBookmarks, activeEngines, prefixes) {
         QueryRouter.parsePromptCommand(input.text, activeBookmarks, activeEngines, prefixes)
+    }
+
+    // Read clipboard ONLY when entering clipboard/quick-add/direct-number mode (zero IPC on startup or normal typing)
+    LaunchedEffect(parsedCommand.mode, inlineQuickAdd != null) {
+        if (parsedCommand.mode == PromptIntentMode.CLIPBOARD_ONLY ||
+            parsedCommand.mode == PromptIntentMode.ADD_COMMAND ||
+            parsedCommand.mode == PromptIntentMode.DIRECT_NUMBER_ONLY ||
+            inlineQuickAdd != null
+        ) {
+            clipText = runCatching { clipboard.getText()?.text?.trim().orEmpty() }.getOrDefault("")
+        }
     }
 
     // Strictly on-demand dictionary seek only when `def <word>` is active
@@ -371,26 +404,34 @@ private fun SleekRaycastOverlay(
 
     var results by remember {
         mutableStateOf(
-            QueryRouter.buildPaletteResults(
-                rawInput = initialQuery,
-                engines = activeEngines,
-                bookmarks = activeBookmarks,
-                contacts = emptyList(),
-                storageFiles = initialCachedFiles,
-                scopedFolderFiles = emptyList(),
-                history = history,
-                usageMap = initialUsage,
-                installedApps = initialCachedApps,
-                clipboardText = clipText,
-                prefixes = prefixes,
-                dictionaryMatches = emptyList(),
-                isDictionaryInstalled = dictInstalled,
-                whatsAppFlavor = whatsAppFlavor,
-            )
+            if (initialQuery.isBlank() && !showIdleSuggestions) {
+                emptyList()
+            } else {
+                QueryRouter.buildPaletteResults(
+                    rawInput = initialQuery,
+                    engines = activeEngines,
+                    bookmarks = activeBookmarks,
+                    contacts = initialCachedContacts,
+                    storageFiles = initialCachedFiles,
+                    scopedFolderFiles = emptyList(),
+                    history = history,
+                    usageMap = initialUsage,
+                    installedApps = initialCachedApps,
+                    clipboardText = "",
+                    prefixes = prefixes,
+                    dictionaryMatches = emptyList(),
+                    isDictionaryInstalled = dictInstalled,
+                    whatsAppFlavor = whatsAppFlavor,
+                )
+            }
         )
     }
 
-    LaunchedEffect(input.text, activeEngines, activeBookmarks, contacts, installedApps, storageFiles, scopedFiles, history, usageMap, clipText, prefixes, dictionaryMatches, dictInstalled) {
+    LaunchedEffect(input.text, showIdleSuggestions, activeEngines, activeBookmarks, contacts, installedApps, storageFiles, scopedFiles, history, usageMap, clipText, prefixes, dictionaryMatches, dictInstalled) {
+        if (input.text.isBlank() && !showIdleSuggestions) {
+            if (results.isNotEmpty()) results = emptyList()
+            return@LaunchedEffect
+        }
         val computed = withContext(Dispatchers.Default) {
             QueryRouter.buildPaletteResults(
                 rawInput = input.text,
@@ -413,13 +454,25 @@ private fun SleekRaycastOverlay(
     }
 
     LaunchedEffect(Unit) {
+        // 1. Trigger keyboard and synchronized 185ms FastOutSlowIn entrance simultaneously on Frame #1
         runCatching {
             focusRequester.requestFocus()
             keyboardController?.show()
         }
-        contacts = loadContacts()
-        installedApps = loadApps()
-        storageFiles = loadFiles(null)
+        enterAnim.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 185, easing = FastOutSlowInEasing),
+        )
+        // 2. Only load cold caches AFTER the 185ms entrance + keyboard animation is 100% finished
+        if (contacts.isEmpty() || installedApps.isEmpty() || storageFiles.isEmpty()) {
+            delay(30L)
+            val loadedContacts = if (contacts.isEmpty()) loadContacts() else contacts
+            val loadedApps = if (installedApps.isEmpty()) loadApps() else installedApps
+            val loadedFiles = if (storageFiles.isEmpty()) loadFiles(null) else storageFiles
+            contacts = loadedContacts
+            installedApps = loadedApps
+            storageFiles = loadedFiles
+        }
     }
 
     LaunchedEffect(parsedCommand.scopedFolderBookmark?.target) {
@@ -679,10 +732,23 @@ private fun SleekRaycastOverlay(
             .padding(horizontal = 14.dp, vertical = 16.dp),
         contentAlignment = if (bottomAnchored) Alignment.BottomCenter else Alignment.TopCenter,
     ) {
+        val imeFraction = (imeBottomPx.toFloat() / imeTargetRefPx).coerceIn(0f, 1f)
+        val syncProgress = maxOf(imeFraction, enterAnim.value).coerceIn(0f, 1f)
+
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = 420.dp)
+                .graphicsLayer {
+                    alpha = syncProgress
+                    translationY = (1f - syncProgress) * slideDistancePx
+                    val scale = 0.97f + (0.03f * syncProgress)
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .animateContentSize(
+                    animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)
+                )
                 .clip(shape)
                 .background(glassBg, shape)
                 .border(1.dp, glassBorder, shape)
