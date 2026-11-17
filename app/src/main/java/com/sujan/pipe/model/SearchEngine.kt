@@ -86,17 +86,25 @@ data class AppShortcutItem(
     val id: String,
     val packageName: String,
     val appLabel: String,
-    val shortcutLabel: String,
+    val shortcutLabel: String = "",
     val kind: AppShortcutKind = AppShortcutKind.STATIC_SHORTCUT,
     val targetClass: String? = null,
     val intentAction: String? = null,
     val dataUri: String? = null,
     val launcherShortcutId: String? = null,
+    val shortLabel: String = shortcutLabel,
+    val longLabel: String = when (kind) {
+        AppShortcutKind.APP_SYSTEM_INFO -> "$appLabel · Storage, permissions, battery & force stop"
+        AppShortcutKind.APP_PREFERENCES -> "$appLabel · Open in-app preferences ($packageName)"
+        else -> "$appLabel · ${shortcutLabel.ifEmpty { shortLabel }} ($packageName)"
+    },
+    val targetAction: String? = intentAction,
 ) {
+    val effectiveShortLabel: String = shortLabel.ifEmpty { shortcutLabel }
     val usageKey: String = "shortcut:$packageName:$id"
     val appLabelLower: String = appLabel.trim().lowercase()
-    val shortcutLabelLower: String = shortcutLabel.trim().lowercase()
-    val combinedLower: String = "$appLabelLower $shortcutLabelLower"
+    val shortcutLabelLower: String = effectiveShortLabel.trim().lowercase()
+    val combinedLower: String = "$appLabelLower $shortcutLabelLower ${longLabel.trim().lowercase()}"
 }
 
 /**

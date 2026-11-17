@@ -192,7 +192,7 @@ class QueryRouterTest {
                 category = "file",
             ),
             UniversalAlias(
-                targetKey = "appshortcut:appinfo:com.whatsapp",
+                targetKey = sampleShortcut.usageKey,
                 alias = "waset",
                 label = "WhatsApp · App Settings & Permissions",
                 category = "app:cfg",

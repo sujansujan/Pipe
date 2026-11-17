@@ -647,7 +647,7 @@ object DeviceIntegrationManager {
             if (launchedViaHost) return true
         }
         val launchedExplicit = runCatching {
-            val intent = Intent(item.intentAction ?: Intent.ACTION_VIEW).apply {
+            val intent = Intent(item.intentAction ?: item.targetAction ?: Intent.ACTION_VIEW).apply {
                 if (!item.dataUri.isNullOrBlank()) {
                     data = Uri.parse(item.dataUri)
                 }

@@ -263,7 +263,7 @@ class MainActivity : ComponentActivity() {
                     handleSystemOrPipeSettingShortcut(shortcut)
                 },
                 onLaunchAppShortcut = { shortcutItem ->
-                    viewModel.recordItemUsage("appshortcut:${shortcutItem.id}")
+                    viewModel.recordItemUsage(shortcutItem.usageKey)
                     DeviceIntegrationManager.launchAppShortcut(this, shortcutItem)
                 },
                 onSaveUniversalAlias = viewModel::setUniversalAlias,
