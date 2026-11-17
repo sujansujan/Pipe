@@ -1,21 +1,12 @@
 package com.sujan.pipe.ui.ascii
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxWithConstraintsScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -41,7 +32,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.Role
@@ -53,6 +43,32 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 
+/**
+ * Full-width monospace character rule (`──────────` or `· · · · ·`) with zero CSS rectangle borders.
+ */
+@Composable
+fun AsciiRule(
+    modifier: Modifier = Modifier,
+    glyph: String = "─",
+    color: Color = LocalAscii.current.border,
+) {
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val cols = rememberCols(AsciiType.small)
+        val count = (cols / glyph.length.coerceAtLeast(1)).coerceAtLeast(8)
+        AsciiText(
+            text = glyph.repeat(count).take(cols),
+            style = AsciiType.small,
+            color = color,
+            softWrap = false,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * Pure bracketed ASCII button (`[ label ]`) with zero drawn rectangle borders.
+ * Pressing inverts the text span `[ label ]` like a terminal cursor selection.
+ */
 @Composable
 fun AsciiButton(
     label: String,
@@ -72,18 +88,20 @@ fun AsciiButton(
     }
     Box(
         modifier = modifier
-            .heightIn(min = 44.dp)
-            .widthIn(min = 40.dp)
-            .background(if (pressed) ink else Color.Transparent)
+            .heightIn(min = 42.dp)
+            .widthIn(min = 38.dp)
             .clickable(interactionSource = src, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(horizontal = 3.dp),
+            .padding(horizontal = 3.dp, vertical = 2.dp),
         contentAlignment = Alignment.Center,
     ) {
         AsciiText(
-            text = "[$label]",
+            text = if (pressed) "[*$label*]" else "[$label]",
             color = if (pressed) c.bg else ink,
-            style = if (primary) AsciiType.title else AsciiType.body,
-            modifier = Modifier.clearAndSetSemantics { contentDescription = spokenLabel },
+            style = if (primary || pressed) AsciiType.title else AsciiType.body,
+            modifier = Modifier
+                .background(if (pressed) ink else Color.Transparent)
+                .padding(horizontal = 2.dp)
+                .clearAndSetSemantics { contentDescription = spokenLabel },
         )
     }
 }
@@ -108,27 +126,27 @@ fun AsciiPipePill(
 
     Box(
         modifier = modifier
-            .heightIn(min = 42.dp)
-            .background(if (inverted) ink else Color.Transparent)
-            .border(1.dp, if (selected) c.accent else c.border)
+            .heightIn(min = 40.dp)
             .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onClick)
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = 4.dp),
         contentAlignment = Alignment.Center,
     ) {
         AsciiText(
             text = display,
             color = if (inverted) c.bg else ink,
             style = if (selected) AsciiType.title else AsciiType.small,
-            modifier = Modifier.clearAndSetSemantics {
-                contentDescription = "pipe to ${name ?: keyword}, keyword $keyword"
-            },
+            modifier = Modifier
+                .background(if (inverted) ink else Color.Transparent)
+                .padding(horizontal = 2.dp)
+                .clearAndSetSemantics {
+                    contentDescription = "pipe to ${name ?: keyword}, keyword $keyword"
+                },
         )
     }
 }
 
 /**
- * Standardized full-width ASCII toggle switch row (`label ................ [ON ]` / `[OFF]`).
- * Used for every boolean setting across the entire app so toggles and switches are 100% uniform.
+ * Pure ASCII toggle row (`label ...................... [*ON*]` / `[OFF]`) with zero rectangle boxes.
  */
 @Composable
 fun AsciiToggleRow(
@@ -144,7 +162,7 @@ fun AsciiToggleRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 46.dp)
+            .heightIn(min = 44.dp)
             .toggleable(
                 value = checked,
                 role = Role.Switch,
@@ -164,31 +182,26 @@ fun AsciiToggleRow(
             )
             if (!subtitle.isNullOrBlank()) {
                 AsciiText(
-                    text = subtitle,
+                    text = "  └─ $subtitle",
                     style = AsciiType.small,
                     color = c.dim,
                 )
             }
         }
-        Box(
+        AsciiText(
+            text = if (checked) "[*ON*]" else "[ OFF]",
+            style = AsciiType.title,
+            color = if (checked) c.accent else c.dim,
             modifier = Modifier
-                .background(if (checked) c.accent else c.surface)
-                .border(1.dp, if (checked) c.accent else c.border)
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            AsciiText(
-                text = if (checked) "ON " else "OFF",
-                style = AsciiType.title,
-                color = if (checked) c.bg else c.dim,
-            )
-        }
+                .background(if (pressed) c.surface else Color.Transparent)
+                .padding(horizontal = 2.dp),
+        )
     }
 }
 
 /**
- * Standardized collapsible ASCII dropdown selector (`label   [ Selected Option v ]`).
- * Replaces sprawling radio lists (e.g. Default/Preferred Browser, Theme Mode, Palette, Corner Radius).
+ * Pure ASCII collapsible selector (`label .......... [ Selected v ]`) with tree-branch options (`├─`, `└──`).
+ * Zero drawn rectangle boxes.
  */
 @Composable
 fun <T> AsciiDropdownRow(
@@ -208,7 +221,7 @@ fun <T> AsciiDropdownRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 46.dp)
+                .heightIn(min = 44.dp)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -218,52 +231,36 @@ fun <T> AsciiDropdownRow(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(modifier = Modifier.weight(0.45f).padding(end = 8.dp)) {
+            Column(modifier = Modifier.weight(0.48f).padding(end = 6.dp)) {
                 AsciiText(text = label, style = AsciiType.body, color = c.fg)
                 if (!subtitle.isNullOrBlank()) {
-                    AsciiText(text = subtitle, style = AsciiType.small, color = c.dim)
+                    AsciiText(text = "  └─ $subtitle", style = AsciiType.small, color = c.dim)
                 }
             }
-            Row(
-                modifier = Modifier
-                    .weight(0.55f)
-                    .background(c.surface)
-                    .border(1.dp, if (expanded) c.accent else c.border)
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsciiText(
-                    text = selectedLabel,
-                    style = AsciiType.body,
-                    color = c.accent,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f),
-                )
-                AsciiText(
-                    text = if (expanded) " ^" else " v",
-                    style = AsciiType.title,
-                    color = c.accent2,
-                )
-            }
+            val arrow = if (expanded) "^" else "v"
+            AsciiText(
+                text = "[ $selectedLabel $arrow ]",
+                style = AsciiType.title,
+                color = if (expanded) c.accent2 else c.accent,
+                maxLines = 1,
+            )
         }
 
         if (expanded) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 4.dp)
-                    .background(c.surface)
-                    .border(1.dp, c.accent)
-                    .padding(vertical = 4.dp),
+                    .padding(start = 10.dp, top = 2.dp, bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                options.forEach { (optVal, optLabel) ->
+                options.forEachIndexed { idx, (optVal, optLabel) ->
                     val isSel = optVal == selectedValue
+                    val branch = if (idx == options.lastIndex) "└── " else "├─ "
+                    val mark = if (isSel) "(*)" else "( )"
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 40.dp)
-                            .background(if (isSel) c.bg else Color.Transparent)
+                            .heightIn(min = 38.dp)
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
@@ -272,11 +269,11 @@ fun <T> AsciiDropdownRow(
                                     onSelect(optVal)
                                 },
                             )
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                            .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         AsciiText(
-                            text = if (isSel) "> $optLabel" else "  $optLabel",
+                            text = "$branch$mark $optLabel",
                             style = if (isSel) AsciiType.title else AsciiType.body,
                             color = if (isSel) c.accent else c.fg,
                             maxLines = 1,
@@ -298,7 +295,7 @@ fun AsciiCheckbox(
     val c = LocalAscii.current
     Row(
         modifier = modifier
-            .heightIn(min = 48.dp)
+            .heightIn(min = 44.dp)
             .toggleable(
                 value = checked, role = Role.Checkbox, onValueChange = onChange,
                 interactionSource = remember { MutableInteractionSource() }, indication = null,
@@ -326,7 +323,7 @@ fun AsciiRadio(
     val c = LocalAscii.current
     Row(
         modifier = modifier
-            .heightIn(min = 48.dp)
+            .heightIn(min = 44.dp)
             .selectable(
                 selected = selected, role = Role.RadioButton, onClick = onClick,
                 interactionSource = remember { MutableInteractionSource() }, indication = null,
@@ -349,6 +346,10 @@ fun AsciiRadio(
     }
 }
 
+/**
+ * True Plain-Text-Sports ASCII Section Block using character box-drawing (`┌─ title ───┐` ... `└───────────┘`)
+ * instead of CSS `Modifier.border` rectangles.
+ */
 @Composable
 fun AsciiBox(
     modifier: Modifier = Modifier,
@@ -358,44 +359,51 @@ fun AsciiBox(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val c = LocalAscii.current
-    Box(modifier.fillMaxWidth()) {
+    Column(modifier = modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val cols = rememberCols(AsciiType.small)
+            val prefix = if (title != null) "+- $title " else "+-"
+            val rightPart = if (rightActionLabel != null) " [$rightActionLabel] -+" else "-+"
+            val dashCount = (cols - prefix.length - rightPart.length).coerceAtLeast(2)
+            val headerLine = prefix + "-".repeat(dashCount) + rightPart
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText(
+                    text = headerLine,
+                    style = AsciiType.small,
+                    color = c.accent2,
+                    softWrap = false,
+                    maxLines = 1,
+                    modifier = if (rightActionLabel != null && onRightAction != null) {
+                        Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            role = Role.Button,
+                            onClick = onRightAction,
+                        )
+                    } else Modifier,
+                )
+            }
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 10.dp)
-                .border(1.dp, c.border)
-                .padding(start = 12.dp, top = 16.dp, end = 12.dp, bottom = 12.dp),
+                .padding(horizontal = 6.dp, vertical = 6.dp),
             content = content,
         )
-        if (title != null) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val cols = rememberCols(AsciiType.small)
+            val bottomLine = "+" + "-".repeat((cols - 2).coerceAtLeast(6)) + "+"
             AsciiText(
-                text = " $title ",
-                modifier = Modifier.padding(start = 10.dp).background(c.bg),
+                text = bottomLine,
                 style = AsciiType.small,
-                color = c.accent2,
+                color = c.border,
+                softWrap = false,
+                maxLines = 1,
             )
-        }
-        if (rightActionLabel != null && onRightAction != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(end = 10.dp)
-                    .background(c.bg)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        role = Role.Button,
-                        onClick = onRightAction,
-                    )
-                    .padding(horizontal = 4.dp),
-            ) {
-                AsciiText(
-                    text = "[$rightActionLabel]",
-                    style = AsciiType.small,
-                    color = c.accent,
-                    modifier = Modifier.clearAndSetSemantics { contentDescription = rightActionLabel },
-                )
-            }
         }
     }
 }
@@ -415,13 +423,16 @@ fun AsciiTopHeader(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AsciiText(text = path, style = AsciiType.title, color = c.accent2)
+            AsciiText(text = "+- $path", style = AsciiType.title, color = c.accent2)
             Row(verticalAlignment = Alignment.CenterVertically) { actions() }
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        AsciiRule(glyph = "═", color = c.border, modifier = Modifier.padding(horizontal = 6.dp))
     }
 }
 
+/**
+ * Pure terminal prompt text field (`label:` / `> input_here` / `────────────`) with zero 4-sided rectangle borders.
+ */
 @Composable
 fun AsciiTextField(
     label: String?,
@@ -437,20 +448,17 @@ fun AsciiTextField(
     trailingControl: (@Composable () -> Unit)? = null,
 ) {
     val c = LocalAscii.current
-    val borderCol = if (errorText != null) c.error else c.accent
+    val ruleCol = if (errorText != null) c.error else c.border
 
-    Column(modifier = modifier.fillMaxWidth()) {
+    Column(modifier = modifier.fillMaxWidth().padding(vertical = 2.dp)) {
         if (label != null) {
-            AsciiText(text = "$label:", style = AsciiType.small, color = c.dim)
-            Spacer(Modifier.height(4.dp))
+            AsciiText(text = ":: $label", style = AsciiType.small, color = c.dim)
         }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 48.dp)
-                .background(c.surface)
-                .border(1.dp, borderCol)
-                .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                .heightIn(min = 42.dp)
+                .padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             AsciiText(
@@ -486,8 +494,9 @@ fun AsciiTextField(
                 trailingControl()
             }
         }
+        AsciiRule(glyph = "-", color = ruleCol)
         if (errorText != null) {
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(2.dp))
             AsciiText(text = errorText, style = AsciiType.small, color = c.error)
         }
     }
@@ -501,18 +510,20 @@ fun AsciiUndoBanner(
     modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(c.surface)
-            .border(1.dp, c.warn)
-            .padding(horizontal = 10.dp, vertical = 2.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AsciiText(text = message, style = AsciiType.small, color = c.warn, modifier = Modifier.weight(1f))
-        AsciiButton(label = "undo", onClick = onUndo, primary = true, spokenLabel = "undo $message")
-        AsciiButton(label = "x", onClick = onDismiss, spokenLabel = "dismiss")
+    Column(modifier = modifier.fillMaxWidth()) {
+        AsciiRule(glyph = "=", color = c.warn)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AsciiText(text = "! $message", style = AsciiType.small, color = c.warn, modifier = Modifier.weight(1f))
+            AsciiButton(label = "undo", onClick = onUndo, primary = true, spokenLabel = "undo $message")
+            AsciiButton(label = "x", onClick = onDismiss, spokenLabel = "dismiss")
+        }
+        AsciiRule(glyph = "=", color = c.warn)
     }
 }
 
@@ -528,10 +539,6 @@ fun leader(key: String, value: String, cols: Int): String {
     return "$key " + ".".repeat(dots) + " $value"
 }
 
-/**
- * Draws a full-width ASCII box-drawing horizontal divider line:
- * `├─ label ─────────────────────────────── rightMeta ─┤`
- */
 @Composable
 fun AsciiFrameDivider(
     leftLabel: String,
@@ -541,7 +548,6 @@ fun AsciiFrameDivider(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(c.surface)
             .padding(horizontal = 8.dp, vertical = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,

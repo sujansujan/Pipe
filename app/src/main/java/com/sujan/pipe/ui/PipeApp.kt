@@ -91,6 +91,7 @@ import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.model.SystemSettingShortcut
 import com.sujan.pipe.model.WhatsAppFlavor
 import com.sujan.pipe.ui.ascii.AsciiBox
+import com.sujan.pipe.ui.ascii.AsciiRule
 import com.sujan.pipe.ui.ascii.AsciiButton
 import com.sujan.pipe.ui.ascii.AsciiDropdownRow
 import com.sujan.pipe.ui.ascii.AsciiToggleRow
@@ -668,23 +669,24 @@ fun AsciiScopeChip(
     val highlighted = active || pressed
     Box(
         modifier = modifier
-            .heightIn(min = 44.dp)
-            .background(if (highlighted) c.accent else c.bg)
-            .border(1.dp, if (highlighted) c.accent else c.border)
+            .heightIn(min = 40.dp)
             .clickable(
                 interactionSource = src,
                 indication = null,
                 role = Role.Button,
                 onClick = onClick,
             )
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = 2.dp, vertical = 2.dp),
         contentAlignment = Alignment.Center,
     ) {
         AsciiText(
-            text = if (active) "[$label*]" else "[$label]",
+            text = if (active) "[*$label*]" else "[$label]",
             style = if (active) AsciiType.title else AsciiType.body,
-            color = if (highlighted) c.bg else c.fg,
+            color = if (highlighted) c.bg else if (active) c.accent else c.dim,
             maxLines = 1,
+            modifier = Modifier
+                .background(if (highlighted) c.accent else Color.Transparent)
+                .padding(horizontal = 3.dp, vertical = 1.dp),
         )
     }
 }
@@ -792,8 +794,7 @@ fun AsciiRaycastPaletteWindow(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(c.bg)
-            .border(1.dp, c.border),
+            .background(c.bg),
     ) {
         Row(
             modifier = Modifier
@@ -814,7 +815,7 @@ fun AsciiRaycastPaletteWindow(
             }
         }
 
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        AsciiRule(glyph = "-", color = c.border)
 
         if (!hasContactsPermission && parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY && onRequestContactsPermission != null) {
             Row(
@@ -828,7 +829,7 @@ fun AsciiRaycastPaletteWindow(
                 AsciiText("! contacts permission needed for `${prefixes.contactsClean}:`", style = AsciiType.small, color = c.warn)
                 AsciiButton("grant", onRequestContactsPermission, primary = true)
             }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+            AsciiRule(glyph = "-", color = c.border)
         }
         if (!hasFilesPermission && (parsedCommand.mode == PromptIntentMode.FILES_ONLY || parsedCommand.mode == PromptIntentMode.DIRS_ONLY || parsedCommand.mode == PromptIntentMode.SCOPED_FOLDER) && onRequestFilesPermission != null) {
             Row(
@@ -842,7 +843,7 @@ fun AsciiRaycastPaletteWindow(
                 AsciiText("! storage access needed for `${prefixes.filesClean}:` / `dl:`", style = AsciiType.small, color = c.warn)
                 AsciiButton("grant", onRequestFilesPermission, primary = true)
             }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+            AsciiRule(glyph = "-", color = c.border)
         }
 
         if (inlineQuickAdd != null) {
@@ -858,7 +859,7 @@ fun AsciiRaycastPaletteWindow(
                 onCancel = onDismissInlineQuickAdd,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
             )
-            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+            AsciiRule(glyph = "-", color = c.border)
         }
 
         LazyColumn(
@@ -924,7 +925,7 @@ fun AsciiRaycastPaletteWindow(
         }
 
         if (launchError != null) {
-            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+            AsciiRule(glyph = "-", color = c.border)
             AsciiText(
                 text = "  $launchError",
                 style = AsciiType.small,
@@ -936,7 +937,7 @@ fun AsciiRaycastPaletteWindow(
             )
         }
 
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        AsciiRule(glyph = "-", color = c.border)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -961,7 +962,7 @@ fun AsciiRaycastPaletteWindow(
             }
         }
 
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        AsciiRule(glyph = "-", color = c.border)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1132,7 +1133,6 @@ fun AsciiDictionaryDetailDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(c.bg)
-                .border(1.dp, c.accent)
                 .padding(14.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -1160,7 +1160,7 @@ fun AsciiDictionaryDetailDialog(
                 AsciiButton("x", onDismiss)
             }
 
-            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+            AsciiRule(glyph = "-", color = c.border)
 
             AsciiText(
                 text = entry.definition,
@@ -1183,7 +1183,7 @@ fun AsciiDictionaryDetailDialog(
                 )
             }
 
-            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+            AsciiRule(glyph = "-", color = c.border)
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1220,8 +1220,7 @@ fun AsciiContactAvatar(
         modifier = modifier
             .padding(end = 6.dp)
             .size(34.dp)
-            .background(c.surface)
-            .border(1.dp, c.good),
+            .background(c.surface),
         contentAlignment = Alignment.Center,
     ) {
         if (bmp != null) {
@@ -1252,14 +1251,11 @@ fun AsciiLivePreviewLine(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 38.dp)
-            .background(c.bg)
-            .border(1.dp, if (isValid) c.accent else c.border)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         AsciiText(
-            text = previewText,
+            text = "└─> $previewText",
             style = AsciiType.small,
             color = if (isValid) c.accent else c.dim,
             maxLines = 1,
@@ -1345,7 +1341,6 @@ fun QuickAddInlineCard(
         modifier = modifier
             .fillMaxWidth()
             .background(c.surface)
-            .border(1.dp, c.accent)
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -1392,7 +1387,7 @@ fun QuickAddInlineCard(
             }
         }
 
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        AsciiRule(glyph = "-", color = c.border)
 
         when (activeKind) {
             QuickAddKind.CONTACT -> {
@@ -1577,7 +1572,7 @@ fun QuickAddInlineCard(
                 }
 
                 if (existingBookmarks.isNotEmpty()) {
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                    AsciiRule(glyph = "-", color = c.border)
                     AsciiText("saved bookmarks ([edit] or [x] delete):", style = AsciiType.small, color = c.dim)
                     Column(
                         modifier = Modifier
@@ -1720,7 +1715,7 @@ fun QuickAddInlineCard(
                 }
 
                 if (existingEngines.isNotEmpty()) {
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                    AsciiRule(glyph = "-", color = c.border)
                     AsciiText("saved search pipes ([edit] or [x] delete):", style = AsciiType.small, color = c.dim)
                     Column(
                         modifier = Modifier
@@ -1778,7 +1773,6 @@ fun AsciiThumbnailBadge(
             modifier = Modifier
                 .padding(end = 6.dp)
                 .size(34.dp)
-                .border(1.dp, c.accent2)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -1814,7 +1808,6 @@ fun AsciiImagePreviewDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(c.bg)
-                .border(1.dp, c.accent)
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -1825,8 +1818,7 @@ fun AsciiImagePreviewDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 180.dp, max = 320.dp)
-                        .border(1.dp, c.border),
+                        .heightIn(min = 180.dp, max = 320.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Image(
@@ -1863,20 +1855,17 @@ fun AsciiKindBadge(
     modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
+    val bracketed = "[${tag.take(6)}]".padEnd(8, ' ')
     Box(
-        modifier = modifier
-            .width(58.dp)
-            .heightIn(min = 26.dp)
-            .background(if (inverted) c.bg else c.surface)
-            .border(1.dp, if (inverted) c.bg else color)
-            .padding(horizontal = 4.dp, vertical = 2.dp),
-        contentAlignment = Alignment.Center,
+        modifier = modifier.width(64.dp),
+        contentAlignment = Alignment.CenterStart,
     ) {
         AsciiText(
-            text = tag,
+            text = bracketed,
             style = AsciiType.small,
-            color = color,
+            color = if (inverted) c.bg else color,
             maxLines = 1,
+            softWrap = false,
         )
     }
 }
@@ -2301,32 +2290,31 @@ fun AsciiSheetActionRow(
         isPrimary -> c.accent
         else -> c.fg
     }
+    val ptr = if (isPrimary) "|>" else "  "
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .background(if (pressed) ink else c.surface)
-            .border(1.dp, if (isDestructive) c.error else if (isPrimary) c.accent else c.border)
+            .heightIn(min = 42.dp)
+            .background(if (pressed) ink else Color.Transparent)
             .clickable(
                 interactionSource = src,
                 indication = null,
                 role = Role.Button,
                 onClick = onClick,
             )
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+            .padding(horizontal = 6.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         AsciiText(
-            text = "[$tag]",
+            text = "$ptr [${tag.take(6)}]".padEnd(11, ' '),
             style = AsciiType.title,
             color = if (pressed) c.bg else ink,
             maxLines = 1,
+            softWrap = false,
         )
-        Spacer(Modifier.width(10.dp))
         AsciiText(
             text = label,
-            style = AsciiType.body,
+            style = if (isPrimary) AsciiType.title else AsciiType.body,
             color = if (pressed) c.bg else ink,
             maxLines = 1,
             modifier = Modifier.weight(1f),
@@ -2375,7 +2363,6 @@ fun AsciiResultActionSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(c.bg)
-                    .border(1.dp, c.accent)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -2401,7 +2388,7 @@ fun AsciiResultActionSheet(
                             }
                             AsciiButton("x", onDismiss)
                         }
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiRule(glyph = "-", color = c.border)
                         AsciiSheetActionRow("wa", "Open in WhatsApp (Personal)", { onExecuteDirectNumber(item, DirectNumberPrimaryMode.WHATSAPP_PERSONAL) }, isPrimary = item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_PERSONAL)
                         AsciiSheetActionRow("wa.b", "Open in WhatsApp Business", { onExecuteDirectNumber(item, DirectNumberPrimaryMode.WHATSAPP_BUSINESS) }, isPrimary = item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_BUSINESS)
                         AsciiSheetActionRow("call", "Dial ${item.rawPhone}", { onExecuteDirectNumber(item, DirectNumberPrimaryMode.CALL) })
@@ -2425,7 +2412,7 @@ fun AsciiResultActionSheet(
                             }
                             AsciiButton("x", onDismiss)
                         }
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiRule(glyph = "-", color = c.border)
                         AsciiSheetActionRow("open", "Open ${item.targetUrl}", onPrimaryExecute, isPrimary = true)
                         AsciiSheetActionRow("copy", "Copy clean URL", { onCopyText(QueryRouter.stripTrackingParams(item.targetUrl)) })
                     }
@@ -2448,7 +2435,7 @@ fun AsciiResultActionSheet(
                                 }
                                 AsciiButton("x", onDismiss)
                             }
-                            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                            AsciiRule(glyph = "-", color = c.border)
                             AsciiSheetActionRow("view", "View full definition card", onPrimaryExecute, isPrimary = true)
                             AsciiSheetActionRow("copy", "Copy definition", { onCopyText("${entry.word} (${entry.partOfSpeech}): ${entry.definition}") })
                         } else {
@@ -2473,7 +2460,7 @@ fun AsciiResultActionSheet(
                             }
                             AsciiButton("x", onDismiss)
                         }
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiRule(glyph = "-", color = c.border)
                         AsciiSheetActionRow("call", "Call ${contact.phoneNumber}", { onCallContact(contact) }, isPrimary = true)
                         AsciiSheetActionRow("sms", "Send SMS to ${contact.displayName}", { onSmsContact(contact) })
                         AsciiSheetActionRow("wa", "Message on WhatsApp (Personal)", { onWhatsAppContact(contact) })
@@ -2504,7 +2491,7 @@ fun AsciiResultActionSheet(
                             }
                             AsciiButton("x", onDismiss)
                         }
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiRule(glyph = "-", color = c.border)
                         AsciiSheetActionRow("open", "Open ${bm.title}", onPrimaryExecute, isPrimary = true)
                         if (bm.kind == BookmarkKind.FOLDER && bm.alias.isNotBlank()) {
                             AsciiSheetActionRow("ls", "Scope inside folder ($bPre ${bm.alias})", { onScopeFolder("$bPre ${bm.alias}") })
@@ -2533,7 +2520,7 @@ fun AsciiResultActionSheet(
                             }
                             AsciiButton("x", onDismiss)
                         }
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiRule(glyph = "-", color = c.border)
                         AsciiSheetActionRow("open", "Open ${f.name}", onPrimaryExecute, isPrimary = true)
                         if (f.isDirectory) {
                             AsciiSheetActionRow("ls", "Filter inside folder ($fPre ${f.name})", { onScopeFolder("$fPre ${f.name}") })
@@ -2565,7 +2552,7 @@ fun AsciiResultActionSheet(
                             }
                             AsciiButton("x", onDismiss)
                         }
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiRule(glyph = "-", color = c.border)
                         AsciiSheetActionRow(
                             tag = "open",
                             label = if (item.isHome) "Open ${eng.name} home" else "Pipe \"${item.query}\" to ${eng.name}",
@@ -2595,7 +2582,7 @@ fun AsciiResultActionSheet(
                             }
                             AsciiButton("x", onDismiss)
                         }
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiRule(glyph = "-", color = c.border)
                         AsciiSheetActionRow("open", "Launch ${app.label}", onPrimaryExecute, isPrimary = true)
                         AsciiSheetActionRow("info", "Open Android App Info", { onAppInfoInstalledApp(app) })
                         AsciiSheetActionRow("copy", "Copy package name", { onCopyText(app.packageName) })
@@ -2619,7 +2606,7 @@ fun AsciiResultActionSheet(
                             }
                             AsciiButton("x", onDismiss)
                         }
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                        AsciiRule(glyph = "-", color = c.border)
                         AsciiSheetActionRow("open", "Re-run \"${h.rawInput}\"", onPrimaryExecute, isPrimary = true)
                         AsciiSheetActionRow("copy", "Copy query text", { onCopyText(h.rawInput) })
                         AsciiSheetActionRow("delete", "Delete from history", { onDeleteHistory(h) }, isDestructive = true)
@@ -2728,7 +2715,7 @@ fun PipeLibraryScreen(
                 )
             }
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        AsciiRule(glyph = "-", color = c.border)
 
         when (activeTab) {
             LibraryTab.PIPES -> {
@@ -2756,7 +2743,6 @@ fun PipeLibraryScreen(
                                 .fillMaxWidth()
                                 .heightIn(min = 52.dp)
                                 .background(if (isDragging) c.surface else c.bg)
-                                .border(1.dp, if (eng.isDefault || isDragging) c.accent else c.border)
                                 .combinedClickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null,
@@ -2851,7 +2837,7 @@ fun PipeLibraryScreen(
                     }
                 }
 
-                Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                AsciiRule(glyph = "-", color = c.border)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2864,8 +2850,7 @@ fun PipeLibraryScreen(
                         primary = true,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 46.dp)
-                            .border(1.dp, c.accent),
+                            .heightIn(min = 46.dp),
                         spokenLabel = "add pipe",
                     )
                 }
@@ -2896,7 +2881,6 @@ fun PipeLibraryScreen(
                                 .fillMaxWidth()
                                 .heightIn(min = 52.dp)
                                 .background(c.bg)
-                                .border(1.dp, c.border)
                                 .combinedClickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null,
@@ -2936,7 +2920,7 @@ fun PipeLibraryScreen(
                     }
                 }
 
-                Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                AsciiRule(glyph = "-", color = c.border)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2949,8 +2933,7 @@ fun PipeLibraryScreen(
                         primary = true,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 46.dp)
-                            .border(1.dp, c.accent),
+                            .heightIn(min = 46.dp),
                         spokenLabel = "add bookmark",
                     )
                 }
@@ -2980,7 +2963,6 @@ fun PipeLibraryScreen(
                                     .fillMaxWidth()
                                     .heightIn(min = 52.dp)
                                     .background(c.bg)
-                                    .border(1.dp, c.border)
                                     .combinedClickable(
                                         interactionSource = remember { MutableInteractionSource() },
                                         indication = null,
@@ -3021,7 +3003,7 @@ fun PipeLibraryScreen(
                     }
                 }
 
-                Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                AsciiRule(glyph = "-", color = c.border)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -3034,8 +3016,7 @@ fun PipeLibraryScreen(
                         enabled = history.isNotEmpty(),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 46.dp)
-                            .border(1.dp, if (history.isNotEmpty()) c.error else c.border),
+                            .heightIn(min = 46.dp),
                         spokenLabel = "clear history",
                     )
                 }
@@ -3060,7 +3041,6 @@ fun PipeLibraryScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(c.bg)
-                        .border(1.dp, c.accent)
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
@@ -3087,7 +3067,7 @@ fun PipeLibraryScreen(
                                 }
                                 AsciiButton("x", { sheetTarget = null })
                             }
-                            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                            AsciiRule(glyph = "-", color = c.border)
                             if (!eng.isDefault) {
                                 AsciiSheetActionRow("default", "Set as default pipe (*)", {
                                     sheetTarget = null
@@ -3129,7 +3109,7 @@ fun PipeLibraryScreen(
                                 }
                                 AsciiButton("x", { sheetTarget = null })
                             }
-                            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                            AsciiRule(glyph = "-", color = c.border)
                             AsciiSheetActionRow("open", "Open ${bm.title}", {
                                 sheetTarget = null
                                 onOpenBookmark(bm)
@@ -3165,7 +3145,7 @@ fun PipeLibraryScreen(
                                 }
                                 AsciiButton("x", { sheetTarget = null })
                             }
-                            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+                            AsciiRule(glyph = "-", color = c.border)
                             AsciiSheetActionRow("open", "Re-run query", {
                                 sheetTarget = null
                                 onRerunHistory(entry)
@@ -3195,7 +3175,6 @@ fun PipeLibraryScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(c.bg)
-                    .border(1.dp, c.accent2)
                     .padding(12.dp)
                     .verticalScroll(rememberScrollState())
                     .imePadding(),
@@ -3257,7 +3236,6 @@ fun PipeLibraryScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(c.bg)
-                    .border(1.dp, c.accent2)
                     .padding(12.dp)
                     .verticalScroll(rememberScrollState())
                     .imePadding(),
@@ -3344,21 +3322,21 @@ fun AsciiSliderRow(
             .fillMaxWidth()
             .padding(vertical = 4.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            AsciiText(text = label, style = AsciiType.body, color = c.fg)
-            AsciiText(text = "$pct%", style = AsciiType.title, color = c.accent)
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val cols = rememberCols(AsciiType.small)
+            AsciiText(
+                text = leader(label, "$pct%", cols),
+                style = AsciiType.body,
+                color = c.fg,
+                softWrap = false,
+                maxLines = 1,
+            )
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(2.dp))
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 44.dp)
-                .background(c.surface)
-                .border(1.dp, c.border)
+                .heightIn(min = 38.dp)
                 .pointerInput(valueRange.start, valueRange.endInclusive) {
                     detectTapGestures { offset ->
                         val w = size.width.toFloat().coerceAtLeast(1f)
@@ -3373,13 +3351,12 @@ fun AsciiSliderRow(
                         val newFrac = (change.position.x / w).coerceIn(0f, 1f)
                         onValueChange(valueRange.start + newFrac * rangeSpan)
                     }
-                }
-                .padding(horizontal = 8.dp),
+                },
             contentAlignment = Alignment.CenterStart,
         ) {
-            val totalCells = (rememberCols(AsciiType.body) - 4).coerceIn(10, 36)
+            val totalCells = (rememberCols(AsciiType.body) - 2).coerceIn(10, 42)
             val filledCells = (fraction * totalCells).toInt().coerceIn(0, totalCells)
-            val bar = "[" + "#".repeat(filledCells) + "-".repeat(totalCells - filledCells) + "]"
+            val bar = "[" + "#".repeat(filledCells) + ".".repeat(totalCells - filledCells) + "]"
             AsciiText(
                 text = bar,
                 style = AsciiType.title,
@@ -3398,23 +3375,35 @@ fun AsciiDangerBox(
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
     val c = LocalAscii.current
-    Box(modifier.fillMaxWidth()) {
+    Column(modifier = modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val cols = rememberCols(AsciiType.small)
+            val prefix = "+- ! $title "
+            val dashCount = (cols - prefix.length - 1).coerceAtLeast(2)
+            AsciiText(
+                text = prefix + "-".repeat(dashCount) + "+",
+                style = AsciiType.title,
+                color = c.error,
+                softWrap = false,
+                maxLines = 1,
+            )
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 10.dp)
-                .border(1.dp, c.error)
-                .padding(start = 12.dp, top = 16.dp, end = 12.dp, bottom = 12.dp),
+                .padding(horizontal = 6.dp, vertical = 6.dp),
             content = content,
         )
-        AsciiText(
-            text = " ! $title ",
-            modifier = Modifier
-                .padding(start = 10.dp)
-                .background(c.bg),
-            style = AsciiType.title,
-            color = c.error,
-        )
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val cols = rememberCols(AsciiType.small)
+            AsciiText(
+                text = "+" + "-".repeat((cols - 2).coerceAtLeast(6)) + "+",
+                style = AsciiType.small,
+                color = c.error,
+                softWrap = false,
+                maxLines = 1,
+            )
+        }
     }
 }
 
@@ -3521,7 +3510,7 @@ private fun PipeSettingsScreen(
                 }
             }
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        AsciiRule(glyph = "-", color = c.border)
 
         Column(
             modifier = Modifier
@@ -3589,12 +3578,12 @@ private fun PipeSettingsScreen(
                                 label = "launch overlay",
                                 onClick = onLaunchOverlayPreview,
                                 primary = true,
-                                modifier = Modifier.weight(1f).border(1.dp, c.accent),
+                                modifier = Modifier.weight(1f),
                             )
                             AsciiButton(
                                 label = "+ pin shortcut",
                                 onClick = onPinOverlayShortcut,
-                                modifier = Modifier.weight(1f).border(1.dp, c.border),
+                                modifier = Modifier.weight(1f),
                             )
                         }
                     }
@@ -3658,8 +3647,7 @@ private fun PipeSettingsScreen(
                                 primary = !state.hasFilesPermission,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .heightIn(min = 46.dp)
-                                    .border(1.dp, if (state.hasFilesPermission) c.good else c.warn),
+                                    .heightIn(min = 46.dp),
                             )
                             AsciiButton(
                                 label = if (state.hasContactsPermission) "contacts: ok" else "! grant contacts",
@@ -3667,8 +3655,7 @@ private fun PipeSettingsScreen(
                                 primary = !state.hasContactsPermission,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .heightIn(min = 46.dp)
-                                    .border(1.dp, if (state.hasContactsPermission) c.good else c.warn),
+                                    .heightIn(min = 46.dp),
                             )
                         }
                         Spacer(Modifier.height(8.dp))
@@ -3678,8 +3665,7 @@ private fun PipeSettingsScreen(
                             primary = true,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 46.dp)
-                                .border(1.dp, c.accent),
+                                .heightIn(min = 46.dp),
                         )
                     }
 
@@ -3715,8 +3701,7 @@ private fun PipeSettingsScreen(
                                 primary = true,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .heightIn(min = 46.dp)
-                                    .border(1.dp, c.accent),
+                                    .heightIn(min = 46.dp),
                             )
                             AsciiButton(
                                 label = "scan Download/",
@@ -3724,8 +3709,7 @@ private fun PipeSettingsScreen(
                                 enabled = !state.isDictionaryIndexing,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .heightIn(min = 46.dp)
-                                    .border(1.dp, c.border),
+                                    .heightIn(min = 46.dp),
                             )
                         }
                         if (state.isDictionaryInstalled) {
@@ -3735,8 +3719,7 @@ private fun PipeSettingsScreen(
                                 onClick = onRemoveDictionaryClick,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(min = 42.dp)
-                                    .border(1.dp, c.error),
+                                    .heightIn(min = 42.dp),
                             )
                         }
                         if (state.jsonStatusMessage != null) {
@@ -3779,8 +3762,7 @@ private fun PipeSettingsScreen(
                             primary = true,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 46.dp)
-                                .border(1.dp, c.accent),
+                                .heightIn(min = 46.dp),
                         )
                     }
 
@@ -3811,7 +3793,7 @@ private fun PipeSettingsScreen(
                                 AsciiButton(
                                     label = "$folderName x",
                                     onClick = { onRemoveExcludedFolder(folderName) },
-                                    modifier = Modifier.border(1.dp, c.border),
+                                    modifier = Modifier,
                                 )
                             }
                         }
@@ -4028,8 +4010,7 @@ private fun PipeSettingsScreen(
                             onClick = onResetPrefixConfig,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 44.dp)
-                                .border(1.dp, c.border),
+                                .heightIn(min = 44.dp),
                         )
                     }
 
@@ -4077,8 +4058,7 @@ private fun PipeSettingsScreen(
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 46.dp)
-                                .border(1.dp, c.border),
+                                .heightIn(min = 46.dp),
                         )
                         if (state.jsonStatusMessage != null) {
                             Spacer(Modifier.height(4.dp))
@@ -4107,12 +4087,12 @@ private fun PipeSettingsScreen(
                                 AsciiButton(
                                     label = "export file",
                                     onClick = onExportJsonToFile,
-                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp).border(1.dp, c.border),
+                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp),
                                 )
                                 AsciiButton(
                                     label = "import file",
                                     onClick = onImportJsonFromFile,
-                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp).border(1.dp, c.border),
+                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp),
                                 )
                             }
                             Row(
@@ -4122,12 +4102,12 @@ private fun PipeSettingsScreen(
                                 AsciiButton(
                                     label = "copy json",
                                     onClick = onOpenJsonExportDialog,
-                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp).border(1.dp, c.border),
+                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp),
                                 )
                                 AsciiButton(
                                     label = "paste json",
                                     onClick = onOpenJsonImportDialog,
-                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp).border(1.dp, c.border),
+                                    modifier = Modifier.weight(1f).heightIn(min = 46.dp),
                                 )
                             }
                         }
@@ -4155,7 +4135,6 @@ private fun PipeSettingsScreen(
                                 .fillMaxWidth()
                                 .heightIn(min = 48.dp)
                                 .background(if (pressed) c.error else c.surface)
-                                .border(1.dp, c.error)
                                 .clickable(
                                     interactionSource = src,
                                     indication = null,
@@ -4176,7 +4155,7 @@ private fun PipeSettingsScreen(
                         BoxWithConstraints(Modifier.fillMaxWidth()) {
                             val cols = rememberCols(AsciiType.small)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                AsciiText("pipe v2.4 (release)", style = AsciiType.title, color = c.accent)
+                                AsciiText("pipe v2.5 (release)", style = AsciiType.title, color = c.accent)
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
                                 AsciiText(leader("system settings", "${state.prefixConfig.systemSettingsClean} <dev|spot|dns|notif>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("whatsapp / biz", "wa <num> / wab <num>", cols), style = AsciiType.small, color = c.good, softWrap = false)
@@ -4203,7 +4182,7 @@ private fun PipeSettingsScreen(
 
         Dialog(onDismissRequest = onCloseJsonDialog) {
             Column(
-                modifier = Modifier.fillMaxWidth().background(c.bg).border(1.dp, c.accent).padding(12.dp).imePadding(),
+                modifier = Modifier.fillMaxWidth().background(c.bg).padding(12.dp).imePadding(),
             ) {
                 AsciiBox(title = if (state.jsonDialogMode == JsonDialogMode.EXPORT) "export full v2 json" else "import full v2 json") {
                     AsciiTextField(
