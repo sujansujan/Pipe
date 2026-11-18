@@ -1282,7 +1282,7 @@ private fun SleekOverlayRow(
 
         is PaletteItem.AppShortcutAction -> {
             val sc = item.shortcut
-            val dispTitle = "${sc.appLabel} · ${sc.shortLabel}$aliasSuffix"
+            val dispTitle = "${sc.appLabel} - ${sc.shortLabel}$aliasSuffix"
             val titleAnn = remember(dispTitle, highlightQuery, pressed, c.fg, c.accent, c.bg) {
                 buildFzfHighlightedText(dispTitle, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
             }
@@ -1314,7 +1314,7 @@ private fun SleekOverlayRow(
 
         is PaletteItem.DirectNumberAction -> {
             val titleText = "${item.primaryMode.label}: +${item.normalizedWhatsAppDigits}"
-            val subText = if (item.messageText.isNotBlank()) "msg: \"${item.messageText}\" · raw: ${item.rawPhone}" else "choose [wa], [wa.b], [call], [sms], or [+c]"
+            val subText = if (item.messageText.isNotBlank()) "msg: \"${item.messageText}\" - raw: ${item.rawPhone}" else "choose [wa], [wa.b], [call], [sms], or [+c]"
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1458,7 +1458,7 @@ private fun SleekOverlayRow(
             val titleAnn = remember(dispName, highlightQuery, pressed, c.fg, c.accent, c.bg) {
                 buildFzfHighlightedText(dispName, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
             }
-            val subText = "${f.parentName} · ${f.formattedSize}"
+            val subText = "${f.parentName} - ${f.formattedSize}"
             val subAnn = remember(subText, highlightQuery, pressed, c.dim, c.accent2, c.bg) {
                 buildFzfHighlightedText(subText, highlightQuery, if (pressed) c.bg else c.dim, if (pressed) c.bg else c.accent2)
             }
@@ -1525,7 +1525,7 @@ private fun SleekOverlayRow(
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
                         if (expandedFolderChildren.isEmpty()) {
-                            AsciiText("└── (empty folder)", style = AsciiType.small, color = c.dim)
+                            AsciiText("`-- (empty folder)", style = AsciiType.small, color = c.dim)
                         } else {
                             expandedFolderChildren.take(8).forEach { child ->
                                 Row(
@@ -1548,7 +1548,7 @@ private fun SleekOverlayRow(
                                         )
                                     }
                                     AsciiText(
-                                        text = "├─ ${child.name}",
+                                        text = "|-- ${child.name}",
                                         style = AsciiType.small,
                                         color = if (child.isDirectory) c.warn else c.fg,
                                         maxLines = 1,
@@ -1641,7 +1641,7 @@ private fun SleekOverlayRow(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 AsciiText(
-                                    text = "├─ ${child.name}",
+                                    text = "|-- ${child.name}",
                                     style = AsciiType.small,
                                     color = if (child.isDirectory) c.warn else c.fg,
                                     maxLines = 1,

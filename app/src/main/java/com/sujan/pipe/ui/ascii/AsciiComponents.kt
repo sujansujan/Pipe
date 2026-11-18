@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -24,6 +25,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,8 +34,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -42,22 +47,114 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.delay
+import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
- * Full-width monospace character rule (`──────────` or `· · · · ·`) with zero CSS rectangle borders.
+ * Section 5 of `ascii-app`:
+ * `CellGrid` measures `"0"` in the single monospace font and passes the exact column count `cols` to content.
+ */
+@Composable
+fun CellGrid(
+    modifier: Modifier = Modifier,
+    content: @Composable (cols: Int) -> Unit,
+) {
+    val c = LocalAscii.current
+    val measurer = rememberTextMeasurer()
+    val style = AsciiType.body
+    val cellPx = remember(style) { measurer.measure("0", style).size.width.coerceAtLeast(1) }
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxSize()
+            .background(c.bg),
+    ) {
+        val cols = (constraints.maxWidth / cellPx).coerceAtLeast(24)
+        content(cols)
+    }
+}
+
+/**
+ * Section 5 of `ascii-app`:
+ * `fun rule(cols: Int, ch: Char = '-') = ch.toString().repeat(cols)`
+ */
+fun rule(cols: Int, ch: Char = '-'): String = ch.toString().repeat(cols.coerceAtLeast(8))
+
+/**
+ * Section 5 of `ascii-app`:
+ * `fun row(cols: Int, left: String, right: String): String`
+ * Right-aligned column with ASCII `~` truncation when `left` exceeds available cell width.
+ */
+fun row(cols: Int, left: String, right: String): String {
+    val safeCols = cols.coerceAtLeast(right.length + 4)
+    val availLeft = (safeCols - right.length - 1).coerceAtLeast(1)
+    val l = if (left.length > availLeft) {
+        left.take((availLeft - 1).coerceAtLeast(1)) + "~"
+    } else {
+        left
+    }
+    return l.padEnd((safeCols - right.length).coerceAtLeast(l.length), ' ') + right
+}
+
+/**
+ * Section 5 of `ascii-app`:
+ * `fun bar(frac: Float, width: Int): String`
+ */
+fun bar(frac: Float, width: Int): String {
+    val safeWidth = width.coerceAtLeast(6)
+    val n = ((safeWidth - 2) * frac.coerceIn(0f, 1f)).roundToInt().coerceIn(0, safeWidth - 2)
+    return "[" + "#".repeat(n) + "-".repeat(safeWidth - 2 - n) + "]"
+}
+
+/**
+ * Section 5 of `ascii-app`:
+ * `fun money(minor: Long): String = "%+,.2f".format(minor / 100.0)`
+ */
+fun money(minor: Long): String = String.format(Locale.US, "%+,.2f", minor / 100.0)
+
+/**
+ * Stepped blinking `_` caret (`530ms` step interval; static `_` when reduced motion is enabled).
+ */
+@Composable
+fun rememberBlinkingCaret(active: Boolean = true): String {
+    val reducedMotion = isReducedMotionEnabled()
+    var visible by remember { mutableStateOf(true) }
+    LaunchedEffect(active, reducedMotion) {
+        if (!active || reducedMotion) {
+            visible = true
+            return@LaunchedEffect
+        }
+        while (true) {
+            delay(530L)
+            visible = !visible
+        }
+    }
+    return if (visible) "_" else " "
+}
+
+/**
+ * Decorative horizontal ASCII rule (`---`).
+ * Carries `Modifier.clearAndSetSemantics {}` per Section 10 so TalkBack never reads `"hyphen hyphen hyphen"`.
  */
 @Composable
 fun AsciiRule(
     modifier: Modifier = Modifier,
-    glyph: String = "─",
-    color: Color = LocalAscii.current.border,
+    glyph: String = "-",
+    color: Color = LocalAscii.current.dim,
 ) {
-    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-        val cols = rememberCols(AsciiType.small)
-        val count = (cols / glyph.length.coerceAtLeast(1)).coerceAtLeast(8)
+    val safeChar = glyph.firstOrNull()?.let { ch ->
+        if (ch.code in 0x20..0x7E) ch else '-'
+    } ?: '-'
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .clearAndSetSemantics {},
+    ) {
+        val cols = rememberCols(AsciiType.body)
         AsciiText(
-            text = glyph.repeat(count).take(cols),
-            style = AsciiType.small,
+            text = rule(cols, safeChar),
+            style = AsciiType.body,
             color = color,
             softWrap = false,
             maxLines = 1,
@@ -66,8 +163,43 @@ fun AsciiRule(
 }
 
 /**
- * Pure bracketed ASCII button (`[ label ]`) with zero drawn rectangle borders.
- * Pressing inverts the text span `[ label ]` like a terminal cursor selection.
+ * Section 6 of `ascii-app`:
+ * Section break = blank line, `UPPERCASE` label, and `---` rule.
+ * Used on all normal screens (since boxes are reserved exclusively for Modals).
+ */
+@Composable
+fun AsciiSection(
+    title: String,
+    rightText: String = "",
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAscii.current
+    Column(modifier = modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp)) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val cols = rememberCols(AsciiType.body)
+            val line = if (rightText.isNotEmpty()) {
+                row(cols, title.uppercase(Locale.US), rightText.uppercase(Locale.US))
+            } else {
+                title.uppercase(Locale.US)
+            }
+            AsciiText(
+                text = line,
+                style = AsciiType.title,
+                color = c.fg,
+                softWrap = false,
+                maxLines = 1,
+            )
+        }
+        AsciiRule(glyph = "-", color = c.dim)
+    }
+}
+
+/**
+ * Section 6 of `ascii-app` Button vocabulary:
+ * - Primary / Standard: `[ label ]`
+ * - Secondary (`secondary = true`): `( label )`
+ * - Destructive (`destructive = true`): `[ label! ]` in alert color
+ * - Pressed state = inverted video (`bg = ink`, `fg = c.bg`), no ripple, 48dp minimum touch target, light haptic tick.
  */
 @Composable
 fun AsciiButton(
@@ -76,32 +208,60 @@ fun AsciiButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     primary: Boolean = false,
-    spokenLabel: String = label,
+    secondary: Boolean = false,
+    destructive: Boolean = false,
+    spokenLabel: String = label.trim('[', ']', '(', ')', '!', ' '),
 ) {
     val c = LocalAscii.current
+    val haptics = LocalHapticFeedback.current
     val src = remember { MutableInteractionSource() }
     val pressed by src.collectIsPressedAsState()
+
+    val clean = label.trim()
+    val formatted = when {
+        clean.startsWith("[") || clean.startsWith("(") -> clean
+        destructive -> "[ ${clean.trimEnd('!')}! ]"
+        secondary || clean.equals("cancel", ignoreCase = true) || clean.equals("close", ignoreCase = true) || clean.equals("keep", ignoreCase = true) -> "( $clean )"
+        else -> "[ $clean ]"
+    }
     val ink = when {
         !enabled -> c.dim
-        primary -> c.accent
+        destructive -> c.error
+        primary -> c.fg
+        secondary -> c.dim
         else -> c.fg
     }
+
     Box(
         modifier = modifier
-            .heightIn(min = 42.dp)
-            .widthIn(min = 38.dp)
-            .clickable(interactionSource = src, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(horizontal = 3.dp, vertical = 2.dp),
+            .heightIn(min = 48.dp)
+            .widthIn(min = 40.dp)
+            .clickable(
+                interactionSource = src,
+                indication = null,
+                enabled = enabled,
+                role = Role.Button,
+                onClick = {
+                    runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                    onClick()
+                },
+            )
+            .semantics(mergeDescendants = true) {
+                contentDescription = spokenLabel
+            }
+            .padding(horizontal = 2.dp),
         contentAlignment = Alignment.Center,
     ) {
         AsciiText(
-            text = if (pressed) "[*$label*]" else "[$label]",
+            text = formatted,
             color = if (pressed) c.bg else ink,
-            style = if (primary || pressed) AsciiType.title else AsciiType.body,
+            style = if (primary || pressed || destructive) AsciiType.title else AsciiType.body,
+            softWrap = false,
+            maxLines = 1,
             modifier = Modifier
                 .background(if (pressed) ink else Color.Transparent)
-                .padding(horizontal = 2.dp)
-                .clearAndSetSemantics { contentDescription = spokenLabel },
+                .padding(horizontal = 2.dp, vertical = 2.dp)
+                .clearAndSetSemantics {},
         )
     }
 }
@@ -112,41 +272,53 @@ fun AsciiPipePill(
     name: String? = null,
     selected: Boolean = false,
     isDefault: Boolean = false,
-    accentColor: Color = LocalAscii.current.accent2,
+    accentColor: Color = LocalAscii.current.fg,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
+    val haptics = LocalHapticFeedback.current
     val src = remember { MutableInteractionSource() }
     val pressed by src.collectIsPressedAsState()
     val inverted = pressed || selected
-    val ink = if (selected) c.accent else accentColor
     val suffix = if (isDefault) "*" else ""
-    val display = if (name != null) "[|$keyword$suffix $name]" else "[|$keyword$suffix]"
+    val display = if (name != null) "[ $keyword$suffix $name ]" else "[ $keyword$suffix ]"
 
     Box(
         modifier = modifier
-            .heightIn(min = 40.dp)
-            .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onClick)
-            .padding(horizontal = 4.dp),
+            .heightIn(min = 48.dp)
+            .clickable(
+                interactionSource = src,
+                indication = null,
+                role = Role.Button,
+                onClick = {
+                    runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                    onClick()
+                },
+            )
+            .semantics(mergeDescendants = true) {
+                contentDescription = "pipe to ${name ?: keyword}, keyword $keyword"
+            }
+            .padding(horizontal = 2.dp),
         contentAlignment = Alignment.Center,
     ) {
         AsciiText(
             text = display,
-            color = if (inverted) c.bg else ink,
-            style = if (selected) AsciiType.title else AsciiType.small,
+            color = if (inverted) c.bg else c.fg,
+            style = if (inverted) AsciiType.title else AsciiType.body,
+            softWrap = false,
+            maxLines = 1,
             modifier = Modifier
-                .background(if (inverted) ink else Color.Transparent)
-                .padding(horizontal = 2.dp)
-                .clearAndSetSemantics {
-                    contentDescription = "pipe to ${name ?: keyword}, keyword $keyword"
-                },
+                .background(if (inverted) c.fg else Color.Transparent)
+                .padding(horizontal = 2.dp, vertical = 2.dp)
+                .clearAndSetSemantics {},
         )
     }
 }
 
 /**
- * Pure ASCII toggle row (`label ...................... [*ON*]` / `[OFF]`) with zero rectangle boxes.
+ * Section 6 of `ascii-app` Toggle:
+ * `[x] enabled` and `[ ] enabled` with `Role.Checkbox`, 48dp minimum height, and inverted video on press.
  */
 @Composable
 fun AsciiToggleRow(
@@ -157,51 +329,54 @@ fun AsciiToggleRow(
     subtitle: String? = null,
 ) {
     val c = LocalAscii.current
+    val haptics = LocalHapticFeedback.current
     val src = remember { MutableInteractionSource() }
     val pressed by src.collectIsPressedAsState()
-    Row(
+    val stateWord = if (checked) "enabled" else "disabled"
+
+    Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 44.dp)
+            .heightIn(min = 48.dp)
+            .background(if (pressed) c.fg else Color.Transparent)
             .toggleable(
                 value = checked,
-                role = Role.Switch,
-                onValueChange = onCheckedChange,
+                role = Role.Checkbox,
+                onValueChange = { next ->
+                    runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                    onCheckedChange(next)
+                },
                 interactionSource = src,
                 indication = null,
             )
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-            AsciiText(
-                text = label,
-                style = AsciiType.body,
-                color = if (pressed) c.accent else c.fg,
-            )
-            if (!subtitle.isNullOrBlank()) {
-                AsciiText(
-                    text = "  └─ $subtitle",
-                    style = AsciiType.small,
-                    color = c.dim,
-                )
+            .semantics(mergeDescendants = true) {
+                contentDescription = "$label, $stateWord"
             }
-        }
+            .padding(vertical = 6.dp),
+    ) {
+        val mark = if (checked) "[x]" else "[ ]"
         AsciiText(
-            text = if (checked) "[*ON*]" else "[ OFF]",
-            style = AsciiType.title,
-            color = if (checked) c.accent else c.dim,
-            modifier = Modifier
-                .background(if (pressed) c.surface else Color.Transparent)
-                .padding(horizontal = 2.dp),
+            text = "$mark ${label.lowercase(Locale.US)}",
+            style = if (checked) AsciiType.title else AsciiType.body,
+            color = if (pressed) c.bg else c.fg,
+            maxLines = 1,
+            modifier = Modifier.clearAndSetSemantics {},
         )
+        if (!subtitle.isNullOrBlank()) {
+            AsciiText(
+                text = "    ${subtitle.lowercase(Locale.US)}",
+                style = AsciiType.body,
+                color = if (pressed) c.bg else c.dim,
+                maxLines = 1,
+                modifier = Modifier.clearAndSetSemantics {},
+            )
+        }
     }
 }
 
 /**
- * Pure ASCII collapsible selector (`label .......... [ Selected v ]`) with tree-branch options (`├─`, `└──`).
- * Zero drawn rectangle boxes.
+ * Section 6 of `ascii-app` Select:
+ * `category: [ food v ]` opens a modal list (`+- category? ---+`).
  */
 @Composable
 fun <T> AsciiDropdownRow(
@@ -213,72 +388,109 @@ fun <T> AsciiDropdownRow(
     subtitle: String? = null,
 ) {
     val c = LocalAscii.current
-    var expanded by remember { mutableStateOf(false) }
-    val selectedLabel = options.firstOrNull { it.first == selectedValue }?.second
-        ?: options.firstOrNull()?.second.orEmpty()
+    val haptics = LocalHapticFeedback.current
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    var modalOpen by remember { mutableStateOf(false) }
 
-    Column(modifier = modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 44.dp)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    role = Role.DropdownList,
-                    onClick = { expanded = !expanded },
-                ),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(0.48f).padding(end = 6.dp)) {
-                AsciiText(text = label, style = AsciiType.body, color = c.fg)
-                if (!subtitle.isNullOrBlank()) {
-                    AsciiText(text = "  └─ $subtitle", style = AsciiType.small, color = c.dim)
-                }
+    val selectedLabel = (options.firstOrNull { it.first == selectedValue }?.second
+        ?: options.firstOrNull()?.second.orEmpty()).lowercase(Locale.US)
+    val cleanLabel = label.lowercase(Locale.US)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .background(if (pressed) c.fg else Color.Transparent)
+            .clickable(
+                interactionSource = src,
+                indication = null,
+                role = Role.Button,
+                onClick = {
+                    runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                    modalOpen = true
+                },
+            )
+            .semantics(mergeDescendants = true) {
+                contentDescription = "$cleanLabel: $selectedLabel"
             }
-            val arrow = if (expanded) "^" else "v"
+            .padding(vertical = 6.dp),
+    ) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val cols = rememberCols(AsciiType.body)
+            val line = row(cols, "$cleanLabel:", "[ $selectedLabel v ]")
             AsciiText(
-                text = "[ $selectedLabel $arrow ]",
-                style = AsciiType.title,
-                color = if (expanded) c.accent2 else c.accent,
+                text = line,
+                style = AsciiType.body,
+                color = if (pressed) c.bg else c.fg,
+                softWrap = false,
                 maxLines = 1,
+                modifier = Modifier.clearAndSetSemantics {},
             )
         }
+        if (!subtitle.isNullOrBlank()) {
+            AsciiText(
+                text = "  ${subtitle.lowercase(Locale.US)}",
+                style = AsciiType.body,
+                color = if (pressed) c.bg else c.dim,
+                maxLines = 1,
+                modifier = Modifier.clearAndSetSemantics {},
+            )
+        }
+    }
 
-        if (expanded) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 10.dp, top = 2.dp, bottom = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+    if (modalOpen) {
+        Dialog(onDismissRequest = { modalOpen = false }) {
+            AsciiModalBox(
+                title = "$cleanLabel?",
+                onDismiss = { modalOpen = false },
             ) {
-                options.forEachIndexed { idx, (optVal, optLabel) ->
+                options.forEach { (optVal, optLabel) ->
                     val isSel = optVal == selectedValue
-                    val branch = if (idx == options.lastIndex) "└── " else "├─ "
-                    val mark = if (isSel) "(*)" else "( )"
+                    val optSrc = remember { MutableInteractionSource() }
+                    val optPressed by optSrc.collectIsPressedAsState()
+                    val inverted = isSel || optPressed
+                    val prefix = if (isSel) "> " else "  "
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 38.dp)
+                            .heightIn(min = 48.dp)
+                            .background(if (inverted) c.fg else Color.Transparent)
                             .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
+                                interactionSource = optSrc,
                                 indication = null,
+                                role = Role.Button,
                                 onClick = {
-                                    expanded = false
+                                    runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                                    modalOpen = false
                                     onSelect(optVal)
                                 },
                             )
-                            .padding(vertical = 4.dp),
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = optLabel.lowercase(Locale.US) + (if (isSel) ", selected" else "")
+                            }
+                            .padding(horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         AsciiText(
-                            text = "$branch$mark $optLabel",
+                            text = "$prefix${optLabel.lowercase(Locale.US)}",
                             style = if (isSel) AsciiType.title else AsciiType.body,
-                            color = if (isSel) c.accent else c.fg,
+                            color = if (inverted) c.bg else c.fg,
                             maxLines = 1,
+                            modifier = Modifier.clearAndSetSemantics {},
                         )
                     }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    AsciiButton(
+                        label = "keep",
+                        secondary = true,
+                        onClick = { modalOpen = false },
+                    )
                 }
             }
         }
@@ -291,27 +503,12 @@ fun AsciiCheckbox(
     onChange: (Boolean) -> Unit,
     label: String,
     modifier: Modifier = Modifier,
-) {
-    val c = LocalAscii.current
-    Row(
-        modifier = modifier
-            .heightIn(min = 44.dp)
-            .toggleable(
-                value = checked, role = Role.Checkbox, onValueChange = onChange,
-                interactionSource = remember { MutableInteractionSource() }, indication = null,
-            ),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AsciiText(
-            text = if (checked) "[x]" else "[ ]",
-            color = if (checked) c.accent else c.dim,
-            style = if (checked) AsciiType.title else AsciiType.body,
-            modifier = Modifier.clearAndSetSemantics {},
-        )
-        Spacer(Modifier.width(8.dp))
-        AsciiText(label)
-    }
-}
+) = AsciiToggleRow(
+    label = label,
+    checked = checked,
+    onCheckedChange = onChange,
+    modifier = modifier,
+)
 
 @Composable
 fun AsciiRadio(
@@ -321,34 +518,38 @@ fun AsciiRadio(
     modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val inverted = selected || pressed
     Row(
         modifier = modifier
-            .heightIn(min = 44.dp)
+            .heightIn(min = 48.dp)
+            .background(if (inverted) c.fg else Color.Transparent)
             .selectable(
-                selected = selected, role = Role.RadioButton, onClick = onClick,
-                interactionSource = remember { MutableInteractionSource() }, indication = null,
+                selected = selected,
+                role = Role.RadioButton,
+                onClick = onClick,
+                interactionSource = src,
+                indication = null,
             )
-            .padding(end = 8.dp),
+            .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         AsciiText(
-            text = if (selected) "(*)" else "( )",
-            color = if (selected) c.accent else c.dim,
-            style = if (selected) AsciiType.title else AsciiType.body,
-            modifier = Modifier.clearAndSetSemantics {},
-        )
-        Spacer(Modifier.width(4.dp))
-        AsciiText(
-            text = label,
-            color = if (selected) c.fg else c.dim,
+            text = if (selected) "> $label" else "  $label",
+            color = if (inverted) c.bg else c.fg,
             style = if (selected) AsciiType.title else AsciiType.body,
         )
     }
 }
 
 /**
- * True Plain-Text-Sports ASCII Section Block using character box-drawing (`┌─ title ───┐` ... `└───────────┘`)
- * instead of CSS `Modifier.border` rectangles.
+ * Section 6 of `ascii-app`:
+ * Modal box (`+- title ---+` / `| ... |` / `+-----------+`).
+ * In `ascii-app`: "Modal: the only place a box is allowed."
+ * When `AsciiBox` is called on a normal screen (non-modal), it renders as a clean `AsciiSection`
+ * (`UPPERCASE` title + `---` rule + blank line), whereas inside Modals (`AsciiModalBox` or `isModal = true`)
+ * it renders the full `+---+\n|   |\n+---+` ASCII box!
  */
 @Composable
 fun AsciiBox(
@@ -356,51 +557,111 @@ fun AsciiBox(
     title: String? = null,
     rightActionLabel: String? = null,
     onRightAction: (() -> Unit)? = null,
+    isModal: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val c = LocalAscii.current
-    Column(modifier = modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val cols = rememberCols(AsciiType.small)
-            val prefix = if (title != null) "+- $title " else "+-"
-            val rightPart = if (rightActionLabel != null) " [$rightActionLabel] -+" else "-+"
-            val dashCount = (cols - prefix.length - rightPart.length).coerceAtLeast(2)
-            val headerLine = prefix + "-".repeat(dashCount) + rightPart
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsciiText(
-                    text = headerLine,
-                    style = AsciiType.small,
-                    color = c.accent2,
-                    softWrap = false,
-                    maxLines = 1,
-                    modifier = if (rightActionLabel != null && onRightAction != null) {
-                        Modifier.clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            role = Role.Button,
-                            onClick = onRightAction,
-                        )
-                    } else Modifier,
-                )
-            }
+    if (isModal) {
+        AsciiModalBox(
+            title = title ?: "pipe",
+            onDismiss = onRightAction,
+            modifier = modifier,
+            content = content,
+        )
+        return
+    }
+    Column(modifier = modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        if (title != null) {
+            AsciiSection(
+                title = title,
+                rightText = rightActionLabel.orEmpty(),
+            )
         }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 6.dp),
+                .padding(vertical = 2.dp),
             content = content,
         )
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val cols = rememberCols(AsciiType.small)
-            val bottomLine = "+" + "-".repeat((cols - 2).coerceAtLeast(6)) + "+"
+    }
+}
+
+/**
+ * Strict `ascii-app` Section 6 Modal Box:
+ * ```
+ * +- delete? --------------+
+ * | remove 'Groceries'?    |
+ * |                        |
+ * |   [ delete ]  ( keep ) |
+ * +------------------------+
+ * ```
+ */
+@Composable
+fun AsciiModalBox(
+    title: String,
+    onDismiss: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val c = LocalAscii.current
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(c.bg)
+            .padding(4.dp),
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clearAndSetSemantics {},
+        ) {
+            val cols = rememberCols(AsciiType.body)
+            val cleanTitle = title.lowercase(Locale.US).trim()
+            val prefix = "+- $cleanTitle "
+            val dashCount = (cols - prefix.length - 1).coerceAtLeast(2)
+            val topRule = prefix + "-".repeat(dashCount) + "+"
             AsciiText(
-                text = bottomLine,
-                style = AsciiType.small,
-                color = c.border,
+                text = topRule,
+                style = AsciiType.title,
+                color = c.fg,
+                softWrap = false,
+                maxLines = 1,
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AsciiText(
+                text = "| ",
+                style = AsciiType.body,
+                color = c.dim,
+                modifier = Modifier.clearAndSetSemantics {},
+            )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                content = content,
+            )
+            AsciiText(
+                text = " |",
+                style = AsciiType.body,
+                color = c.dim,
+                modifier = Modifier.clearAndSetSemantics {},
+            )
+        }
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clearAndSetSemantics {},
+        ) {
+            val cols = rememberCols(AsciiType.body)
+            val bottomRule = "+" + "-".repeat((cols - 2).coerceAtLeast(6)) + "+"
+            AsciiText(
+                text = bottomRule,
+                style = AsciiType.body,
+                color = c.fg,
                 softWrap = false,
                 maxLines = 1,
             )
@@ -408,35 +669,55 @@ fun AsciiBox(
     }
 }
 
+/**
+ * Section 2 & Section 6 Header:
+ * `PIPE` in uppercase on the left, section/context in uppercase on the right, followed by a `---` rule.
+ */
 @Composable
 fun AsciiTopHeader(
     path: String,
-    actions: @Composable () -> Unit,
+    actions: @Composable () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
+    val rightContext = path
+        .removePrefix("~/pipe/")
+        .removePrefix("~/pipe")
+        .trim('/')
+        .ifEmpty { "PROMPT" }
+        .uppercase(Locale.US)
+
     Column(modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 2.dp),
+                .heightIn(min = 48.dp)
+                .padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AsciiText(text = "+- $path", style = AsciiType.title, color = c.accent2)
-            Row(verticalAlignment = Alignment.CenterVertically) { actions() }
+            AsciiText(
+                text = "PIPE  $rightContext",
+                style = AsciiType.title,
+                color = c.fg,
+                maxLines = 1,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                actions()
+            }
         }
-        AsciiRule(glyph = "═", color = c.border, modifier = Modifier.padding(horizontal = 6.dp))
+        AsciiRule(glyph = "-", color = c.dim)
     }
 }
 
 /**
- * Pure terminal prompt text field (`label:` / `> input_here` / `────────────`) with zero 4-sided rectangle borders.
+ * Section 6 of `ascii-app` Input:
+ * `label: value_` where `_` is a drawn, blinking caret and the native cursor is hidden (`SolidColor(Color.Transparent)`).
  */
 @Composable
 fun AsciiTextField(
     label: String?,
-    promptPrefix: String = "$ ",
+    promptPrefix: String = "",
     value: TextFieldValue,
     onValueChange: (TextFieldValue) -> Unit,
     modifier: Modifier = Modifier,
@@ -448,32 +729,48 @@ fun AsciiTextField(
     trailingControl: (@Composable () -> Unit)? = null,
 ) {
     val c = LocalAscii.current
-    val ruleCol = if (errorText != null) c.error else c.border
+    var isFocused by remember { mutableStateOf(false) }
+    val caret = rememberBlinkingCaret(active = isFocused)
+    val cleanLabel = label?.lowercase(Locale.US)?.trim()?.removeSuffix(":")
+    val prefixStr = when {
+        !cleanLabel.isNullOrEmpty() -> "$cleanLabel: "
+        promptPrefix.isNotEmpty() -> promptPrefix
+        else -> "> "
+    }
 
     Column(modifier = modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        if (label != null) {
-            AsciiText(text = ":: $label", style = AsciiType.small, color = c.dim)
-        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 42.dp)
-                .padding(horizontal = 4.dp, vertical = 2.dp),
+                .heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             AsciiText(
-                text = promptPrefix,
-                style = AsciiType.title,
-                color = c.accent,
+                text = prefixStr,
+                style = AsciiType.body,
+                color = c.dim,
+                softWrap = false,
+                maxLines = 1,
                 modifier = Modifier.clearAndSetSemantics {},
             )
             Box(
                 modifier = Modifier.weight(1f),
                 contentAlignment = Alignment.CenterStart,
             ) {
-                if (value.text.isEmpty() && placeholder.isNotEmpty()) {
-                    AsciiText(text = placeholder, style = AsciiType.body, color = c.dim, maxLines = 1)
+                val displayWithCaret = if (value.text.isEmpty() && !isFocused && placeholder.isNotEmpty()) {
+                    placeholder.lowercase(Locale.US)
+                } else {
+                    value.text + (if (isFocused) caret else "")
                 }
+                val displayColor = if (value.text.isEmpty() && !isFocused && placeholder.isNotEmpty()) c.dim else c.fg
+                AsciiText(
+                    text = displayWithCaret,
+                    style = AsciiType.body,
+                    color = displayColor,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.clearAndSetSemantics {},
+                )
                 val fMod = if (focusRequester != null) {
                     Modifier.fillMaxWidth().focusRequester(focusRequester)
                 } else {
@@ -482,9 +779,11 @@ fun AsciiTextField(
                 BasicTextField(
                     value = value,
                     onValueChange = onValueChange,
-                    modifier = fMod.semantics { contentDescription = label ?: "search query" },
-                    textStyle = AsciiType.body.copy(color = c.fg),
-                    cursorBrush = SolidColor(c.accent),
+                    modifier = fMod
+                        .onFocusChanged { isFocused = it.isFocused }
+                        .semantics { contentDescription = cleanLabel ?: "input" },
+                    textStyle = AsciiType.body.copy(color = Color.Transparent),
+                    cursorBrush = SolidColor(Color.Transparent),
                     singleLine = true,
                     keyboardOptions = keyboardOptions,
                     keyboardActions = keyboardActions,
@@ -494,10 +793,142 @@ fun AsciiTextField(
                 trailingControl()
             }
         }
-        AsciiRule(glyph = "-", color = ruleCol)
+        AsciiRule(glyph = "-", color = if (errorText != null) c.error else c.dim)
         if (errorText != null) {
-            Spacer(Modifier.height(2.dp))
-            AsciiText(text = errorText, style = AsciiType.small, color = c.error)
+            val normalizedErr = if (errorText.startsWith("err:")) {
+                errorText.lowercase(Locale.US)
+            } else {
+                "err: " + errorText.trimStart('!', ' ').lowercase(Locale.US)
+            }
+            AsciiText(
+                text = normalizedErr,
+                style = AsciiType.body,
+                color = c.error,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
+ * Section 6 of `ascii-app` One-Line Status Bar (`> saved.`, `err: ...`) and Bottom Command Bar (`[a]dd [f]ilter ...`).
+ */
+@Composable
+fun AsciiStatusBar(
+    message: String?,
+    undoMessage: String? = null,
+    onUndo: (() -> Unit)? = null,
+    onDismissUndo: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAscii.current
+    if (undoMessage != null && onUndo != null) {
+        Column(modifier = modifier.fillMaxWidth().background(c.bg)) {
+            AsciiRule(glyph = "-", color = c.dim)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText(
+                    text = "> ${undoMessage.lowercase(Locale.US)}.",
+                    style = AsciiType.body,
+                    color = c.fg,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                AsciiButton(label = "[u]ndo", onClick = onUndo, primary = true, spokenLabel = "undo $undoMessage")
+                if (onDismissUndo != null) {
+                    AsciiButton(label = "x", secondary = true, onClick = onDismissUndo, spokenLabel = "dismiss")
+                }
+            }
+        }
+        return
+    }
+    if (!message.isNullOrBlank()) {
+        val raw = message.trim()
+        val isErr = raw.startsWith("!") || raw.startsWith("err:", ignoreCase = true)
+        val formatted = when {
+            isErr && raw.startsWith("err:", ignoreCase = true) -> raw.lowercase(Locale.US)
+            isErr -> "err: ${raw.trimStart('!', ' ').lowercase(Locale.US)}"
+            raw.startsWith("ok:", ignoreCase = true) -> "> ${raw.removePrefix("ok:").trim().lowercase(Locale.US).trimEnd('.')}."
+            raw.startsWith(">") -> raw.lowercase(Locale.US)
+            else -> "> ${raw.lowercase(Locale.US).trimEnd('.')}."
+        }
+        Column(modifier = modifier.fillMaxWidth().background(c.bg)) {
+            AsciiRule(glyph = "-", color = c.dim)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 36.dp)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                AsciiText(
+                    text = formatted,
+                    style = AsciiType.body,
+                    color = if (isErr) c.error else c.fg,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun AsciiCommandBar(
+    items: List<Triple<String, Boolean, () -> Unit>>,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAscii.current
+    val haptics = LocalHapticFeedback.current
+    Column(modifier = modifier.fillMaxWidth().background(c.bg)) {
+        AsciiRule(glyph = "-", color = c.dim)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .padding(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            items.forEach { (label, active, onClick) ->
+                val src = remember { MutableInteractionSource() }
+                val pressed by src.collectIsPressedAsState()
+                val inverted = active || pressed
+                val cleanSpoken = label.replace("[", "").replace("]", "")
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .background(if (inverted) c.fg else Color.Transparent)
+                        .clickable(
+                            interactionSource = src,
+                            indication = null,
+                            role = Role.Button,
+                            onClick = {
+                                runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                                onClick()
+                            },
+                        )
+                        .semantics(mergeDescendants = true) {
+                            contentDescription = cleanSpoken + (if (active) ", active" else "")
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    AsciiText(
+                        text = label,
+                        style = if (inverted) AsciiType.title else AsciiType.body,
+                        color = if (inverted) c.bg else c.fg,
+                        softWrap = false,
+                        maxLines = 1,
+                        modifier = Modifier.clearAndSetSemantics {},
+                    )
+                }
+            }
         }
     }
 }
@@ -508,71 +939,37 @@ fun AsciiUndoBanner(
     onUndo: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
-) {
-    val c = LocalAscii.current
-    Column(modifier = modifier.fillMaxWidth()) {
-        AsciiRule(glyph = "=", color = c.warn)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            AsciiText(text = "! $message", style = AsciiType.small, color = c.warn, modifier = Modifier.weight(1f))
-            AsciiButton(label = "undo", onClick = onUndo, primary = true, spokenLabel = "undo $message")
-            AsciiButton(label = "x", onClick = onDismiss, spokenLabel = "dismiss")
-        }
-        AsciiRule(glyph = "=", color = c.warn)
-    }
-}
+) = AsciiStatusBar(
+    message = null,
+    undoMessage = message,
+    onUndo = onUndo,
+    onDismissUndo = onDismiss,
+    modifier = modifier,
+)
 
 @Composable
 fun BoxWithConstraintsScope.rememberCols(style: TextStyle = AsciiType.body): Int {
     val tm = rememberTextMeasurer()
-    val cellPx = remember(style) { tm.measure("M", style).size.width.coerceAtLeast(1) }
-    return (constraints.maxWidth / cellPx).coerceAtLeast(16)
+    val cellPx = remember(style) { tm.measure("0", style).size.width.coerceAtLeast(1) }
+    return (constraints.maxWidth / cellPx).coerceAtLeast(24)
 }
 
-fun leader(key: String, value: String, cols: Int): String {
-    val dots = (cols - key.length - value.length - 2).coerceAtLeast(2)
-    return "$key " + ".".repeat(dots) + " $value"
-}
+fun leader(key: String, value: String, cols: Int): String =
+    row(cols, key.lowercase(Locale.US), value)
 
 @Composable
 fun AsciiFrameDivider(
     leftLabel: String,
     rightLabel: String? = null,
-) {
-    val c = LocalAscii.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 2.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AsciiText(
-            text = ":: $leftLabel",
-            style = AsciiType.small,
-            color = c.accent2,
-            maxLines = 1,
-        )
-        if (rightLabel != null) {
-            AsciiText(
-                text = rightLabel,
-                style = AsciiType.small,
-                color = c.dim,
-                maxLines = 1,
-            )
-        }
-    }
-}
+) = AsciiSection(
+    title = leftLabel,
+    rightText = rightLabel.orEmpty(),
+)
 
 fun frame(title: String, lines: List<String>, cols: Int): String {
     val safeCols = cols.coerceAtLeast(20)
     val inner = safeCols - 2
-    val top = "+- $title ".take(safeCols - 1).padEnd(safeCols - 1, '-') + "+"
+    val top = "+- ${title.lowercase(Locale.US)} ".take(safeCols - 1).padEnd(safeCols - 1, '-') + "+"
     val body = lines.map { "| " + it.take(inner - 2).padEnd(inner - 2, ' ') + " |" }
     val bottom = "+" + "-".repeat(inner) + "+"
     return (listOf(top) + body + bottom).joinToString("\n")

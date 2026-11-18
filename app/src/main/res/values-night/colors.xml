@@ -1,11 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="window_bg">#0E1912</color>
-    <color name="widget_bg">#0E1912</color>
-    <color name="widget_surface">#16271C</color>
-    <color name="widget_border">#94B09B</color>
-    <color name="widget_fg">#E9F3E3</color>
-    <color name="widget_dim">#94B09B</color>
-    <color name="widget_accent">#C6F36B</color>
-    <color name="widget_accent2">#FFB38A</color>
+    <color name="pipe_bg">#0C0C0C</color>
+    <color name="pipe_fg">#D8D8D8</color>
 </resources>

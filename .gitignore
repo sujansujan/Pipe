@@ -1,0 +1,23 @@
+# Built application files
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Gradle & Android Studio files
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+*.hprof
+*.log
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Downloaded zip archives (if placed inside the repo folder)
+*.zip
