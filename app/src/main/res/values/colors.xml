@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="window_bg">#F4F1E8</color>
-    <color name="pipe_bg">#F4F1E8</color>
-    <color name="pipe_fg">#1A1A1A</color>
-    <color name="widget_bg">#F4F1E8</color>
-    <color name="widget_border">#5C5C5C</color>
-    <color name="widget_fg">#1A1A1A</color>
-    <color name="widget_accent">#1A1A1A</color>
-    <color name="widget_accent2">#5C5C5C</color>
+    <color name="window_bg">#FFFBEB</color>
+    <color name="pipe_bg">#FFFBEB</color>
+    <color name="pipe_fg">#1F1F1F</color>
+    <color name="widget_bg">#FFFBEB</color>
+    <color name="widget_border">#6C664B</color>
+    <color name="widget_fg">#1F1F1F</color>
+    <color name="widget_accent">#A3144D</color>
+    <color name="widget_accent2">#644AC9</color>
 </resources>

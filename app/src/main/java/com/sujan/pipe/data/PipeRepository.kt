@@ -313,7 +313,7 @@ class PipeRepository(context: Context) {
 
     fun loadPaletteChoice(): PaletteChoice =
         PaletteChoice.entries.firstOrNull { it.name == prefs.getString("palette_choice", PaletteChoice.MOSS.name) }
-            ?: PaletteChoice.MOSS
+            ?: PaletteChoice.DRACULA
 
     fun savePaletteChoice(choice: PaletteChoice) = prefs.edit().putString("palette_choice", choice.name).apply()
 

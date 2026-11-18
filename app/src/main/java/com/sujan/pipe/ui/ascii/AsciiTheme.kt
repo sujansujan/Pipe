@@ -57,34 +57,48 @@ fun isReducedMotionEnabled(): Boolean {
 }
 
 /**
- * Strict `ascii-app` Section 4 color tokens:
- * - Foreground (`fg`), background (`bg`), dim (`dim`), and at most ONE alert accent (`error`).
- * - Legacy role fields (`surface`, `border`, `accent`, `accent2`, `accent3`, `good`, `warn`)
- *   resolve strictly to `bg`, `fg`, `dim`, or `error` so the entire app works in pure monochrome + 1 alert color,
- *   while selection uses inverted video (`bg` and `fg` swapped).
+ * Modern Multi-Color Terminal Palette tokens per `ascii-app` Section 4:
+ * - `bg`: main canvas background
+ * - `surface`: selected row / modal / active block background
+ * - `fg`: primary body text
+ * - `dim`: comments, rules, secondary labels, borders
+ * - `cyan`: links, paths, secondary interactive tags
+ * - `green`: success, positive numbers, active toggles `[x]`, contacts
+ * - `orange`: numbers, dates, timestamps, parameters, folders
+ * - `pink`: keywords, primary actions `[ add ]`, cursor `_`
+ * - `purple`: headers, section titles, active markers `>`
+ * - `yellow`: warnings, fzf search match highlights, starred `*`
+ * - `red`: errors `err:`, destructive actions `[ delete! ]`
  */
 @Immutable
 data class AsciiColors(
     val bg: Color,
     val surface: Color,
-    val border: Color,
     val fg: Color,
     val dim: Color,
-    val accent: Color,
-    val accent2: Color,
-    val accent3: Color,
-    val good: Color,
-    val warn: Color,
-    val error: Color,
+    val cyan: Color,
+    val green: Color,
+    val orange: Color,
+    val pink: Color,
+    val purple: Color,
+    val yellow: Color,
+    val red: Color,
 ) {
-    val alert: Color get() = error
+    // Semantic aliases used across screens & overlay
+    val border: Color get() = dim
+    val accent: Color get() = pink
+    val accent2: Color get() = purple
+    val accent3: Color get() = cyan
+    val good: Color get() = green
+    val warn: Color get() = orange
+    val error: Color get() = red
 
     fun forRole(role: EngineColorRole): Color = when (role) {
-        EngineColorRole.ACCENT -> fg
-        EngineColorRole.ACCENT2 -> fg
-        EngineColorRole.ACCENT3 -> dim
-        EngineColorRole.GOOD -> fg
-        EngineColorRole.WARN -> error
+        EngineColorRole.ACCENT -> pink
+        EngineColorRole.ACCENT2 -> purple
+        EngineColorRole.ACCENT3 -> cyan
+        EngineColorRole.GOOD -> green
+        EngineColorRole.WARN -> orange
         EngineColorRole.FG -> fg
     }
 }
@@ -92,77 +106,142 @@ data class AsciiColors(
 data class AsciiPalette(val name: String, val dark: AsciiColors, val light: AsciiColors)
 
 /**
- * Canonical `ascii-app` Section 4 palettes:
- * - paper (light): bg `#F4F1E8`, fg `#1A1A1A`, dim `#5C5C5C`, alert `#B00020`
- * - terminal (dark): bg `#0C0C0C`, fg `#D8D8D8`, dim `#8A8A8A`, alert `#FF6B6B`
+ * Canonical `ascii-app` Section 4 palette: Dracula (Dark) & Alucard (Light).
  */
-val TerminalPaper = AsciiPalette(
-    name = "terminal / paper",
-    dark = AsciiColors(
-        bg = c(0x0C0C0C),
-        surface = c(0x0C0C0C),
-        border = c(0x8A8A8A),
-        fg = c(0xD8D8D8),
-        dim = c(0x8A8A8A),
-        accent = c(0xD8D8D8),
-        accent2 = c(0xD8D8D8),
-        accent3 = c(0x8A8A8A),
-        good = c(0xD8D8D8),
-        warn = c(0xFF6B6B),
-        error = c(0xFF6B6B),
-    ),
-    light = AsciiColors(
-        bg = c(0xF4F1E8),
-        surface = c(0xF4F1E8),
-        border = c(0x5C5C5C),
-        fg = c(0x1A1A1A),
-        dim = c(0x5C5C5C),
-        accent = c(0x1A1A1A),
-        accent2 = c(0x1A1A1A),
-        accent3 = c(0x5C5C5C),
-        good = c(0x1A1A1A),
-        warn = c(0xB00020),
-        error = c(0xB00020),
-    ),
-)
-
-val Moss = TerminalPaper
-
 val DraculaAlucard = AsciiPalette(
     name = "dracula / alucard",
     dark = AsciiColors(
-        bg = c(0x0C0C0C),
-        surface = c(0x0C0C0C),
-        border = c(0x8A8A8A),
-        fg = c(0xD8D8D8),
-        dim = c(0x8A8A8A),
-        accent = c(0xD8D8D8),
-        accent2 = c(0xD8D8D8),
-        accent3 = c(0x8A8A8A),
-        good = c(0xD8D8D8),
-        warn = c(0xFF6B6B),
-        error = c(0xFF6B6B),
+        bg = c(0x282A36),
+        surface = c(0x44475A),
+        fg = c(0xF8F8F2),
+        dim = c(0x6272A4),
+        cyan = c(0x8BE9FD),
+        green = c(0x50FA7B),
+        orange = c(0xFFB86C),
+        pink = c(0xFF79C6),
+        purple = c(0xBD93F9),
+        yellow = c(0xF1FA8C),
+        red = c(0xFF5555),
     ),
-    light = TerminalPaper.light,
+    light = AsciiColors(
+        bg = c(0xFFFBEB),
+        surface = c(0xF2EEDE),
+        fg = c(0x1F1F1F),
+        dim = c(0x6C664B),
+        cyan = c(0x036A96),
+        green = c(0x14710A),
+        orange = c(0xA34D14),
+        pink = c(0xA3144D),
+        purple = c(0x644AC9),
+        yellow = c(0x846E15),
+        red = c(0xCB3A2A),
+    ),
 )
 
-val Ember = TerminalPaper
-val Lagoon = TerminalPaper
+val Moss = AsciiPalette(
+    name = "moss terminal",
+    dark = AsciiColors(
+        bg = c(0x0E1912),
+        surface = c(0x1B3022),
+        fg = c(0xE9F3E3),
+        dim = c(0x6E8F75),
+        cyan = c(0x7FD3FF),
+        green = c(0x6EE7A0),
+        orange = c(0xFFB38A),
+        pink = c(0xC6F36B),
+        purple = c(0xB8A9FF),
+        yellow = c(0xFFD166),
+        red = c(0xFF7A7A),
+    ),
+    light = AsciiColors(
+        bg = c(0xF3F7E4),
+        surface = c(0xE4EDC8),
+        fg = c(0x17281C),
+        dim = c(0x56694F),
+        cyan = c(0x0B6A93),
+        green = c(0x196B35),
+        orange = c(0x9E4217),
+        pink = c(0x3F6B00),
+        purple = c(0x5B3E96),
+        yellow = c(0x8F5B00),
+        red = c(0xBF2E2E),
+    ),
+)
+
+val Ember = AsciiPalette(
+    name = "ember terminal",
+    dark = AsciiColors(
+        bg = c(0x1B1411),
+        surface = c(0x2E221D),
+        fg = c(0xF8EBDD),
+        dim = c(0x9A8270),
+        cyan = c(0x7FD3FF),
+        green = c(0x8FD694),
+        orange = c(0xFF8A3D),
+        pink = c(0xFF6F91),
+        purple = c(0xD39BFF),
+        yellow = c(0xFFC857),
+        red = c(0xFF6B5E),
+    ),
+    light = AsciiColors(
+        bg = c(0xFBF1E0),
+        surface = c(0xF3E1C4),
+        fg = c(0x2B1A12),
+        dim = c(0x6E5645),
+        cyan = c(0x0B6A93),
+        green = c(0x276B2A),
+        orange = c(0xA63D00),
+        pink = c(0xB0224F),
+        purple = c(0x644AC9),
+        yellow = c(0x855400),
+        red = c(0xB02A18),
+    ),
+)
+
+val Lagoon = AsciiPalette(
+    name = "lagoon terminal",
+    dark = AsciiColors(
+        bg = c(0x0A1D26),
+        surface = c(0x143544),
+        fg = c(0xE6F4F1),
+        dim = c(0x6E98A1),
+        cyan = c(0x5EEAD4),
+        green = c(0x7BE495),
+        orange = c(0xFFB347),
+        pink = c(0xFF7A59),
+        purple = c(0xBD93F9),
+        yellow = c(0xFFD166),
+        red = c(0xFF6B7A),
+    ),
+    light = AsciiColors(
+        bg = c(0xEEF9F5),
+        surface = c(0xDDF1EA),
+        fg = c(0x0E2A33),
+        dim = c(0x4A6B72),
+        cyan = c(0x0F766E),
+        green = c(0x177036),
+        orange = c(0x9A5B00),
+        pink = c(0xC03A16),
+        purple = c(0x5B3E96),
+        yellow = c(0x8A5A00),
+        red = c(0xC1272D),
+    ),
+)
 
 enum class PaletteChoice(val palette: AsciiPalette) {
-    MOSS(TerminalPaper),
     DRACULA(DraculaAlucard),
+    MOSS(Moss),
     EMBER(Ember),
     LAGOON(Lagoon),
 }
 
-val LocalAscii = staticCompositionLocalOf { TerminalPaper.dark }
+val LocalAscii = staticCompositionLocalOf { DraculaAlucard.dark }
 val Mono: FontFamily = FontFamily.Monospace
 
 /**
- * Strict `ascii-app` Section 1 & Section 4 Typography:
- * - One monospace font, ONE size per screen (`15.sp`, line height `21.sp`).
- * - Regular plus Bold only. No font-size scale (`body`, `title`, and `small` share the exact same cell width and height).
+ * Section 1 & Section 4 Typography:
+ * One monospace font, ONE size per screen (`15.sp`, line height `21.sp`).
+ * Regular plus Bold only.
  */
 object AsciiType {
     private val base = TextStyle(
@@ -199,7 +278,7 @@ enum class ThemeMode { System, Light, Dark }
 @Composable
 fun PipeTheme(
     mode: ThemeMode = ThemeMode.System,
-    palette: AsciiPalette = TerminalPaper,
+    palette: AsciiPalette = DraculaAlucard,
     configureSystemBars: Boolean = true,
     content: @Composable () -> Unit,
 ) {
@@ -213,10 +292,10 @@ fun PipeTheme(
 
     MaterialTheme(
         colorScheme = base.copy(
-            background = c.bg, surface = c.bg, onBackground = c.fg, onSurface = c.fg,
-            primary = c.fg, onPrimary = c.bg, secondary = c.dim, onSecondary = c.bg,
-            tertiary = c.dim, onTertiary = c.bg, error = c.error, onError = c.bg,
-            outline = c.dim, outlineVariant = c.border,
+            background = c.bg, surface = c.surface, onBackground = c.fg, onSurface = c.fg,
+            primary = c.pink, onPrimary = c.bg, secondary = c.purple, onSecondary = c.bg,
+            tertiary = c.cyan, onTertiary = c.bg, error = c.red, onError = c.bg,
+            outline = c.dim, outlineVariant = c.dim,
         ),
         typography = AsciiTypography,
         shapes = AsciiSquareShapes,
@@ -225,8 +304,6 @@ fun PipeTheme(
         if (configureSystemBars && !view.isInEditMode) {
             SideEffect {
                 (view.context as? Activity)?.window?.let { w ->
-                    w.statusBarColor = android.graphics.Color.parseColor(if (dark) "#0C0C0C" else "#F4F1E8")
-                    w.navigationBarColor = android.graphics.Color.parseColor(if (dark) "#0C0C0C" else "#F4F1E8")
                     WindowCompat.getInsetsController(w, view).apply {
                         isAppearanceLightStatusBars = !dark
                         isAppearanceLightNavigationBars = !dark

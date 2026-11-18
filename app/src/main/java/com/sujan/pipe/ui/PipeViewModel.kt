@@ -114,7 +114,7 @@ data class PipeUiState(
     val hasFilesPermission: Boolean = false,
     val history: List<SearchHistoryEntry> = emptyList(),
     val themeMode: ThemeMode = ThemeMode.System,
-    val paletteChoice: PaletteChoice = PaletteChoice.MOSS,
+    val paletteChoice: PaletteChoice = PaletteChoice.DRACULA,
     val historyEnabled: Boolean = true,
     val externalTextMode: ExternalTextMode = ExternalTextMode.OPEN_OVERLAY,
     val overlayOpacity: Float = 0.88f,

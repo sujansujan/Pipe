@@ -108,7 +108,9 @@ import com.sujan.pipe.ui.ascii.AsciiToggleRow
 import com.sujan.pipe.ui.ascii.AsciiTopHeader
 import com.sujan.pipe.ui.ascii.AsciiType
 import com.sujan.pipe.ui.ascii.AsciiUndoBanner
+import com.sujan.pipe.ui.ascii.CellBitmapImage
 import com.sujan.pipe.ui.ascii.CellGrid
+import com.sujan.pipe.ui.ascii.LocalGridMetrics
 import com.sujan.pipe.ui.ascii.LocalAscii
 import com.sujan.pipe.ui.ascii.PaletteChoice
 import com.sujan.pipe.ui.ascii.PipeTheme
@@ -1007,9 +1009,11 @@ fun AsciiRaycastPaletteWindow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             AsciiText(
-                text = "PIPE  ${scopeBadge.uppercase()}",
+                text = buildAnnotatedString {
+                    withStyle(SpanStyle(color = c.purple, fontWeight = FontWeight.Bold)) { append("PIPE  ") }
+                    withStyle(SpanStyle(color = c.orange, fontWeight = FontWeight.Bold)) { append(scopeBadge.uppercase()) }
+                },
                 style = AsciiType.title,
-                color = c.fg,
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 headerRightActions()
@@ -1192,16 +1196,19 @@ fun AsciiRaycastPaletteWindow(
                 modifier = Modifier.weight(1f),
                 contentAlignment = Alignment.CenterStart,
             ) {
-                val shownText = if (searchInput.text.isEmpty() && !promptFocused && placeholderText.isNotEmpty()) {
-                    placeholderText.lowercase()
-                } else {
-                    searchInput.text + (if (promptFocused) promptCaret else "")
+                val shownAnnotated = buildAnnotatedString {
+                    if (searchInput.text.isEmpty() && !promptFocused && placeholderText.isNotEmpty()) {
+                        withStyle(SpanStyle(color = c.dim)) { append(placeholderText.lowercase()) }
+                    } else {
+                        withStyle(SpanStyle(color = c.fg)) { append(searchInput.text) }
+                        if (promptFocused) {
+                            withStyle(SpanStyle(color = c.pink, fontWeight = FontWeight.Bold)) { append(promptCaret) }
+                        }
+                    }
                 }
-                val shownCol = if (searchInput.text.isEmpty() && !promptFocused && placeholderText.isNotEmpty()) c.dim else c.fg
                 AsciiText(
-                    text = shownText,
+                    text = shownAnnotated,
                     style = AsciiType.body,
-                    color = shownCol,
                     maxLines = 1,
                     softWrap = false,
                     modifier = Modifier.clearAndSetSemantics {},
@@ -1443,19 +1450,35 @@ fun AsciiDictionaryDetailDialog(
     }
 }
 
+/**
+ * Grid-snapped Contact Avatar (`4x2` cells) using `CellBitmapImage` per `ascii-app` Section 5.
+ * Displays the contact's photo bitmap when available, or their 2-letter monogram in `green` inside the cell box.
+ */
 @Composable
 fun AsciiContactAvatar(
     contact: ContactItem,
     modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
-    AsciiText(
-        text = "[${contact.monogram.take(2).padEnd(2, ' ')}] ",
-        style = AsciiType.body,
-        color = c.dim,
-        maxLines = 1,
-        softWrap = false,
-        modifier = modifier.clearAndSetSemantics {},
+    val context = LocalContext.current
+    var bitmap by remember(contact.photoUri) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(contact.photoUri) {
+        bitmap = if (!contact.photoUri.isNullOrBlank()) {
+            withContext(Dispatchers.IO) {
+                com.sujan.pipe.data.DeviceIntegrationManager.loadContactPhotoBitmap(context, contact.photoUri)
+            }
+        } else {
+            null
+        }
+    }
+    CellBitmapImage(
+        bitmap = bitmap?.asImageBitmap(),
+        contentDescription = "photo of ${contact.displayName}",
+        cellCols = 4,
+        cellRows = 2,
+        placeholderText = contact.monogram.take(2),
+        placeholderColor = c.green,
+        modifier = modifier.padding(end = 6.dp),
     )
 }
 
@@ -1973,29 +1996,43 @@ fun QuickAddInlineCard(
     }
 }
 
+/**
+ * Grid-snapped Image Thumbnail Badge (`4x2` cells) using `CellBitmapImage` per `ascii-app` Section 5.
+ * Tapping opens `AsciiImagePreviewDialog`.
+ */
 @Composable
 fun AsciiThumbnailBadge(
     filePath: String,
     onClick: () -> Unit,
 ) {
     val c = LocalAscii.current
-    AsciiText(
-        text = "[img] ",
-        style = AsciiType.body,
-        color = c.dim,
-        maxLines = 1,
-        softWrap = false,
+    var bitmap by remember(filePath) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(filePath) {
+        bitmap = withContext(Dispatchers.IO) {
+            com.sujan.pipe.data.DeviceIntegrationManager.loadImageThumbnail(filePath, 128)
+        }
+    }
+    CellBitmapImage(
+        bitmap = bitmap?.asImageBitmap(),
+        contentDescription = "image preview thumbnail",
+        cellCols = 4,
+        cellRows = 2,
+        placeholderText = "img",
+        placeholderColor = c.cyan,
         modifier = Modifier
+            .padding(end = 6.dp)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 role = Role.Button,
                 onClick = onClick,
-            )
-            .clearAndSetSemantics { contentDescription = "preview image $filePath" },
+            ),
     )
 }
 
+/**
+ * Grid-snapped Image Preview Modal (`AsciiModalBox` + `CellBitmapImage`) per `ascii-app` Sections 5 & 6.
+ */
 @Composable
 fun AsciiImagePreviewDialog(
     file: LocalFileItem,
@@ -2004,46 +2041,44 @@ fun AsciiImagePreviewDialog(
     onDismiss: () -> Unit,
 ) {
     val c = LocalAscii.current
+    val grid = LocalGridMetrics.current
     var bitmap by remember(file.absolutePath) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var loadFailed by remember(file.absolutePath) { mutableStateOf(false) }
     LaunchedEffect(file.absolutePath) {
-        bitmap = withContext(Dispatchers.IO) {
+        val loaded = withContext(Dispatchers.IO) {
             com.sujan.pipe.data.DeviceIntegrationManager.loadImageThumbnail(file.absolutePath, 512)
         }
+        bitmap = loaded
+        loadFailed = (loaded == null)
     }
     Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(c.bg)
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+        AsciiModalBox(
+            title = "preview?",
+            onDismiss = onDismiss,
         ) {
-            AsciiText(text = "+- preview: ${file.name}", style = AsciiType.title, color = c.accent2, maxLines = 1)
-            AsciiText(text = "${file.parentName} - ${file.formattedSize}", style = AsciiType.small, color = c.dim, maxLines = 1)
-            val bmp = bitmap
-            if (bmp != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 180.dp, max = 320.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = file.name,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            } else {
-                AsciiText("loading image preview...", style = AsciiType.small, color = c.dim)
-            }
+            AsciiText(
+                text = "${file.parentName} - ${file.formattedSize}",
+                style = AsciiType.body,
+                color = c.orange,
+                maxLines = 1,
+            )
+            val previewCols = (grid.cols - 6).coerceIn(16, 32)
+            CellBitmapImage(
+                bitmap = bitmap?.asImageBitmap(),
+                contentDescription = file.name,
+                grid = grid,
+                cellCols = previewCols,
+                cellRows = 10,
+                caption = file.name,
+                placeholderText = if (loadFailed) "[ !img err ]" else "[ loading... ]",
+                placeholderColor = if (loadFailed) c.red else c.cyan,
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiButton("close", onDismiss)
+                AsciiButton("close", onDismiss, secondary = true)
                 AsciiButton("shr", onShare)
                 AsciiButton("open", onOpen, primary = true)
             }
@@ -2101,8 +2136,7 @@ fun AsciiRaycastRow(
     val src = remember { MutableInteractionSource() }
     val pressed by src.collectIsPressedAsState()
     val rowBg = when {
-        pressed -> c.accent
-        isTop -> c.surface
+        pressed || isTop -> c.surface
         else -> Color.Transparent
     }
     val pointer = if (isTop) ">" else " "
@@ -2266,20 +2300,20 @@ fun AsciiRaycastRow(
     }
 
     val effectiveTitleText = if (!customAlias.isNullOrBlank()) "$titleText (@$customAlias)" else titleText
-    val titleAnnotated = remember(effectiveTitleText, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+    val titleAnnotated = remember(effectiveTitleText, highlightQuery, c.fg, c.yellow) {
         buildFzfHighlightedText(
             text = effectiveTitleText,
             highlightQuery = highlightQuery,
-            baseColor = if (pressed) c.bg else c.fg,
-            highlightColor = if (pressed) c.bg else c.accent,
+            baseColor = c.fg,
+            highlightColor = c.yellow,
         )
     }
-    val subAnnotated = remember(subtitleText, highlightQuery, pressed, c.dim, c.accent2, c.bg) {
+    val subAnnotated = remember(subtitleText, highlightQuery, c.dim, c.cyan) {
         buildFzfHighlightedText(
             text = subtitleText,
             highlightQuery = highlightQuery,
-            baseColor = if (pressed) c.bg else c.dim,
-            highlightColor = if (pressed) c.bg else c.accent2,
+            baseColor = c.dim,
+            highlightColor = c.cyan,
         )
     }
 
@@ -2303,14 +2337,14 @@ fun AsciiRaycastRow(
         ) {
             AsciiText(
                 text = "$pointer ",
-                style = if (isTop) AsciiType.title else AsciiType.small,
-                color = if (pressed) c.bg else if (isTop) c.accent else c.dim,
+                style = if (isTop) AsciiType.title else AsciiType.body,
+                color = if (isTop) c.purple else c.dim,
             )
 
             AsciiKindBadge(
                 tag = tagText,
                 color = tagColor,
-                inverted = pressed,
+                inverted = false,
             )
 
             Spacer(Modifier.width(6.dp))
@@ -2361,9 +2395,9 @@ fun AsciiRaycastRow(
 
             if (isTop) {
                 AsciiText(
-                    text = "#1",
+                    text = "*1",
                     style = AsciiType.title,
-                    color = if (pressed) c.bg else c.accent,
+                    color = c.yellow,
                     maxLines = 1,
                     modifier = Modifier.padding(horizontal = 4.dp),
                 )
@@ -3797,7 +3831,7 @@ fun AsciiSliderRow(
             AsciiText(
                 text = barStr,
                 style = AsciiType.title,
-                color = c.fg,
+                color = if (fraction > 0.85f) c.yellow else c.green,
                 softWrap = false,
                 maxLines = 1,
                 modifier = Modifier.clearAndSetSemantics {},
@@ -4671,7 +4705,7 @@ private fun PipeSettingsScreen(
                         BoxWithConstraints(Modifier.fillMaxWidth()) {
                             val cols = rememberCols(AsciiType.small)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                AsciiText("pipe v2.6 (release)", style = AsciiType.title, color = c.accent)
+                                AsciiText("pipe v2.8 (release)", style = AsciiType.title, color = c.purple)
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
                                 AsciiText(leader("system settings", "${state.prefixConfig.systemSettingsClean} <dev|spot|dns|notif>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("whatsapp / biz", "wa <num> / wab <num>", cols), style = AsciiType.small, color = c.good, softWrap = false)
