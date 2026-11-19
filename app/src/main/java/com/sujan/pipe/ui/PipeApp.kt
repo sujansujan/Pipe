@@ -1519,6 +1519,35 @@ fun AsciiContactAvatar(
     )
 }
 
+/**
+ * Grid-snapped Domain Favicon (`3x2` cells) using `CellBitmapImage` + `FaviconManager` RAM/disk cache.
+ * Shows a 2-char domain/keyword monogram fallback while loading or when offline.
+ */
+@Composable
+fun AsciiFaviconBadge(
+    url: String,
+    fallbackText: String,
+    fallbackColor: Color = LocalAscii.current.cyan,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    var bitmap by remember(url) { mutableStateOf(com.sujan.pipe.data.FaviconManager.peekMemory(url)) }
+    LaunchedEffect(url) {
+        if (bitmap == null) {
+            bitmap = com.sujan.pipe.data.FaviconManager.loadFavicon(context, url)
+        }
+    }
+    CellBitmapImage(
+        bitmap = bitmap?.asImageBitmap(),
+        contentDescription = "icon for $fallbackText",
+        cellCols = 3,
+        cellRows = 2,
+        placeholderText = fallbackText.take(2),
+        placeholderColor = fallbackColor,
+        modifier = modifier.padding(end = 6.dp),
+    )
+}
+
 @Composable
 fun AsciiLivePreviewLine(
     previewText: String,
@@ -2413,13 +2442,44 @@ fun AsciiRaycastRow(
 
             Spacer(Modifier.width(6.dp))
 
-            if (item is com.sujan.pipe.domain.PaletteItem.ContactAction) {
-                AsciiContactAvatar(contact = item.contact)
-            } else if (item is com.sujan.pipe.domain.PaletteItem.FileAction && item.file.isImageFile) {
-                AsciiThumbnailBadge(
-                    filePath = item.file.absolutePath,
-                    onClick = { onPreviewChildImage?.invoke(item.file) ?: onOpenActionSheet() },
-                )
+            when {
+                item is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
+                    AsciiContactAvatar(contact = item.contact)
+                }
+                item is com.sujan.pipe.domain.PaletteItem.FileAction && item.file.isImageFile -> {
+                    AsciiThumbnailBadge(
+                        filePath = item.file.absolutePath,
+                        onClick = { onPreviewChildImage?.invoke(item.file) ?: onOpenActionSheet() },
+                    )
+                }
+                item is com.sujan.pipe.domain.PaletteItem.BookmarkAction && item.bookmark.kind == BookmarkKind.LINK -> {
+                    AsciiFaviconBadge(
+                        url = item.bookmark.target,
+                        fallbackText = item.bookmark.alias.ifBlank { item.bookmark.title },
+                        fallbackColor = c.cyan,
+                    )
+                }
+                item is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
+                    AsciiFaviconBadge(
+                        url = item.engine.homeUrl,
+                        fallbackText = item.engine.keyword,
+                        fallbackColor = c.forRole(item.engine.colorRole),
+                    )
+                }
+                item is com.sujan.pipe.domain.PaletteItem.DirectUrlAction -> {
+                    AsciiFaviconBadge(
+                        url = item.targetUrl,
+                        fallbackText = item.displayHost.removePrefix("www."),
+                        fallbackColor = c.green,
+                    )
+                }
+                item is com.sujan.pipe.domain.PaletteItem.HistoryAction -> {
+                    AsciiFaviconBadge(
+                        url = item.entry.resolvedUrl,
+                        fallbackText = item.entry.engineKeyword.ifBlank { item.entry.engineName },
+                        fallbackColor = c.purple,
+                    )
+                }
             }
 
             Column(
@@ -3158,12 +3218,17 @@ fun PipeLibraryScreen(
                                 )
                             }
 
+                            AsciiFaviconBadge(
+                                url = eng.homeUrl,
+                                fallbackText = eng.keyword,
+                                fallbackColor = c.forRole(eng.colorRole),
+                            )
                             AsciiKindBadge(
                                 tag = "${prefixes.pipesClean}:${eng.keyword}",
                                 color = c.forRole(eng.colorRole),
                             )
 
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(6.dp))
 
                             Column(
                                 modifier = Modifier
@@ -3257,8 +3322,15 @@ fun PipeLibraryScreen(
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            if (bm.kind == BookmarkKind.LINK) {
+                                AsciiFaviconBadge(
+                                    url = bm.target,
+                                    fallbackText = bm.alias.ifBlank { bm.title },
+                                    fallbackColor = c.cyan,
+                                )
+                            }
                             AsciiKindBadge(tag = badge, color = badgeCol)
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(6.dp))
                             Column(
                                 modifier = Modifier
                                     .weight(1f)
@@ -3457,8 +3529,13 @@ fun PipeLibraryScreen(
                                     .padding(horizontal = 8.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
+                                AsciiFaviconBadge(
+                                    url = entry.resolvedUrl,
+                                    fallbackText = entry.engineKeyword.ifBlank { entry.engineName },
+                                    fallbackColor = c.purple,
+                                )
                                 AsciiKindBadge(tag = prefixes.historyClean, color = c.accent2)
-                                Spacer(Modifier.width(8.dp))
+                                Spacer(Modifier.width(6.dp))
                                 Column(
                                     modifier = Modifier
                                         .weight(1f)
@@ -3510,18 +3587,21 @@ fun PipeLibraryScreen(
         }
         }
 
-        // Thumb-zone bottom tabs (`pipes`, `bookmarks`, `aliases`, `history`)
-        AsciiCommandBar(
-            items = LibraryTab.entries.map { tab ->
-                val shortLbl = when (tab) {
-                    LibraryTab.PIPES -> "[p]ipes(${engines.size})"
-                    LibraryTab.BOOKMARKS -> "[b]m(${bookmarks.size})"
-                    LibraryTab.ALIASES -> "[@]${universalAliases.size}"
-                    LibraryTab.HISTORY -> "[h]ist(${history.size})"
-                }
-                Triple(shortLbl, activeTab == tab) { activeTab = tab }
-            }
-        )
+        // Thumb-zone bottom tabs with FULL NAMES (2 rows x 2 columns)
+        Column(modifier = Modifier.fillMaxWidth().background(c.bg)) {
+            AsciiCommandBar(
+                items = listOf(
+                    Triple("pipes (${engines.size})", activeTab == LibraryTab.PIPES) { activeTab = LibraryTab.PIPES },
+                    Triple("bookmarks (${bookmarks.size})", activeTab == LibraryTab.BOOKMARKS) { activeTab = LibraryTab.BOOKMARKS },
+                )
+            )
+            AsciiCommandBar(
+                items = listOf(
+                    Triple("aliases (${universalAliases.size})", activeTab == LibraryTab.ALIASES) { activeTab = LibraryTab.ALIASES },
+                    Triple("history (${history.size})", activeTab == LibraryTab.HISTORY) { activeTab = LibraryTab.HISTORY },
+                )
+            )
+        }
     }
 
     val currentTarget = sheetTarget
@@ -4305,10 +4385,10 @@ private fun PipeSettingsScreen(
                             label = "color palette",
                             selectedValue = state.paletteChoice,
                             options = listOf(
-                                PaletteChoice.DRACULA to "drac",
+                                PaletteChoice.DRACULA to "dracula",
                                 PaletteChoice.MOSS to "moss",
-                                PaletteChoice.EMBER to "embr",
-                                PaletteChoice.LAGOON to "lagn",
+                                PaletteChoice.EMBER to "ember",
+                                PaletteChoice.LAGOON to "lagoon",
                             ),
                             onSelect = onPaletteChoiceChange,
                         )
@@ -4568,79 +4648,6 @@ private fun PipeSettingsScreen(
                         }
                     }
 
-                    AsciiBox(title = "routing - pipe & android settings jumpers (${DefaultSystemShortcuts.LIST.size})") {
-                        var filterSys by remember { mutableStateOf(TextFieldValue("")) }
-                        AsciiText(
-                            text = "search or alias pipe's own settings (ovl, idx, thm, rte, bak) and Android system settings:",
-                            style = AsciiType.small,
-                            color = c.dim,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        AsciiTextField(
-                            label = "filter settings jumpers",
-                            promptPrefix = "${p.systemSettingsClean} ",
-                            value = filterSys,
-                            onValueChange = { filterSys = it },
-                            placeholder = "ovl, thm, dev, spot, dns, wifi...",
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        val q = filterSys.text.trim().lowercase()
-                        val filteredShortcuts: List<SystemSettingShortcut> = remember(q) {
-                            if (q.isEmpty()) DefaultSystemShortcuts.LIST
-                            else DefaultSystemShortcuts.LIST.filter {
-                                it.alias.contains(q, ignoreCase = true) ||
-                                    it.title.contains(q, ignoreCase = true) ||
-                                    it.keywords.contains(q, ignoreCase = true)
-                            }
-                        }
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            filteredShortcuts.forEach { sc: SystemSettingShortcut ->
-                                val tKey = "sys:${sc.id}"
-                                val curAlias = state.universalAliases.firstOrNull { it.targetKey == tKey }?.alias
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(min = 44.dp)
-                                        .clickable { onOpenSystemSetting(sc) }
-                                        .padding(vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    AsciiKindBadge(
-                                        tag = "${p.systemSettingsClean}:${sc.alias}",
-                                        color = if (sc.internalPipeSection != null) c.accent else c.accent2,
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        AsciiText(
-                                            text = if (!curAlias.isNullOrBlank()) "${sc.title} (@$curAlias)" else sc.title,
-                                            style = AsciiType.body,
-                                            color = c.fg,
-                                            maxLines = 1,
-                                        )
-                                        AsciiText(
-                                            text = sc.subtitle,
-                                            style = AsciiType.small,
-                                            color = c.dim,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                    AsciiButton(
-                                        label = if (!curAlias.isNullOrBlank()) "@$curAlias" else "@+",
-                                        onClick = {
-                                            settingsAliasTarget = UniversalAlias(
-                                                targetKey = tKey,
-                                                alias = curAlias.orEmpty(),
-                                                label = sc.title,
-                                                category = if (sc.internalPipeSection != null) "pipe:set" else "sys:${sc.alias}",
-                                                subtitle = sc.subtitle,
-                                            )
-                                        },
-                                    )
-                                    AsciiButton("open", { onOpenSystemSetting(sc) })
-                                }
-                            }
-                        }
-                    }
                 }
 
                 SettingsSection.BACKUP -> {
@@ -4744,16 +4751,22 @@ private fun PipeSettingsScreen(
             }
         }
 
-        // Thumb-zone bottom Settings tabs
-        AsciiCommandBar(
-            items = listOf(
-                Triple("[o]vl", activeSection == SettingsSection.OVERLAY) { onSelectSettingsSection(SettingsSection.OVERLAY) },
-                Triple("[i]dx", activeSection == SettingsSection.INDEX) { onSelectSettingsSection(SettingsSection.INDEX) },
-                Triple("[t]hm", activeSection == SettingsSection.THEME) { onSelectSettingsSection(SettingsSection.THEME) },
-                Triple("[r]te", activeSection == SettingsSection.ROUTING) { onSelectSettingsSection(SettingsSection.ROUTING) },
-                Triple("[b]ak", activeSection == SettingsSection.BACKUP) { onSelectSettingsSection(SettingsSection.BACKUP) },
+        // Thumb-zone bottom Settings tabs with FULL NAMES (2 rows)
+        Column(modifier = Modifier.fillMaxWidth().background(c.bg)) {
+            AsciiCommandBar(
+                items = listOf(
+                    Triple("overlay", activeSection == SettingsSection.OVERLAY) { onSelectSettingsSection(SettingsSection.OVERLAY) },
+                    Triple("index", activeSection == SettingsSection.INDEX) { onSelectSettingsSection(SettingsSection.INDEX) },
+                    Triple("theme", activeSection == SettingsSection.THEME) { onSelectSettingsSection(SettingsSection.THEME) },
+                )
             )
-        )
+            AsciiCommandBar(
+                items = listOf(
+                    Triple("routing", activeSection == SettingsSection.ROUTING) { onSelectSettingsSection(SettingsSection.ROUTING) },
+                    Triple("backup", activeSection == SettingsSection.BACKUP) { onSelectSettingsSection(SettingsSection.BACKUP) },
+                )
+            )
+        }
     }
 
     if (settingsAliasTarget != null) {

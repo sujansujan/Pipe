@@ -22,7 +22,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -588,7 +590,7 @@ fun <T> AsciiDropdownRow(
     if (modalOpen) {
         Dialog(onDismissRequest = { modalOpen = false }) {
             AsciiModalBox(
-                title = "$cleanLabel?",
+                title = cleanLabel,
                 onDismiss = { modalOpen = false },
             ) {
                 options.forEach { (optVal, optLabel) ->
@@ -597,8 +599,8 @@ fun <T> AsciiDropdownRow(
                     val optPressed by optSrc.collectIsPressedAsState()
                     val highlighted = isSel || optPressed
                     val annotated = buildAnnotatedString {
-                        withStyle(SpanStyle(color = if (isSel) c.purple else c.dim, fontWeight = FontWeight.Bold)) {
-                            append(if (isSel) "> " else "  ")
+                        withStyle(SpanStyle(color = if (isSel) c.pink else c.dim, fontWeight = FontWeight.Bold)) {
+                            append(if (isSel) "[*] " else "[ ] ")
                         }
                         withStyle(
                             SpanStyle(
@@ -627,27 +629,16 @@ fun <T> AsciiDropdownRow(
                             .semantics(mergeDescendants = true) {
                                 contentDescription = optLabel.lowercase(Locale.US) + (if (isSel) ", selected" else "")
                             }
-                            .padding(horizontal = 4.dp),
+                            .padding(horizontal = 8.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         AsciiText(
                             text = annotated,
                             style = AsciiType.body,
                             maxLines = 1,
-                            modifier = Modifier.clearAndSetSemantics {},
+                            modifier = Modifier.weight(1f).clearAndSetSemantics {},
                         )
                     }
-                }
-                Spacer(Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    AsciiButton(
-                        label = "keep",
-                        secondary = true,
-                        onClick = { modalOpen = false },
-                    )
                 }
             }
         }
@@ -751,69 +742,44 @@ fun AsciiModalBox(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val c = LocalAscii.current
+    val cleanTitle = title.lowercase(Locale.US).trim().removeSuffix("?")
     Column(
         modifier = modifier
             .fillMaxWidth()
             .background(c.surface)
-            .padding(6.dp),
+            .border(1.dp, c.purple)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clearAndSetSemantics {},
-        ) {
-            val cols = rememberCols(AsciiType.body)
-            val cleanTitle = title.lowercase(Locale.US).trim()
-            val prefix = "+- $cleanTitle "
-            val dashCount = (cols - prefix.length - 1).coerceAtLeast(2)
-            val topRule = prefix + "-".repeat(dashCount) + "+"
-            AsciiText(
-                text = topRule,
-                style = AsciiType.title,
-                color = c.purple,
-                softWrap = false,
-                maxLines = 1,
-            )
-        }
         Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             AsciiText(
-                text = "| ",
-                style = AsciiType.body,
-                color = c.dim,
-                modifier = Modifier.clearAndSetSemantics {},
-            )
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                content = content,
-            )
-            AsciiText(
-                text = " |",
-                style = AsciiType.body,
-                color = c.dim,
-                modifier = Modifier.clearAndSetSemantics {},
-            )
-        }
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clearAndSetSemantics {},
-        ) {
-            val cols = rememberCols(AsciiType.body)
-            val bottomRule = "+" + "-".repeat((cols - 2).coerceAtLeast(6)) + "+"
-            AsciiText(
-                text = bottomRule,
-                style = AsciiType.body,
+                text = cleanTitle.uppercase(Locale.US),
+                style = AsciiType.title,
                 color = c.purple,
-                softWrap = false,
                 maxLines = 1,
             )
+            if (onDismiss != null) {
+                AsciiButton(
+                    label = "x",
+                    secondary = true,
+                    onClick = onDismiss,
+                    spokenLabel = "close $cleanTitle",
+                )
+            }
         }
+        AsciiRule(glyph = "-", color = c.dim)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 420.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(top = 4.dp, bottom = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            content = content,
+        )
     }
 }
 

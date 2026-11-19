@@ -91,6 +91,7 @@ import com.sujan.pipe.model.SystemSettingShortcut
 import com.sujan.pipe.model.UniversalAlias
 import com.sujan.pipe.model.WhatsAppFlavor
 import com.sujan.pipe.ui.AsciiContactAvatar
+import com.sujan.pipe.ui.AsciiFaviconBadge
 import com.sujan.pipe.ui.AsciiDictionaryDetailDialog
 import com.sujan.pipe.ui.AsciiImagePreviewDialog
 import com.sujan.pipe.ui.AsciiThumbnailBadge
@@ -1312,7 +1313,8 @@ private fun SleekOverlayRow(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText("$ptr [url] ", style = AsciiType.small, color = if (pressed) c.bg else c.good)
+                AsciiText("$ptr ", style = AsciiType.small, color = if (isTop) c.purple else c.dim)
+                AsciiFaviconBadge(url = item.targetUrl, fallbackText = item.displayHost.removePrefix("www."), fallbackColor = c.green)
                 Column(modifier = Modifier.weight(1f)) {
                     AsciiText("Open ${item.displayHost}$aliasSuffix", style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
                     AsciiText(item.targetUrl, style = AsciiType.small, color = c.dim, maxLines = 1)
@@ -1645,7 +1647,12 @@ private fun SleekOverlayRow(
                         BookmarkKind.FILE -> "[$bPre:f.]"
                         BookmarkKind.LINK -> "[$bPre:bm]"
                     }
-                    AsciiText("$ptr $badge ", style = AsciiType.small, color = if (pressed) c.bg else c.warn)
+                    AsciiText("$ptr ", style = AsciiType.small, color = if (isTop) c.purple else c.dim)
+                    if (bm.kind == BookmarkKind.LINK) {
+                        AsciiFaviconBadge(url = bm.target, fallbackText = bm.alias.ifBlank { bm.title }, fallbackColor = c.cyan)
+                    } else {
+                        AsciiText("$badge ", style = AsciiType.small, color = c.warn)
+                    }
                     Column(modifier = Modifier.weight(1f)) {
                         AsciiText(
                             text = titleAnn,
@@ -1749,7 +1756,8 @@ private fun SleekOverlayRow(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText("$ptr [${prefixes.pipesClean}:${eng.keyword}] ", style = AsciiType.small, color = if (pressed) c.bg else c.forRole(eng.colorRole))
+                AsciiText("$ptr ", style = AsciiType.small, color = if (isTop) c.purple else c.dim)
+                AsciiFaviconBadge(url = eng.homeUrl, fallbackText = eng.keyword, fallbackColor = c.forRole(eng.colorRole))
                 AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1, modifier = Modifier.weight(1f))
                 if (item.isHome) {
                     if (onEditEngine != null) {
@@ -1826,7 +1834,8 @@ private fun SleekOverlayRow(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText("$ptr [${prefixes.historyClean}] ", style = AsciiType.small, color = c.cyan)
+                AsciiText("$ptr ", style = AsciiType.small, color = if (isTop) c.purple else c.dim)
+                AsciiFaviconBadge(url = h.resolvedUrl, fallbackText = h.engineKeyword.ifBlank { h.engineName }, fallbackColor = c.purple)
                 AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1, modifier = Modifier.weight(1f))
             }
         }
