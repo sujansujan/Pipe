@@ -505,23 +505,6 @@ private fun SleekRaycastOverlay(
         results = computed
     }
 
-    var lastOverlayAutoAlias by remember { mutableStateOf("") }
-    LaunchedEffect(input.text, results, autoLaunchExactAlias, universalAliases) {
-        val raw = input.text.trim().lowercase()
-        if (raw.isEmpty()) {
-            lastOverlayAutoAlias = ""
-            return@LaunchedEffect
-        }
-        if (autoLaunchExactAlias && raw != lastOverlayAutoAlias && aliasEditTarget == null && inlineQuickAdd == null) {
-            val matched = universalAliases.firstOrNull { it.aliasLower == raw }
-            val top = results.firstOrNull()
-            if (matched != null && top != null && top.usageKey == matched.targetKey) {
-                lastOverlayAutoAlias = raw
-                executeItem(top)
-            }
-        }
-    }
-
     LaunchedEffect(Unit) {
         // 1. Trigger keyboard and synchronized 185ms FastOutSlowIn entrance simultaneously on Frame #1
         runCatching {
@@ -782,6 +765,23 @@ private fun SleekRaycastOverlay(
             }
             is PaletteItem.HistoryAction -> {
                 if (!onDispatchUrl(item.entry.rawInput, item.entry.resolvedUrl)) errorMsg = "! no browser found"
+            }
+        }
+    }
+
+    var lastOverlayAutoAlias by remember { mutableStateOf("") }
+    LaunchedEffect(input.text, results, autoLaunchExactAlias, universalAliases) {
+        val raw = input.text.trim().lowercase()
+        if (raw.isEmpty()) {
+            lastOverlayAutoAlias = ""
+            return@LaunchedEffect
+        }
+        if (autoLaunchExactAlias && raw != lastOverlayAutoAlias && aliasEditTarget == null && inlineQuickAdd == null) {
+            val matched = universalAliases.firstOrNull { it.aliasLower == raw }
+            val top = results.firstOrNull()
+            if (matched != null && top != null && top.usageKey == matched.targetKey) {
+                lastOverlayAutoAlias = raw
+                executeItem(top)
             }
         }
     }

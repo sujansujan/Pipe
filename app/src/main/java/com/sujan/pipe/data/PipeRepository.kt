@@ -375,10 +375,10 @@ class PipeRepository(context: Context) {
     fun saveShowSearchBoxScopeBadge(show: Boolean) = prefs.edit().putBoolean("search_box_scope_badge_v1", show).apply()
 
     fun loadAutoLaunchExactAlias(): Boolean =
-        prefs.getBoolean(KEY_AUTO_LAUNCH_EXACT_ALIAS, false)
+        prefs.getBoolean("auto_launch_exact_alias_v1", false)
 
     fun saveAutoLaunchExactAlias(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_AUTO_LAUNCH_EXACT_ALIAS, enabled).apply()
+        prefs.edit().putBoolean("auto_launch_exact_alias_v1", enabled).apply()
     }
 
     fun loadShowSearchBoxMenuBtn(): Boolean = prefs.getBoolean("search_box_menu_btn_v1", true)
