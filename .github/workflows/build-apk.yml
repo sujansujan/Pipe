@@ -43,6 +43,12 @@ jobs:
               -dname "CN=Sujan Devkota, OU=Pipe, O=Sujan, L=Kathmandu, S=Bagmati, C=NP"
           fi
 
+      - name: Fetch JetBrains Mono font (with bundled fallback)
+        run: |
+          mkdir -p app/src/main/res/font
+          curl -fsSL "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/master/fonts/ttf/JetBrainsMono-Regular.ttf" -o app/src/main/res/font/mono_regular.ttf || true
+          curl -fsSL "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/master/fonts/ttf/JetBrainsMono-Bold.ttf" -o app/src/main/res/font/mono_bold.ttf || true
+
       - name: Run unit tests
         run: ./gradlew testReleaseUnitTest --stacktrace
 

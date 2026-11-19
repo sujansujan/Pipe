@@ -236,7 +236,10 @@ enum class PaletteChoice(val palette: AsciiPalette) {
 }
 
 val LocalAscii = staticCompositionLocalOf { DraculaAlucard.dark }
-val Mono: FontFamily = FontFamily.Monospace
+val Mono: FontFamily = FontFamily(
+    Font(R.font.mono_regular, FontWeight.Normal),
+    Font(R.font.mono_bold, FontWeight.Bold),
+)
 
 /**
  * Section 1 & Section 4 Typography:

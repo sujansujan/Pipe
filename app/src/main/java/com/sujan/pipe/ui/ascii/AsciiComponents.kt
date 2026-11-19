@@ -1146,3 +1146,85 @@ fun frame(title: String, lines: List<String>, cols: Int): String {
     val bottom = "+" + "-".repeat(inner) + "+"
     return (listOf(top) + body + bottom).joinToString("\n")
 }
+
+/**
+ * 1-tap inline segmented option selector (`label:` followed by `[opt1] [*opt2*] [opt3]`).
+ * Eliminates modal dropdown clicks for 2-4 option settings.
+ */
+@Composable
+fun <T> AsciiInlineSegmentedRow(
+    label: String,
+    selectedValue: T,
+    options: List<Pair<T, String>>,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+) {
+    val c = LocalAscii.current
+    val haptics = LocalHapticFeedback.current
+    val cleanLabel = label.lowercase(Locale.US)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+    ) {
+        AsciiText(
+            text = "$cleanLabel:",
+            style = AsciiType.body,
+            color = c.purple,
+            maxLines = 1,
+        )
+        if (!subtitle.isNullOrBlank()) {
+            AsciiText(
+                text = "  ${subtitle.lowercase(Locale.US)}",
+                style = AsciiType.body,
+                color = c.dim,
+                maxLines = 1,
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            options.forEach { (optVal, optLabel) ->
+                val isSel = optVal == selectedValue
+                val src = remember { MutableInteractionSource() }
+                val pressed by src.collectIsPressedAsState()
+                val active = isSel || pressed
+                val text = if (isSel) "[*${optLabel.lowercase(Locale.US)}*]" else "[${optLabel.lowercase(Locale.US)}]"
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 44.dp)
+                        .background(if (active) c.surface else Color.Transparent)
+                        .clickable(
+                            interactionSource = src,
+                            indication = null,
+                            role = Role.Button,
+                            onClick = {
+                                runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                                onSelect(optVal)
+                            },
+                        )
+                        .semantics(mergeDescendants = true) {
+                            contentDescription = "$cleanLabel $optLabel" + (if (isSel) ", selected" else "")
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    AsciiText(
+                        text = text,
+                        style = if (active) AsciiType.title else AsciiType.body,
+                        color = if (isSel) c.pink else if (pressed) c.cyan else c.dim,
+                        softWrap = false,
+                        maxLines = 1,
+                        modifier = Modifier.clearAndSetSemantics {},
+                    )
+                }
+            }
+        }
+    }
+}

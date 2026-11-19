@@ -438,6 +438,7 @@ class MainActivity : ComponentActivity() {
                 onSearchBoxPlaceholderChange = viewModel::setSearchBoxPlaceholder,
                 onShowScopeBadgeChange = viewModel::setShowSearchBoxScopeBadge,
                 onShowMenuBtnChange = viewModel::setShowSearchBoxMenuBtn,
+                onAutoLaunchExactAliasChange = viewModel::setAutoLaunchExactAlias,
                 onPrefixConfigChange = viewModel::setPrefixConfig,
                 onResetPrefixConfig = viewModel::resetPrefixConfig,
                 onLaunchOverlayPreview = ::launchOverlayActivity,

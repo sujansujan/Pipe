@@ -44,7 +44,9 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -98,6 +100,7 @@ import com.sujan.pipe.ui.ascii.AsciiBox
 import com.sujan.pipe.ui.ascii.AsciiButton
 import com.sujan.pipe.ui.ascii.AsciiCommandBar
 import com.sujan.pipe.ui.ascii.AsciiDropdownRow
+import com.sujan.pipe.ui.ascii.AsciiInlineSegmentedRow
 import com.sujan.pipe.ui.ascii.AsciiModalBox
 import com.sujan.pipe.ui.ascii.AsciiRule
 import com.sujan.pipe.ui.ascii.AsciiSection
@@ -431,6 +434,7 @@ fun PipeApp(
     onSearchBoxPlaceholderChange: (String) -> Unit = {},
     onShowScopeBadgeChange: (Boolean) -> Unit = {},
     onShowMenuBtnChange: (Boolean) -> Unit = {},
+    onAutoLaunchExactAliasChange: (Boolean) -> Unit = {},
     onPrefixConfigChange: (PrefixConfig) -> Unit = {},
     onResetPrefixConfig: () -> Unit = {},
     onLaunchOverlayPreview: () -> Unit,
@@ -570,6 +574,7 @@ fun PipeApp(
                         onSearchBoxPlaceholderChange = onSearchBoxPlaceholderChange,
                         onShowScopeBadgeChange = onShowScopeBadgeChange,
                         onShowMenuBtnChange = onShowMenuBtnChange,
+                        onAutoLaunchExactAliasChange = onAutoLaunchExactAliasChange,
                         onPrefixConfigChange = onPrefixConfigChange,
                         onResetPrefixConfig = onResetPrefixConfig,
                         onImportDictionaryFileClick = onImportDictionaryFileClick,
@@ -678,6 +683,24 @@ private fun PipePromptScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     var inlineQuickAdd by remember { mutableStateOf<com.sujan.pipe.domain.PaletteItem.QuickAddAction?>(null) }
     val p = state.prefixConfig
+
+    var lastAutoLaunchedQuery by remember { mutableStateOf("") }
+    LaunchedEffect(state.searchInput.text, state.paletteResults, state.autoLaunchExactAlias, state.universalAliases) {
+        val raw = state.searchInput.text.trim().lowercase()
+        if (raw.isEmpty()) {
+            lastAutoLaunchedQuery = ""
+            return@LaunchedEffect
+        }
+        if (state.autoLaunchExactAlias && raw != lastAutoLaunchedQuery) {
+            val matchedAlias = state.universalAliases.firstOrNull { it.aliasLower == raw }
+            val top = state.paletteResults.firstOrNull()
+            if (matchedAlias != null && top != null && top.usageKey == matchedAlias.targetKey) {
+                lastAutoLaunchedQuery = raw
+                onSearchInputChange(TextFieldValue(""))
+                onSubmitPrimaryAction()
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         runCatching {
@@ -878,14 +901,16 @@ fun AsciiScopeChip(
             .padding(horizontal = 2.dp, vertical = 2.dp),
         contentAlignment = Alignment.Center,
     ) {
+        val formattedLabel = if (label.contains('[')) label else if (active) "[*$label*]" else "[$label]"
         AsciiText(
-            text = if (active) "[*$label*]" else "[$label]",
-            style = if (active) AsciiType.title else AsciiType.body,
-            color = if (highlighted) c.bg else if (active) c.accent else c.dim,
+            text = formattedLabel,
+            style = if (active || pressed) AsciiType.title else AsciiType.body,
+            color = if (active) c.pink else if (pressed) c.cyan else c.dim,
             maxLines = 1,
+            softWrap = false,
             modifier = Modifier
-                .background(if (highlighted) c.accent else Color.Transparent)
-                .padding(horizontal = 3.dp, vertical = 1.dp),
+                .background(if (highlighted) c.surface else Color.Transparent)
+                .padding(horizontal = 3.dp, vertical = 2.dp),
         )
     }
 }
@@ -977,21 +1002,11 @@ fun AsciiRaycastPaletteWindow(
     }
 
     val scopeChips = listOf(
-        prefixes.systemSettingsClean to (parsedCommand.mode == PromptIntentMode.SYSTEM_SETTINGS_ONLY),
-        "wa" to (parsedCommand.mode == PromptIntentMode.DIRECT_NUMBER_ONLY && parsedCommand.directNumberMode == DirectNumberPrimaryMode.WHATSAPP_PERSONAL),
-        "wab" to (parsedCommand.mode == PromptIntentMode.DIRECT_NUMBER_ONLY && parsedCommand.directNumberMode == DirectNumberPrimaryMode.WHATSAPP_BUSINESS),
-        "timer" to (parsedCommand.mode == PromptIntentMode.TIMER_ALARM_ONLY && !parsedCommand.isAlarmCommand),
-        "alarm" to (parsedCommand.mode == PromptIntentMode.TIMER_ALARM_ONLY && parsedCommand.isAlarmCommand),
-        prefixes.dictionaryClean to (parsedCommand.mode == PromptIntentMode.DICTIONARY_ONLY),
-        prefixes.clipboardClean to (parsedCommand.mode == PromptIntentMode.CLIPBOARD_ONLY),
-        prefixes.contactsClean to (parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY),
-        prefixes.filesClean to (parsedCommand.mode == PromptIntentMode.FILES_ONLY || parsedCommand.mode == PromptIntentMode.DIRS_ONLY),
-        prefixes.bookmarksClean to (parsedCommand.mode == PromptIntentMode.BOOKMARKS_ONLY),
-        prefixes.pipesClean to (parsedCommand.mode == PromptIntentMode.PIPES_LIST || (parsedCommand.mode == PromptIntentMode.ENGINE_ONLY && !parsedCommand.matchedEngine?.keyword.equals("yt", ignoreCase = true))),
-        prefixes.appsClean to (parsedCommand.mode == PromptIntentMode.APPS_ONLY),
-        prefixes.historyClean to (parsedCommand.mode == PromptIntentMode.HISTORY_ONLY),
-        "dl" to (parsedCommand.mode == PromptIntentMode.SCOPED_FOLDER && parsedCommand.scopedFolderBookmark?.alias.equals("dl", ignoreCase = true)),
-        "yt" to (parsedCommand.mode == PromptIntentMode.ENGINE_ONLY && parsedCommand.matchedEngine?.keyword.equals("yt", ignoreCase = true)),
+        Triple(prefixes.appsClean, "[a]pp", parsedCommand.mode == PromptIntentMode.APPS_ONLY),
+        Triple(prefixes.filesClean, "[f]ile", parsedCommand.mode == PromptIntentMode.FILES_ONLY || parsedCommand.mode == PromptIntentMode.DIRS_ONLY),
+        Triple(prefixes.contactsClean, "[c]ontact", parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY),
+        Triple(prefixes.systemSettingsClean, "[s]et", parsedCommand.mode == PromptIntentMode.SYSTEM_SETTINGS_ONLY),
+        Triple("wa", "[w]a", parsedCommand.mode == PromptIntentMode.DIRECT_NUMBER_ONLY),
     )
 
     Column(
@@ -1123,6 +1138,26 @@ fun AsciiRaycastPaletteWindow(
                             onOpenAliasDialog = if (rowAliasTarget != null) {
                                 { aliasDialogTarget = rowAliasTarget }
                             } else null,
+                            onSwipeRightSecondary = {
+                                when (item) {
+                                    is com.sujan.pipe.domain.PaletteItem.ContactAction -> onWhatsAppContact(item.contact)
+                                    is com.sujan.pipe.domain.PaletteItem.AppAction -> onAppInfoInstalledApp?.invoke(item.app)
+                                    is com.sujan.pipe.domain.PaletteItem.AppShortcutAction -> onAppInfoInstalledApp?.invoke(InstalledAppItem(item.shortcut.appLabel, item.shortcut.packageName))
+                                    is com.sujan.pipe.domain.PaletteItem.FileAction -> {
+                                        if (item.file.isDirectory) {
+                                            expandedFolderPath = if (expandedFolderPath == item.file.absolutePath) null else item.file.absolutePath
+                                        } else {
+                                            onShareFile?.invoke(item.file)
+                                        }
+                                    }
+                                    is com.sujan.pipe.domain.PaletteItem.DirectNumberAction -> {
+                                        val alt = if (item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_PERSONAL) DirectNumberPrimaryMode.WHATSAPP_BUSINESS else DirectNumberPrimaryMode.WHATSAPP_PERSONAL
+                                        onExecuteDirectNumber(item, alt)
+                                    }
+                                    is com.sujan.pipe.domain.PaletteItem.TimerAlarmAction -> onExecuteTimerAlarm(item, false)
+                                    else -> actionSheetItem = item
+                                }
+                            },
                             onToggleFolderPeek = if (folderPath != null) {
                                 { path -> expandedFolderPath = if (expandedFolderPath == path) null else path }
                             } else null,
@@ -1150,28 +1185,30 @@ fun AsciiRaycastPaletteWindow(
             )
         }
 
-        AsciiRule(glyph = "-", color = c.border)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(c.surface)
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            scopeChips.forEach { (alias, isActive) ->
-                AsciiScopeChip(
-                    label = "$alias:",
-                    active = isActive,
-                    onClick = {
-                        if (isActive) {
-                            onSearchInputChange(TextFieldValue(""))
-                        } else {
-                            onAliasPillClick(alias)
-                        }
-                    },
-                )
+        if (searchInput.text.isBlank()) {
+            AsciiRule(glyph = "-", color = c.dim)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(c.bg)
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                scopeChips.forEach { (alias, chipLabel, isActive) ->
+                    AsciiScopeChip(
+                        label = chipLabel,
+                        active = isActive,
+                        onClick = {
+                            if (isActive) {
+                                onSearchInputChange(TextFieldValue(""))
+                            } else {
+                                onAliasPillClick(alias)
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
 
@@ -2120,6 +2157,7 @@ fun AsciiRaycastRow(
     onExecute: () -> Unit,
     onOpenActionSheet: () -> Unit = {},
     onOpenAliasDialog: (() -> Unit)? = null,
+    onSwipeRightSecondary: (() -> Unit)? = null,
     prefixes: PrefixConfig = PrefixConfig(),
     customAlias: String? = null,
     highlightQuery: String = "",
@@ -2317,12 +2355,38 @@ fun AsciiRaycastRow(
         )
     }
 
+    val haptics = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val swipeThresholdPx = remember(density) { with(density) { 56.dp.toPx() } }
     Column(Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 50.dp)
+                .heightIn(min = 44.dp)
                 .background(rowBg)
+                .pointerInput(item.usageKey, onOpenAliasDialog, onSwipeRightSecondary) {
+                    var accumX = 0f
+                    var triggered = false
+                    detectHorizontalDragGestures(
+                        onDragStart = { accumX = 0f; triggered = false },
+                        onDragEnd = { accumX = 0f; triggered = false },
+                        onDragCancel = { accumX = 0f; triggered = false },
+                        onHorizontalDrag = { change, dragAmount ->
+                            accumX += dragAmount
+                            if (!triggered && accumX <= -swipeThresholdPx && onOpenAliasDialog != null) {
+                                triggered = true
+                                change.consume()
+                                runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                                onOpenAliasDialog()
+                            } else if (!triggered && accumX >= swipeThresholdPx && onSwipeRightSecondary != null) {
+                                triggered = true
+                                change.consume()
+                                runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                                onSwipeRightSecondary()
+                            }
+                        },
+                    )
+                }
                 .combinedClickable(
                     interactionSource = src,
                     indication = null,
@@ -2385,13 +2449,7 @@ fun AsciiRaycastRow(
                 )
             }
 
-            if (onOpenAliasDialog != null && (!customAlias.isNullOrBlank() || isTop)) {
-                AsciiButton(
-                    label = if (!customAlias.isNullOrBlank()) "@$customAlias" else "@+",
-                    onClick = onOpenAliasDialog,
-                    spokenLabel = "set alias for $titleText",
-                )
-            }
+
 
             if (isTop) {
                 AsciiText(
@@ -2427,12 +2485,6 @@ fun AsciiRaycastRow(
                 AsciiButton(
                     label = "start",
                     onClick = { onExecuteTimerAlarm(item, true) },
-                    primary = isTop,
-                )
-            } else if (item is com.sujan.pipe.domain.PaletteItem.SystemSettingAction) {
-                AsciiButton(
-                    label = "open",
-                    onClick = onExecute,
                     primary = isTop,
                 )
             }
@@ -3029,32 +3081,8 @@ fun PipeLibraryScreen(
             },
         )
 
-        // Flush-aligned equal-width (`Modifier.weight(1f)`) Chip Tabs Row (`pipes`, `bookmarks`, `history`)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(c.surface)
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            LibraryTab.entries.forEach { tab ->
-                val count = when (tab) {
-                    LibraryTab.PIPES -> engines.size
-                    LibraryTab.BOOKMARKS -> bookmarks.size
-                    LibraryTab.ALIASES -> universalAliases.size
-                    LibraryTab.HISTORY -> history.size
-                }
-                AsciiScopeChip(
-                    label = "${tab.label} ($count)",
-                    active = activeTab == tab,
-                    onClick = { activeTab = tab },
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-        AsciiRule(glyph = "-", color = c.border)
-
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxSize()) {
         when (activeTab) {
             LibraryTab.PIPES -> {
                 LazyColumn(
@@ -3463,21 +3491,37 @@ fun PipeLibraryScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(c.surface)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                        .background(c.bg)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
                 ) {
                     AsciiButton(
                         label = "clear history",
+                        destructive = true,
                         onClick = onClearHistory,
                         enabled = history.isNotEmpty(),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 46.dp),
+                            .heightIn(min = 44.dp),
                         spokenLabel = "clear history",
                     )
                 }
             }
         }
+        }
+        }
+
+        // Thumb-zone bottom tabs (`pipes`, `bookmarks`, `aliases`, `history`)
+        AsciiCommandBar(
+            items = LibraryTab.entries.map { tab ->
+                val shortLbl = when (tab) {
+                    LibraryTab.PIPES -> "[p]ipes(${engines.size})"
+                    LibraryTab.BOOKMARKS -> "[b]m(${bookmarks.size})"
+                    LibraryTab.ALIASES -> "[@]${universalAliases.size}"
+                    LibraryTab.HISTORY -> "[h]ist(${history.size})"
+                }
+                Triple(shortLbl, activeTab == tab) { activeTab = tab }
+            }
+        )
     }
 
     val currentTarget = sheetTarget
@@ -3922,6 +3966,7 @@ private fun PipeSettingsScreen(
     onSearchBoxPlaceholderChange: (String) -> Unit,
     onShowScopeBadgeChange: (Boolean) -> Unit,
     onShowMenuBtnChange: (Boolean) -> Unit,
+    onAutoLaunchExactAliasChange: (Boolean) -> Unit = {},
     onPrefixConfigChange: (PrefixConfig) -> Unit,
     onResetPrefixConfig: () -> Unit,
     onImportDictionaryFileClick: () -> Unit = {},
@@ -3949,44 +3994,7 @@ private fun PipeSettingsScreen(
             },
         )
 
-        // Flush-aligned 2-row grid of full-name Settings tabs (`overlay`, `index`, `theme` / `routing`, `backup`)
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(c.surface)
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                listOf(SettingsSection.OVERLAY, SettingsSection.INDEX, SettingsSection.THEME).forEach { tab ->
-                    AsciiScopeChip(
-                        label = tab.label,
-                        active = activeSection == tab,
-                        onClick = { onSelectSettingsSection(tab) },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                listOf(SettingsSection.ROUTING, SettingsSection.BACKUP).forEach { tab ->
-                    AsciiScopeChip(
-                        label = tab.label,
-                        active = activeSection == tab,
-                        onClick = { onSelectSettingsSection(tab) },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-        }
-        AsciiRule(glyph = "-", color = c.border)
+
 
         Column(
             modifier = Modifier
@@ -4012,24 +4020,24 @@ private fun PipeSettingsScreen(
                             onValueChange = onOverlayDimChange,
                         )
 
-                        AsciiDropdownRow(
+                        AsciiInlineSegmentedRow(
                             label = "overlay position",
                             selectedValue = state.overlayBottomAnchored,
                             options = listOf(
-                                true to "Bottom (above keyboard)",
-                                false to "Top of screen",
+                                true to "bottom",
+                                false to "top",
                             ),
                             onSelect = onOverlayBottomChange,
                         )
 
-                        AsciiDropdownRow(
+                        AsciiInlineSegmentedRow(
                             label = "corner radius",
                             selectedValue = state.overlayCornerRadiusDp,
                             options = listOf(
-                                10 to "10dp (Default)",
-                                0 to "0dp (Sharp ASCII)",
-                                16 to "16dp (Medium)",
-                                24 to "24dp (Round)",
+                                0 to "0dp",
+                                10 to "10dp",
+                                16 to "16dp",
+                                24 to "24dp",
                             ),
                             onSelect = onOverlayCornerChange,
                         )
@@ -4079,15 +4087,14 @@ private fun PipeSettingsScreen(
                             placeholder = "pipe for???",
                         )
                         Spacer(Modifier.height(4.dp))
-                        AsciiDropdownRow(
+                        AsciiInlineSegmentedRow(
                             label = "prompt prefix",
                             selectedValue = state.searchBoxPrefix,
                             options = listOf(
-                                "> " to "> (Arrow)",
-                                "$ " to "$ (Shell)",
-                                "| " to "| (Pipe)",
-                                "$ " to "$ (Lambda)",
-                                "" to "None (Blank)",
+                                "> " to ">",
+                                "$ " to "$",
+                                "| " to "|",
+                                "" to "none",
                             ),
                             onSelect = onSearchBoxPrefixChange,
                         )
@@ -4284,20 +4291,25 @@ private fun PipeSettingsScreen(
                             color = c.dim,
                         )
                         Spacer(Modifier.height(6.dp))
-                        AsciiDropdownRow(
+                        AsciiInlineSegmentedRow(
                             label = "theme mode",
                             selectedValue = state.themeMode,
                             options = listOf(
-                                ThemeMode.System to "System default",
-                                ThemeMode.Dark to "Dark mode",
-                                ThemeMode.Light to "Light mode",
+                                ThemeMode.System to "sys",
+                                ThemeMode.Dark to "dark",
+                                ThemeMode.Light to "light",
                             ),
                             onSelect = onThemeModeChange,
                         )
-                        AsciiDropdownRow(
+                        AsciiInlineSegmentedRow(
                             label = "color palette",
                             selectedValue = state.paletteChoice,
-                            options = PaletteChoice.entries.map { it to it.palette.name },
+                            options = listOf(
+                                PaletteChoice.DRACULA to "drac",
+                                PaletteChoice.MOSS to "moss",
+                                PaletteChoice.EMBER to "embr",
+                                PaletteChoice.LAGOON to "lagn",
+                            ),
                             onSelect = onPaletteChoiceChange,
                         )
                     }
@@ -4502,23 +4514,33 @@ private fun PipeSettingsScreen(
                             options = browserOptions,
                             onSelect = onPreferredBrowserChange,
                         )
-                        AsciiDropdownRow(
+                        AsciiInlineSegmentedRow(
                             label = "whatsapp target (wa / wab)",
-                            subtitle = "choose default for unsaved numbers & contacts (`wa` = Personal, `wab` = Business)",
+                            subtitle = "default for unsaved numbers & contacts",
                             selectedValue = state.whatsAppFlavor,
-                            options = WhatsAppFlavor.entries.map { it to it.label },
+                            options = listOf(
+                                WhatsAppFlavor.BOTH to "both",
+                                WhatsAppFlavor.PERSONAL to "wa",
+                                WhatsAppFlavor.BUSINESS to "wa.b",
+                            ),
                             onSelect = onWhatsAppFlavorChange,
                         )
-                        AsciiDropdownRow(
+                        AsciiInlineSegmentedRow(
                             label = "share text action",
                             subtitle = "when sharing or selecting text",
                             selectedValue = state.externalTextMode,
                             options = listOf(
-                                ExternalTextMode.OPEN_OVERLAY to "Open floating overlay",
-                                ExternalTextMode.OPEN_PROMPT to "Open main prompt",
-                                ExternalTextMode.DIRECT_PIPE to "Pipe immediately",
+                                ExternalTextMode.OPEN_OVERLAY to "overlay",
+                                ExternalTextMode.OPEN_PROMPT to "prompt",
+                                ExternalTextMode.DIRECT_PIPE to "pipe",
                             ),
                             onSelect = onExternalTextModeChange,
+                        )
+                        AsciiToggleRow(
+                            label = "auto-launch on exact @alias",
+                            subtitle = "runs #1 match immediately when you type an exact custom alias",
+                            checked = state.autoLaunchExactAlias,
+                            onCheckedChange = onAutoLaunchExactAliasChange,
                         )
                         AsciiToggleRow(
                             label = "record local command history",
@@ -4705,7 +4727,7 @@ private fun PipeSettingsScreen(
                         BoxWithConstraints(Modifier.fillMaxWidth()) {
                             val cols = rememberCols(AsciiType.small)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                AsciiText("pipe v2.8 (release)", style = AsciiType.title, color = c.purple)
+                                AsciiText("pipe v2.9 (release)", style = AsciiType.title, color = c.purple)
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
                                 AsciiText(leader("system settings", "${state.prefixConfig.systemSettingsClean} <dev|spot|dns|notif>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("whatsapp / biz", "wa <num> / wab <num>", cols), style = AsciiType.small, color = c.good, softWrap = false)
@@ -4721,6 +4743,17 @@ private fun PipeSettingsScreen(
                 }
             }
         }
+
+        // Thumb-zone bottom Settings tabs
+        AsciiCommandBar(
+            items = listOf(
+                Triple("[o]vl", activeSection == SettingsSection.OVERLAY) { onSelectSettingsSection(SettingsSection.OVERLAY) },
+                Triple("[i]dx", activeSection == SettingsSection.INDEX) { onSelectSettingsSection(SettingsSection.INDEX) },
+                Triple("[t]hm", activeSection == SettingsSection.THEME) { onSelectSettingsSection(SettingsSection.THEME) },
+                Triple("[r]te", activeSection == SettingsSection.ROUTING) { onSelectSettingsSection(SettingsSection.ROUTING) },
+                Triple("[b]ak", activeSection == SettingsSection.BACKUP) { onSelectSettingsSection(SettingsSection.BACKUP) },
+            )
+        )
     }
 
     if (settingsAliasTarget != null) {

@@ -100,6 +100,7 @@ data class PipeUiState(
     val searchBoxPlaceholder: String = "pipe for???",
     val showSearchBoxScopeBadge: Boolean = true,
     val showSearchBoxMenuBtn: Boolean = true,
+    val autoLaunchExactAlias: Boolean = false,
     val previewImageFile: LocalFileItem? = null,
     val activeDictionaryEntry: DictionaryEntry? = null,
     val isDictionaryInstalled: Boolean = false,
@@ -181,6 +182,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             searchBoxPlaceholder = repository.loadSearchBoxPlaceholder(),
             showSearchBoxScopeBadge = repository.loadShowSearchBoxScopeBadge(),
             showSearchBoxMenuBtn = repository.loadShowSearchBoxMenuBtn(),
+            autoLaunchExactAlias = repository.loadAutoLaunchExactAlias(),
         )
     )
     val uiState: StateFlow<PipeUiState> = _uiState.asStateFlow()
@@ -535,6 +537,11 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun setShowSearchBoxScopeBadge(show: Boolean) {
         repository.saveShowSearchBoxScopeBadge(show)
         _uiState.update { it.copy(showSearchBoxScopeBadge = show) }
+    }
+
+    fun setAutoLaunchExactAlias(enabled: Boolean) {
+        repository.saveAutoLaunchExactAlias(enabled)
+        _uiState.update { it.copy(autoLaunchExactAlias = enabled) }
     }
 
     fun setShowSearchBoxMenuBtn(show: Boolean) {

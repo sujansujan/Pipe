@@ -30,7 +30,11 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.lazy.LazyColumn
@@ -140,6 +144,7 @@ class PipeOverlayActivity : ComponentActivity() {
         val showScopeBadge = repository.loadShowSearchBoxScopeBadge()
         val showMenuBtn = repository.loadShowSearchBoxMenuBtn()
         val whatsAppFlavor = repository.loadWhatsAppFlavor()
+        val autoLaunchExactAlias = repository.loadAutoLaunchExactAlias()
 
         setContent {
             PipeTheme(
@@ -164,6 +169,7 @@ class PipeOverlayActivity : ComponentActivity() {
                     showScopeBadge = showScopeBadge,
                     showMenuBtn = showMenuBtn,
                     whatsAppFlavor = whatsAppFlavor,
+                    autoLaunchExactAlias = autoLaunchExactAlias,
                     initialCachedContacts = DeviceIntegrationManager.peekMemoryContacts(),
                     initialCachedFiles = DeviceIntegrationManager.peekMemoryStorageFiles(),
                     initialCachedApps = DeviceIntegrationManager.peekMemoryInstalledApps(),
@@ -343,6 +349,7 @@ private fun SleekRaycastOverlay(
     showScopeBadge: Boolean,
     showMenuBtn: Boolean,
     whatsAppFlavor: WhatsAppFlavor = WhatsAppFlavor.BOTH,
+    autoLaunchExactAlias: Boolean = false,
     initialCachedContacts: List<ContactItem> = emptyList(),
     initialCachedFiles: List<LocalFileItem>,
     initialCachedApps: List<InstalledAppItem>,
@@ -496,6 +503,23 @@ private fun SleekRaycastOverlay(
             )
         }
         results = computed
+    }
+
+    var lastOverlayAutoAlias by remember { mutableStateOf("") }
+    LaunchedEffect(input.text, results, autoLaunchExactAlias, universalAliases) {
+        val raw = input.text.trim().lowercase()
+        if (raw.isEmpty()) {
+            lastOverlayAutoAlias = ""
+            return@LaunchedEffect
+        }
+        if (autoLaunchExactAlias && raw != lastOverlayAutoAlias && aliasEditTarget == null && inlineQuickAdd == null) {
+            val matched = universalAliases.firstOrNull { it.aliasLower == raw }
+            val top = results.firstOrNull()
+            if (matched != null && top != null && top.usageKey == matched.targetKey) {
+                lastOverlayAutoAlias = raw
+                executeItem(top)
+            }
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -1052,6 +1076,29 @@ private fun SleekRaycastOverlay(
                                     aliasEditText = TextFieldValue(aliasTarget.alias, TextRange(aliasTarget.alias.length))
                                 }
                             } else null,
+                            onSwipeRightSecondary = {
+                                when (item) {
+                                    is PaletteItem.ContactAction -> onWhatsAppContact(item.contact)
+                                    is PaletteItem.AppAction -> onAppInfoApp(item.app.packageName)
+                                    is PaletteItem.AppShortcutAction -> onAppInfoApp(item.shortcut.packageName)
+                                    is PaletteItem.FileAction -> {
+                                        if (item.file.isDirectory) {
+                                            expandedFolderPath = if (expandedFolderPath == item.file.absolutePath) null else item.file.absolutePath
+                                        } else {
+                                            onShareFile(item.file.absolutePath)
+                                        }
+                                    }
+                                    is PaletteItem.DirectNumberAction -> {
+                                        val altPkg = if (item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_PERSONAL) "com.whatsapp.w4b" else "com.whatsapp"
+                                        onWhatsAppDirectWithMsg(item.normalizedWhatsAppDigits, altPkg, item.messageText)
+                                    }
+                                    is PaletteItem.TimerAlarmAction -> {
+                                        if (item.isAlarm) onSetAlarm(item.hour24, item.minute, item.label, false)
+                                        else onStartTimer(item.totalSeconds, item.label, false)
+                                    }
+                                    else -> executeItem(item)
+                                }
+                            },
                             onToggleFolderPeek = { folderPath ->
                                 expandedFolderPath = if (expandedFolderPath == folderPath) null else folderPath
                             },
@@ -1191,6 +1238,7 @@ private fun SleekOverlayRow(
     expandedFolderChildren: List<LocalFileItem>,
     onExecute: () -> Unit,
     onOpenAliasEditor: (() -> Unit)? = null,
+    onSwipeRightSecondary: (() -> Unit)? = null,
     onToggleFolderPeek: (String) -> Unit,
     onOpenChildFile: (LocalFileItem) -> Unit,
     onShareFile: (LocalFileItem) -> Unit,
@@ -1218,15 +1266,40 @@ private fun SleekOverlayRow(
     val src = remember { MutableInteractionSource() }
     val pressed by src.collectIsPressedAsState()
     val rowShape = RoundedCornerShape(8.dp)
+    val haptics = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val swipeThresholdPx = remember(density) { with(density) { 52.dp.toPx() } }
     val rowBg = when {
-        pressed -> c.accent
-        isTop -> highlightBg
+        pressed || isTop -> highlightBg
         else -> Color.Transparent
     }
     val ptr = if (isTop) ">" else " "
     val aliasSuffix = if (!customAlias.isNullOrBlank()) " (@$customAlias)" else ""
-    val aliasBtnLabel = if (!customAlias.isNullOrBlank()) "@$customAlias" else "@+"
+    val swipeMod = Modifier.pointerInput(item.usageKey, onOpenAliasEditor, onSwipeRightSecondary) {
+        var accumX = 0f
+        var triggered = false
+        detectHorizontalDragGestures(
+            onDragStart = { accumX = 0f; triggered = false },
+            onDragEnd = { accumX = 0f; triggered = false },
+            onDragCancel = { accumX = 0f; triggered = false },
+            onHorizontalDrag = { change, dragAmount ->
+                accumX += dragAmount
+                if (!triggered && accumX <= -swipeThresholdPx && onOpenAliasEditor != null) {
+                    triggered = true
+                    change.consume()
+                    runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                    onOpenAliasEditor()
+                } else if (!triggered && accumX >= swipeThresholdPx && onSwipeRightSecondary != null) {
+                    triggered = true
+                    change.consume()
+                    runCatching { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                    onSwipeRightSecondary()
+                }
+            },
+        )
+    }
 
+    Box(modifier = Modifier.fillMaxWidth().then(swipeMod)) {
     when (item) {
         is PaletteItem.DirectUrlAction -> {
             Row(
@@ -1241,13 +1314,9 @@ private fun SleekOverlayRow(
             ) {
                 AsciiText("$ptr [url] ", style = AsciiType.small, color = if (pressed) c.bg else c.good)
                 Column(modifier = Modifier.weight(1f)) {
-                    AsciiText("Open ${item.displayHost}$aliasSuffix", style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
-                    AsciiText(item.targetUrl, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                    AsciiText("Open ${item.displayHost}$aliasSuffix", style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
+                    AsciiText(item.targetUrl, style = AsciiType.small, color = c.dim, maxLines = 1)
                 }
-                if (onOpenAliasEditor != null) {
-                    AsciiButton(aliasBtnLabel, onOpenAliasEditor)
-                }
-                AsciiButton("open", onExecute, primary = isTop)
             }
         }
 
@@ -1255,7 +1324,7 @@ private fun SleekOverlayRow(
             val sc = item.shortcut
             val dispTitle = "${sc.title}$aliasSuffix"
             val titleAnn = remember(dispTitle, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(dispTitle, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+                buildFzfHighlightedText(dispTitle, highlightQuery, c.fg, c.yellow)
             }
             val badgeCol = if (sc.internalPipeSection != null) c.accent else c.accent2
             Row(
@@ -1270,13 +1339,9 @@ private fun SleekOverlayRow(
             ) {
                 AsciiText("$ptr [${prefixes.systemSettingsClean}:${sc.alias}] ", style = AsciiType.small, color = if (pressed) c.bg else badgeCol)
                 Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
-                    AsciiText(sc.subtitle, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
+                    AsciiText(sc.subtitle, style = AsciiType.small, color = c.dim, maxLines = 1)
                 }
-                if (onOpenAliasEditor != null) {
-                    AsciiButton(aliasBtnLabel, onOpenAliasEditor)
-                }
-                AsciiButton("open", onExecute, primary = isTop)
             }
         }
 
@@ -1284,7 +1349,7 @@ private fun SleekOverlayRow(
             val sc = item.shortcut
             val dispTitle = "${sc.appLabel} - ${sc.shortLabel}$aliasSuffix"
             val titleAnn = remember(dispTitle, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(dispTitle, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+                buildFzfHighlightedText(dispTitle, highlightQuery, c.fg, c.yellow)
             }
             val badgeCol = when (sc.kind) {
                 AppShortcutKind.APP_PREFERENCES, AppShortcutKind.APP_SYSTEM_INFO -> c.accent2
@@ -1302,13 +1367,9 @@ private fun SleekOverlayRow(
             ) {
                 AsciiText("$ptr [${prefixes.appsClean}:${sc.kind.badge}] ", style = AsciiType.small, color = if (pressed) c.bg else badgeCol)
                 Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
-                    AsciiText(sc.longLabel, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
+                    AsciiText(sc.longLabel, style = AsciiType.small, color = c.dim, maxLines = 1)
                 }
-                if (onOpenAliasEditor != null) {
-                    AsciiButton(aliasBtnLabel, onOpenAliasEditor)
-                }
-                AsciiButton("open", onExecute, primary = isTop)
             }
         }
 
@@ -1327,8 +1388,8 @@ private fun SleekOverlayRow(
             ) {
                 AsciiText("$ptr [${item.primaryMode.badge}] ", style = AsciiType.small, color = if (pressed) c.bg else c.good)
                 Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(titleText, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
-                    AsciiText(subText, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                    AsciiText(titleText, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
+                    AsciiText(subText, style = AsciiType.small, color = c.dim, maxLines = 1)
                 }
                 AsciiButton("wa", { onDirectWhatsAppPersonal(item.normalizedWhatsAppDigits, item.messageText) }, primary = isTop && item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_PERSONAL)
                 AsciiButton("wa.b", { onDirectWhatsAppBusiness(item.normalizedWhatsAppDigits, item.messageText) }, primary = isTop && item.primaryMode == DirectNumberPrimaryMode.WHATSAPP_BUSINESS)
@@ -1351,8 +1412,8 @@ private fun SleekOverlayRow(
             ) {
                 AsciiText("$ptr [$badge] ", style = AsciiType.small, color = if (pressed) c.bg else c.warn)
                 Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(item.title, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
-                    AsciiText(item.subtitle, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                    AsciiText(item.title, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
+                    AsciiText(item.subtitle, style = AsciiType.small, color = c.dim, maxLines = 1)
                 }
                 AsciiButton("ui", { onOpenTimerAlarmClockUi(item) })
                 AsciiButton("start", onExecute, primary = isTop)
@@ -1372,7 +1433,7 @@ private fun SleekOverlayRow(
                 d.definition
             }
             val titleAnn = remember(titleText, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(titleText, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+                buildFzfHighlightedText(titleText, highlightQuery, c.fg, c.yellow)
             }
             Row(
                 modifier = Modifier
@@ -1386,8 +1447,8 @@ private fun SleekOverlayRow(
             ) {
                 AsciiText("$ptr [${prefixes.dictionaryClean}] ", style = AsciiType.small, color = if (pressed) c.bg else c.accent3)
                 Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
-                    AsciiText(subText, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
+                    AsciiText(subText, style = AsciiType.small, color = c.dim, maxLines = 1)
                 }
                 if (d != null) {
                     AsciiButton("cp", { clipboard.setText(AnnotatedString("${d.word}: ${d.definition}")) })
@@ -1406,10 +1467,10 @@ private fun SleekOverlayRow(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText("$ptr [${prefixes.clipboardClean}] ", style = AsciiType.small, color = if (pressed) c.bg else c.accent2)
+                AsciiText("$ptr [${prefixes.clipboardClean}] ", style = AsciiType.small, color = c.cyan)
                 Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(item.title, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
-                    AsciiText(item.subtitle, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                    AsciiText(item.title, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
+                    AsciiText(item.subtitle, style = AsciiType.small, color = c.dim, maxLines = 1)
                 }
                 AsciiButton("run", onExecute, primary = isTop)
             }
@@ -1420,10 +1481,10 @@ private fun SleekOverlayRow(
             val pref = item.preferredAction
             val dispName = "${contact.displayName}$aliasSuffix"
             val titleAnn = remember(dispName, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(dispName, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+                buildFzfHighlightedText(dispName, highlightQuery, c.fg, c.yellow)
             }
             val subAnn = remember(contact.phoneNumber, highlightQuery, pressed, c.dim, c.accent2, c.bg) {
-                buildFzfHighlightedText(contact.phoneNumber, highlightQuery, if (pressed) c.bg else c.dim, if (pressed) c.bg else c.accent2)
+                buildFzfHighlightedText(contact.phoneNumber, highlightQuery, c.dim, c.cyan)
             }
             Row(
                 modifier = Modifier
@@ -1438,11 +1499,8 @@ private fun SleekOverlayRow(
                 AsciiText("$ptr ", style = AsciiType.small, color = if (pressed) c.bg else c.good)
                 AsciiContactAvatar(contact = contact)
                 Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
-                    AsciiText(subAnn, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
-                }
-                if (onOpenAliasEditor != null) {
-                    AsciiButton(aliasBtnLabel, onOpenAliasEditor)
+                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
+                    AsciiText(subAnn, style = AsciiType.small, color = c.dim, maxLines = 1)
                 }
                 AsciiButton("call", { onCallContact(contact) }, primary = isTop && pref == ContactQuickAction.CALL)
                 AsciiButton("sms", { onSmsContact(contact) }, primary = isTop && pref == ContactQuickAction.SMS)
@@ -1456,11 +1514,11 @@ private fun SleekOverlayRow(
             val isExpanded = f.isDirectory && expandedFolderPath == f.absolutePath
             val dispName = "${f.name}$aliasSuffix"
             val titleAnn = remember(dispName, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(dispName, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+                buildFzfHighlightedText(dispName, highlightQuery, c.fg, c.yellow)
             }
             val subText = "${f.parentName} - ${f.formattedSize}"
             val subAnn = remember(subText, highlightQuery, pressed, c.dim, c.accent2, c.bg) {
-                buildFzfHighlightedText(subText, highlightQuery, if (pressed) c.bg else c.dim, if (pressed) c.bg else c.accent2)
+                buildFzfHighlightedText(subText, highlightQuery, c.dim, c.cyan)
             }
             Column(Modifier.fillMaxWidth()) {
                 Row(
@@ -1488,18 +1546,15 @@ private fun SleekOverlayRow(
                         AsciiText(
                             text = titleAnn,
                             style = if (isTop) AsciiType.title else AsciiType.body,
-                            color = if (pressed) c.bg else c.fg,
+                            color = c.fg,
                             maxLines = 1,
                         )
                         AsciiText(
                             text = subAnn,
                             style = AsciiType.small,
-                            color = if (pressed) c.bg else c.dim,
+                            color = c.dim,
                             maxLines = 1,
                         )
-                    }
-                    if (onOpenAliasEditor != null) {
-                        AsciiButton(aliasBtnLabel, onOpenAliasEditor)
                     }
                     if (f.isImageFile) {
                         AsciiButton("view", { onPreviewImage(f) })
@@ -1571,7 +1626,7 @@ private fun SleekOverlayRow(
             val baseTitle = if (bm.alias.isNotBlank()) "${bm.title} (${bm.alias})" else bm.title
             val rawTitle = "$baseTitle$aliasSuffix"
             val titleAnn = remember(rawTitle, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(rawTitle, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+                buildFzfHighlightedText(rawTitle, highlightQuery, c.fg, c.yellow)
             }
             Column(Modifier.fillMaxWidth()) {
                 Row(
@@ -1595,15 +1650,12 @@ private fun SleekOverlayRow(
                         AsciiText(
                             text = titleAnn,
                             style = if (isTop) AsciiType.title else AsciiType.body,
-                            color = if (pressed) c.bg else c.fg,
+                            color = c.fg,
                             maxLines = 1,
                         )
                         if (bm.tags.isNotBlank()) {
                             AsciiText(text = bm.tags, style = AsciiType.small, color = if (pressed) c.bg else c.accent, maxLines = 1)
                         }
-                    }
-                    if (onOpenAliasEditor != null) {
-                        AsciiButton(aliasBtnLabel, onOpenAliasEditor)
                     }
                     if (bm.kind == BookmarkKind.FOLDER) {
                         AsciiButton(
@@ -1662,7 +1714,7 @@ private fun SleekOverlayRow(
             val app = item.app
             val dispLabel = "${app.label}$aliasSuffix"
             val titleAnn = remember(dispLabel, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(dispLabel, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+                buildFzfHighlightedText(dispLabel, highlightQuery, c.fg, c.yellow)
             }
             Row(
                 modifier = Modifier
@@ -1675,10 +1727,7 @@ private fun SleekOverlayRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 AsciiText("$ptr [${prefixes.appsClean}] ", style = AsciiType.small, color = if (pressed) c.bg else c.accent)
-                AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
-                if (onOpenAliasEditor != null) {
-                    AsciiButton(aliasBtnLabel, onOpenAliasEditor)
-                }
+                AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1, modifier = Modifier.weight(1f))
                 AsciiButton("info", { onAppInfo(app.packageName) }, spokenLabel = "app info for ${app.label}")
                 AsciiButton("unin", { onUninstallApp(app.packageName) }, spokenLabel = "uninstall ${app.label}")
             }
@@ -1688,7 +1737,7 @@ private fun SleekOverlayRow(
             val eng = item.engine
             val desc = (if (item.isHome) "${eng.name} (open home)" else "${eng.name}: \"${item.query}\"") + aliasSuffix
             val titleAnn = remember(desc, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(desc, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+                buildFzfHighlightedText(desc, highlightQuery, c.fg, c.yellow)
             }
             Row(
                 modifier = Modifier
@@ -1701,11 +1750,8 @@ private fun SleekOverlayRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 AsciiText("$ptr [${prefixes.pipesClean}:${eng.keyword}] ", style = AsciiType.small, color = if (pressed) c.bg else c.forRole(eng.colorRole))
-                AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
+                AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1, modifier = Modifier.weight(1f))
                 if (item.isHome) {
-                    if (onOpenAliasEditor != null) {
-                        AsciiButton(aliasBtnLabel, onOpenAliasEditor)
-                    }
                     if (onEditEngine != null) {
                         AsciiButton("edit", { onEditEngine(eng) })
                     }
@@ -1713,7 +1759,7 @@ private fun SleekOverlayRow(
                         AsciiButton("x", { onDeleteEngine(eng) })
                     }
                 } else {
-                    AsciiText("pipe", style = AsciiType.small, color = if (pressed) c.bg else c.dim)
+                    AsciiText("pipe", style = AsciiType.small, color = c.dim)
                 }
             }
         }
@@ -1736,8 +1782,8 @@ private fun SleekOverlayRow(
             ) {
                 AsciiText("$ptr [${item.kind.tag}] ", style = AsciiType.small, color = if (pressed) c.bg else badgeCol)
                 Column(modifier = Modifier.weight(1f)) {
-                    AsciiText(item.title, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1)
-                    AsciiText(item.subtitle, style = AsciiType.small, color = if (pressed) c.bg else c.dim, maxLines = 1)
+                    AsciiText(item.title, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
+                    AsciiText(item.subtitle, style = AsciiType.small, color = c.dim, maxLines = 1)
                 }
                 AsciiButton(
                     label = if (item.isReadyToCommit) "save" else "form",
@@ -1759,7 +1805,7 @@ private fun SleekOverlayRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 AsciiText("$ptr [-rm] ", style = AsciiType.small, color = if (pressed) c.bg else c.error)
-                AsciiText(item.displayTitle, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
+                AsciiText(item.displayTitle, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1, modifier = Modifier.weight(1f))
                 AsciiButton("del", onExecute, primary = isTop)
             }
         }
@@ -1768,7 +1814,7 @@ private fun SleekOverlayRow(
             val h = item.entry
             val rawDesc = "${h.rawInput} -> ${h.engineName.lowercase()}"
             val titleAnn = remember(rawDesc, highlightQuery, pressed, c.fg, c.accent, c.bg) {
-                buildFzfHighlightedText(rawDesc, highlightQuery, if (pressed) c.bg else c.fg, if (pressed) c.bg else c.accent)
+                buildFzfHighlightedText(rawDesc, highlightQuery, c.fg, c.yellow)
             }
             Row(
                 modifier = Modifier
@@ -1780,9 +1826,9 @@ private fun SleekOverlayRow(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsciiText("$ptr [${prefixes.historyClean}] ", style = AsciiType.small, color = if (pressed) c.bg else c.accent2)
-                AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = if (pressed) c.bg else c.fg, maxLines = 1, modifier = Modifier.weight(1f))
+                AsciiText("$ptr [${prefixes.historyClean}] ", style = AsciiType.small, color = c.cyan)
+                AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1, modifier = Modifier.weight(1f))
             }
         }
-    }
+    }    }
 }
