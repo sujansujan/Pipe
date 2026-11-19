@@ -1540,10 +1540,71 @@ fun AsciiFaviconBadge(
     CellBitmapImage(
         bitmap = bitmap?.asImageBitmap(),
         contentDescription = "icon for $fallbackText",
-        cellCols = 3,
-        cellRows = 2,
-        placeholderText = fallbackText.take(2),
+        cellCols = com.sujan.pipe.ui.ascii.UNIFIED_THUMB_COLS,
+        cellRows = com.sujan.pipe.ui.ascii.UNIFIED_THUMB_ROWS,
+        placeholderText = fallbackText.trim().uppercase().take(3),
         placeholderColor = fallbackColor,
+        fitInside = true,
+        modifier = modifier.padding(end = 6.dp),
+    )
+}
+
+/**
+ * Unified `4x2` cell-snapped thumbnail tile for ANY file or folder:
+ * - Image files: real downsampled bitmap thumbnail (tap to preview)
+ * - Folders: `DIR` in `orange`
+ * - PDFs: `PDF` in `red`
+ * - Documents (`.doc`, `.docx`, `.odt`, `.rtf`): `DOC` in `cyan`
+ * - Spreadsheets (`.xls`, `.xlsx`, `.csv`, `.tsv`): `XLS` in `green`
+ * - Presentations (`.ppt`, `.pptx`): `PPT` in `orange`
+ * - Text / Markdown / Data (`.txt`, `.md`, `.json`, `.xml`, `.log`): `TXT`/`MD`/`JSN` in `purple`
+ * - Archives (`.zip`, `.tar`, `.gz`, `.7z`, `.rar`): `ZIP` in `yellow`
+ * - APKs (`.apk`): `APK` in `green`
+ * - Audio / Video: `AUD` (`pink`) / `VID` (`purple`)
+ * - Source Code: `SRC` (`cyan`)
+ */
+@Composable
+fun AsciiFileTypeBadge(
+    name: String,
+    isDirectory: Boolean,
+    filePath: String = "",
+    isImageFile: Boolean = false,
+    onImageClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAscii.current
+    if (!isDirectory && isImageFile && filePath.isNotBlank()) {
+        AsciiThumbnailBadge(
+            filePath = filePath,
+            onClick = { onImageClick?.invoke() },
+        )
+        return
+    }
+    val ext = name.substringAfterLast('.', "").lowercase()
+    val (tag, tint) = when {
+        isDirectory -> "DIR" to c.orange
+        ext == "pdf" -> "PDF" to c.red
+        ext in setOf("doc", "docx", "odt", "rtf") -> "DOC" to c.cyan
+        ext in setOf("xls", "xlsx", "ods", "csv", "tsv") -> "XLS" to c.green
+        ext in setOf("ppt", "pptx", "odp") -> "PPT" to c.orange
+        ext == "md" -> "MD" to c.purple
+        ext in setOf("txt", "log") -> "TXT" to c.fg
+        ext in setOf("json", "jsonl", "xml", "yaml", "yml", "toml") -> "JSN" to c.purple
+        ext in setOf("zip", "tar", "gz", "tgz", "7z", "rar", "xz") -> "ZIP" to c.yellow
+        ext == "apk" -> "APK" to c.green
+        ext in setOf("mp3", "wav", "flac", "ogg", "m4a", "opus", "aac") -> "AUD" to c.pink
+        ext in setOf("mp4", "mkv", "webm", "mov", "avi", "3gp") -> "VID" to c.purple
+        ext in setOf("kt", "java", "py", "js", "ts", "tsx", "rs", "c", "cpp", "h", "sh", "html", "css") -> "SRC" to c.cyan
+        ext.isNotEmpty() -> ext.uppercase().take(3) to c.dim
+        else -> "FIL" to c.dim
+    }
+    CellBitmapImage(
+        bitmap = null,
+        contentDescription = if (isDirectory) "folder $name" else "$tag file $name",
+        cellCols = com.sujan.pipe.ui.ascii.UNIFIED_THUMB_COLS,
+        cellRows = com.sujan.pipe.ui.ascii.UNIFIED_THUMB_ROWS,
+        placeholderText = tag,
+        placeholderColor = tint,
         modifier = modifier.padding(end = 6.dp),
     )
 }
@@ -2446,18 +2507,37 @@ fun AsciiRaycastRow(
                 item is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
                     AsciiContactAvatar(contact = item.contact)
                 }
-                item is com.sujan.pipe.domain.PaletteItem.FileAction && item.file.isImageFile -> {
-                    AsciiThumbnailBadge(
+                item is com.sujan.pipe.domain.PaletteItem.FileAction -> {
+                    AsciiFileTypeBadge(
+                        name = item.file.name,
+                        isDirectory = item.file.isDirectory,
                         filePath = item.file.absolutePath,
-                        onClick = { onPreviewChildImage?.invoke(item.file) ?: onOpenActionSheet() },
+                        isImageFile = item.file.isImageFile,
+                        onImageClick = { onPreviewChildImage?.invoke(item.file) ?: onOpenActionSheet() },
                     )
                 }
-                item is com.sujan.pipe.domain.PaletteItem.BookmarkAction && item.bookmark.kind == BookmarkKind.LINK -> {
-                    AsciiFaviconBadge(
-                        url = item.bookmark.target,
-                        fallbackText = item.bookmark.alias.ifBlank { item.bookmark.title },
-                        fallbackColor = c.cyan,
-                    )
+                item is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> {
+                    if (item.bookmark.kind == BookmarkKind.LINK) {
+                        AsciiFaviconBadge(
+                            url = item.bookmark.target,
+                            fallbackText = item.bookmark.alias.ifBlank { item.bookmark.title },
+                            fallbackColor = c.cyan,
+                        )
+                    } else {
+                        val targetName = item.bookmark.target.substringAfterLast('/').ifBlank { item.bookmark.title }
+                        val lowerName = targetName.lowercase()
+                        val isImg = item.bookmark.kind == BookmarkKind.FILE && (
+                            lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg") ||
+                                lowerName.endsWith(".png") || lowerName.endsWith(".webp") ||
+                                lowerName.endsWith(".gif") || lowerName.endsWith(".bmp")
+                            )
+                        AsciiFileTypeBadge(
+                            name = targetName,
+                            isDirectory = item.bookmark.kind == BookmarkKind.FOLDER,
+                            filePath = item.bookmark.target,
+                            isImageFile = isImg,
+                        )
+                    }
                 }
                 item is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
                     AsciiFaviconBadge(
@@ -2622,12 +2702,13 @@ fun AsciiRaycastRow(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            if (child.isImageFile && onPreviewChildImage != null) {
-                                AsciiThumbnailBadge(
-                                    filePath = child.absolutePath,
-                                    onClick = { onPreviewChildImage(child) },
-                                )
-                            }
+                            AsciiFileTypeBadge(
+                                name = child.name,
+                                isDirectory = child.isDirectory,
+                                filePath = child.absolutePath,
+                                isImageFile = child.isImageFile,
+                                onImageClick = { onPreviewChildImage?.invoke(child) },
+                            )
                             AsciiText(
                                 text = childHighlighted,
                                 style = AsciiType.small,
@@ -3327,6 +3408,12 @@ fun PipeLibraryScreen(
                                     url = bm.target,
                                     fallbackText = bm.alias.ifBlank { bm.title },
                                     fallbackColor = c.cyan,
+                                )
+                            } else {
+                                AsciiFileTypeBadge(
+                                    name = bm.target.substringAfterLast('/').ifBlank { bm.title },
+                                    isDirectory = bm.kind == BookmarkKind.FOLDER,
+                                    filePath = bm.target,
                                 )
                             }
                             AsciiKindBadge(tag = badge, color = badgeCol)
@@ -4734,7 +4821,7 @@ private fun PipeSettingsScreen(
                         BoxWithConstraints(Modifier.fillMaxWidth()) {
                             val cols = rememberCols(AsciiType.small)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                AsciiText("pipe v2.9 (release)", style = AsciiType.title, color = c.purple)
+                                AsciiText("pipe v2.9.3 (release)", style = AsciiType.title, color = c.purple)
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
                                 AsciiText(leader("system settings", "${state.prefixConfig.systemSettingsClean} <dev|spot|dns|notif>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("whatsapp / biz", "wa <num> / wab <num>", cols), style = AsciiType.small, color = c.good, softWrap = false)

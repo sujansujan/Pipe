@@ -92,6 +92,7 @@ import com.sujan.pipe.model.UniversalAlias
 import com.sujan.pipe.model.WhatsAppFlavor
 import com.sujan.pipe.ui.AsciiContactAvatar
 import com.sujan.pipe.ui.AsciiFaviconBadge
+import com.sujan.pipe.ui.AsciiFileTypeBadge
 import com.sujan.pipe.ui.AsciiDictionaryDetailDialog
 import com.sujan.pipe.ui.AsciiImagePreviewDialog
 import com.sujan.pipe.ui.AsciiThumbnailBadge
@@ -1534,16 +1535,17 @@ private fun SleekOverlayRow(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     AsciiText(
-                        text = if (f.isDirectory) "$ptr [d/] " else "$ptr [${prefixes.filesClean}.] ",
+                        text = "$ptr ",
                         style = AsciiType.small,
-                        color = if (pressed) c.bg else if (f.isDirectory) c.warn else c.accent3,
+                        color = if (isTop) c.purple else c.dim,
                     )
-                    if (f.isImageFile) {
-                        AsciiThumbnailBadge(
-                            filePath = f.absolutePath,
-                            onClick = { onPreviewImage(f) },
-                        )
-                    }
+                    AsciiFileTypeBadge(
+                        name = f.name,
+                        isDirectory = f.isDirectory,
+                        filePath = f.absolutePath,
+                        isImageFile = f.isImageFile,
+                        onImageClick = { onPreviewImage(f) },
+                    )
                     Column(modifier = Modifier.weight(1f)) {
                         AsciiText(
                             text = titleAnn,
@@ -1598,12 +1600,13 @@ private fun SleekOverlayRow(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    if (child.isImageFile) {
-                                        AsciiThumbnailBadge(
-                                            filePath = child.absolutePath,
-                                            onClick = { onPreviewImage(child) },
-                                        )
-                                    }
+                                    AsciiFileTypeBadge(
+                                        name = child.name,
+                                        isDirectory = child.isDirectory,
+                                        filePath = child.absolutePath,
+                                        isImageFile = child.isImageFile,
+                                        onImageClick = { onPreviewImage(child) },
+                                    )
                                     AsciiText(
                                         text = "|-- ${child.name}",
                                         style = AsciiType.small,
@@ -1651,7 +1654,11 @@ private fun SleekOverlayRow(
                     if (bm.kind == BookmarkKind.LINK) {
                         AsciiFaviconBadge(url = bm.target, fallbackText = bm.alias.ifBlank { bm.title }, fallbackColor = c.cyan)
                     } else {
-                        AsciiText("$badge ", style = AsciiType.small, color = c.warn)
+                        AsciiFileTypeBadge(
+                            name = bm.target.substringAfterLast('/').ifBlank { bm.title },
+                            isDirectory = bm.kind == BookmarkKind.FOLDER,
+                            filePath = bm.target,
+                        )
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         AsciiText(

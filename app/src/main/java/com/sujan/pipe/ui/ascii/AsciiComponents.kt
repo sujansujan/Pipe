@@ -116,16 +116,20 @@ fun CellGrid(
  * Snaps image dimensions to exact multiples of `grid.cellWidthPx` and `grid.lineHeightPx`
  * with sharp `0.dp` rectangular edges (`border(1.dp, c.dim)`) and an ASCII fallback/placeholder.
  */
+const val UNIFIED_THUMB_COLS = 4
+const val UNIFIED_THUMB_ROWS = 2
+
 @Composable
 fun CellImage(
     painter: Painter?,
     contentDescription: String,
     grid: GridMetrics = LocalGridMetrics.current,
-    cellCols: Int = 4,
-    cellRows: Int = 2,
+    cellCols: Int = UNIFIED_THUMB_COLS,
+    cellRows: Int = UNIFIED_THUMB_ROWS,
     caption: String? = null,
     placeholderText: String = "..",
     placeholderColor: Color = LocalAscii.current.cyan,
+    fitInside: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
@@ -138,19 +142,19 @@ fun CellImage(
             modifier = Modifier
                 .size(width = widthDp, height = heightDp)
                 .background(c.surface)
-                .border(1.dp, c.dim),
+                .border(1.dp, if (painter != null) c.dim else placeholderColor.copy(alpha = 0.65f)),
             contentAlignment = Alignment.Center,
         ) {
             if (painter != null) {
                 Image(
                     painter = painter,
                     contentDescription = contentDescription,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
+                    contentScale = if (fitInside) ContentScale.Fit else ContentScale.Crop,
+                    modifier = if (fitInside) Modifier.fillMaxSize().padding(4.dp) else Modifier.fillMaxSize(),
                 )
             } else {
                 AsciiText(
-                    text = placeholderText.take(cellCols.coerceAtLeast(2)),
+                    text = placeholderText.take(cellCols.coerceAtLeast(3)),
                     style = AsciiType.title,
                     color = placeholderColor,
                     maxLines = 1,
@@ -176,11 +180,12 @@ fun CellBitmapImage(
     bitmap: ImageBitmap?,
     contentDescription: String,
     grid: GridMetrics = LocalGridMetrics.current,
-    cellCols: Int = 4,
-    cellRows: Int = 2,
+    cellCols: Int = UNIFIED_THUMB_COLS,
+    cellRows: Int = UNIFIED_THUMB_ROWS,
     caption: String? = null,
     placeholderText: String = "..",
     placeholderColor: Color = LocalAscii.current.cyan,
+    fitInside: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val painter = remember(bitmap) { bitmap?.let { BitmapPainter(it) } }
@@ -193,6 +198,7 @@ fun CellBitmapImage(
         caption = caption,
         placeholderText = placeholderText,
         placeholderColor = placeholderColor,
+        fitInside = fitInside,
         modifier = modifier,
     )
 }
