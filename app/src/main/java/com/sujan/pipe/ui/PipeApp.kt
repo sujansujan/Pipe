@@ -96,6 +96,7 @@ import com.sujan.pipe.model.DefaultSystemShortcuts
 import com.sujan.pipe.model.SystemSettingShortcut
 import com.sujan.pipe.model.UniversalAlias
 import com.sujan.pipe.model.WhatsAppFlavor
+import com.sujan.pipe.model.YouTubeWatchEntry
 import com.sujan.pipe.ui.ascii.AsciiBox
 import com.sujan.pipe.ui.ascii.AsciiButton
 import com.sujan.pipe.ui.ascii.AsciiCommandBar
@@ -252,6 +253,15 @@ fun extractAliasTargetInfo(
             category = "hist",
             subtitle = item.entry.resolvedUrl,
         )
+        is com.sujan.pipe.domain.PaletteItem.YouTubeWatchAction -> item.entry?.let { w ->
+            UniversalAlias(
+                targetKey = item.usageKey,
+                alias = current,
+                label = w.title,
+                category = "yth",
+                subtitle = w.watchUrl,
+            )
+        }
         else -> null
     }
 }
@@ -358,6 +368,16 @@ fun PipeApp(
     onImportDictionaryFileClick: () -> Unit = {},
     onAutoDetectDownloadsDictionary: () -> Unit = {},
     onRemoveDictionaryClick: () -> Unit = {},
+    onOpenYouTubeWatch: (YouTubeWatchEntry, Boolean) -> Unit = { _, _ -> },
+    onSetupYouTubeHistoryClick: () -> Unit = {},
+    onDeleteYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
+    onYouTubeHistoryEnabledChange: (Boolean) -> Unit = {},
+    onYouTubeSaveThumbnailsChange: (Boolean) -> Unit = {},
+    onRequestYouTubeListenerAccess: () -> Unit = {},
+    onImportYouTubeHistoryClick: () -> Unit = {},
+    onScanDownloadsYouTubeHistory: () -> Unit = {},
+    onExportYouTubeHistoryClick: () -> Unit = {},
+    onClearYouTubeHistoryClick: () -> Unit = {},
     onExecuteClipboardAction: (com.sujan.pipe.domain.PaletteItem.ClipboardAction) -> Unit = {},
     onOpenBookmark: (PipeBookmark) -> Unit,
     onOpenLocalFile: (LocalFileItem) -> Unit,
@@ -471,6 +491,10 @@ fun PipeApp(
                         onExecuteDirectNumber = onExecuteDirectNumber,
                         onExecuteTimerAlarm = onExecuteTimerAlarm,
                         onSelectDictionaryItem = onSelectDictionaryItem,
+                        onOpenYouTubeWatch = onOpenYouTubeWatch,
+                        onSetupYouTubeHistoryClick = onSetupYouTubeHistoryClick,
+                        onDeleteYouTubeWatch = onDeleteYouTubeWatch,
+                        onRequestYouTubeListenerAccess = onRequestYouTubeListenerAccess,
                         onExecuteClipboardAction = onExecuteClipboardAction,
                         onOpenBookmark = onOpenBookmark,
                         onOpenLocalFile = onOpenLocalFile,
@@ -580,6 +604,13 @@ fun PipeApp(
                         onImportDictionaryFileClick = onImportDictionaryFileClick,
                         onAutoDetectDownloadsDictionary = onAutoDetectDownloadsDictionary,
                         onRemoveDictionaryClick = onRemoveDictionaryClick,
+                        onYouTubeHistoryEnabledChange = onYouTubeHistoryEnabledChange,
+                        onYouTubeSaveThumbnailsChange = onYouTubeSaveThumbnailsChange,
+                        onRequestYouTubeListenerAccess = onRequestYouTubeListenerAccess,
+                        onImportYouTubeHistoryClick = onImportYouTubeHistoryClick,
+                        onScanDownloadsYouTubeHistory = onScanDownloadsYouTubeHistory,
+                        onExportYouTubeHistoryClick = onExportYouTubeHistoryClick,
+                        onClearYouTubeHistoryClick = onClearYouTubeHistoryClick,
                         onLaunchOverlayPreview = onLaunchOverlayPreview,
                         onPinOverlayShortcut = onPinOverlayShortcut,
                         onOpenDefaultAppsSettings = onOpenDefaultAppsSettings,
@@ -654,6 +685,10 @@ private fun PipePromptScreen(
     onExecuteDirectNumber: (com.sujan.pipe.domain.PaletteItem.DirectNumberAction, DirectNumberPrimaryMode) -> Unit,
     onExecuteTimerAlarm: (com.sujan.pipe.domain.PaletteItem.TimerAlarmAction, Boolean) -> Unit,
     onSelectDictionaryItem: (com.sujan.pipe.domain.PaletteItem.DictionaryAction) -> Unit,
+    onOpenYouTubeWatch: (YouTubeWatchEntry, Boolean) -> Unit,
+    onSetupYouTubeHistoryClick: () -> Unit,
+    onDeleteYouTubeWatch: (YouTubeWatchEntry) -> Unit,
+    onRequestYouTubeListenerAccess: () -> Unit,
     onExecuteClipboardAction: (com.sujan.pipe.domain.PaletteItem.ClipboardAction) -> Unit,
     onOpenBookmark: (PipeBookmark) -> Unit,
     onOpenLocalFile: (LocalFileItem) -> Unit,
@@ -726,6 +761,7 @@ private fun PipePromptScreen(
             onRemoveUniversalAlias = onRemoveUniversalAlias,
             hasContactsPermission = state.hasContactsPermission,
             hasFilesPermission = state.hasFilesPermission,
+            isYouTubeListenerEnabled = state.isYouTubeListenerEnabled,
             launchError = state.launchError ?: state.jsonStatusMessage,
             promptPrefix = state.searchBoxPrefix,
             placeholderText = state.searchBoxPlaceholder,
@@ -840,8 +876,35 @@ private fun PipePromptScreen(
                         onQuickRemoveItem(item.isBookmark, item.targetId)
                     }
                     is com.sujan.pipe.domain.PaletteItem.HistoryAction -> onRerunHistory(item.entry)
+                    is com.sujan.pipe.domain.PaletteItem.YouTubeWatchAction -> {
+                        if (item.isSetupPrompt || item.entry == null) {
+                            onSetupYouTubeHistoryClick()
+                        } else {
+                            onOpenYouTubeWatch(item.entry, false)
+                        }
+                    }
                 }
             },
+            onOpenYouTubeWatch = onOpenYouTubeWatch,
+            onDeleteYouTubeWatch = onDeleteYouTubeWatch,
+            onBookmarkYouTubeWatch = { w ->
+                val suggestedAlias = w.title.lowercase().filter { it.isLetterOrDigit() }.take(6)
+                inlineQuickAdd = com.sujan.pipe.domain.PaletteItem.QuickAddAction(
+                    kind = QuickAddKind.BOOKMARK,
+                    title = "Bookmark Video: ${w.title}",
+                    subtitle = w.watchUrl,
+                    isReadyToCommit = false,
+                    arg1 = suggestedAlias,
+                    arg2 = w.title,
+                    arg3 = w.watchUrl,
+                    bookmarkKind = BookmarkKind.LINK,
+                )
+            },
+            onSearchYouTubeChannel = { channel ->
+                val url = "https://www.youtube.com/results?search_query=${java.net.URLEncoder.encode(channel, "UTF-8")}"
+                onOpenDirectUrl(url)
+            },
+            onRequestYouTubeListenerAccess = onRequestYouTubeListenerAccess,
             onCallContact = onCallContact,
             onSmsContact = onSmsContact,
             onWhatsAppContact = onWhatsAppContact,
@@ -928,6 +991,7 @@ fun AsciiRaycastPaletteWindow(
     onRemoveUniversalAlias: (String) -> Unit = {},
     hasContactsPermission: Boolean,
     hasFilesPermission: Boolean,
+    isYouTubeListenerEnabled: Boolean = false,
     launchError: String?,
     focusRequester: FocusRequester,
     promptPrefix: String = "> ",
@@ -964,6 +1028,11 @@ fun AsciiRaycastPaletteWindow(
     onPreviewImage: ((LocalFileItem) -> Unit)? = null,
     onRequestContactsPermission: (() -> Unit)? = null,
     onRequestFilesPermission: (() -> Unit)? = null,
+    onRequestYouTubeListenerAccess: (() -> Unit)? = null,
+    onOpenYouTubeWatch: ((YouTubeWatchEntry, Boolean) -> Unit)? = null,
+    onDeleteYouTubeWatch: ((YouTubeWatchEntry) -> Unit)? = null,
+    onBookmarkYouTubeWatch: ((YouTubeWatchEntry) -> Unit)? = null,
+    onSearchYouTubeChannel: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
@@ -993,6 +1062,7 @@ fun AsciiRaycastPaletteWindow(
         PromptIntentMode.PIPES_LIST -> "${prefixes.pipesClean}:pipes"
         PromptIntentMode.APPS_ONLY -> "${prefixes.appsClean}:launcher"
         PromptIntentMode.HISTORY_ONLY -> "${prefixes.historyClean}:history"
+        PromptIntentMode.YOUTUBE_HISTORY_ONLY -> "${prefixes.youtubeHistoryClean}:watch"
         PromptIntentMode.DICTIONARY_ONLY -> "${prefixes.dictionaryClean}:dictionary"
         PromptIntentMode.CLIPBOARD_ONLY -> "${prefixes.clipboardClean}:clipboard"
         PromptIntentMode.SYSTEM_SETTINGS_ONLY -> "${prefixes.systemSettingsClean}:settings"
@@ -1062,6 +1132,20 @@ fun AsciiRaycastPaletteWindow(
             ) {
                 AsciiText("! storage access needed for `${prefixes.filesClean}:` / `dl:`", style = AsciiType.small, color = c.warn)
                 AsciiButton("grant", onRequestFilesPermission, primary = true)
+            }
+            AsciiRule(glyph = "-", color = c.border)
+        }
+        if (!isYouTubeListenerEnabled && parsedCommand.mode == PromptIntentMode.YOUTUBE_HISTORY_ONLY && onRequestYouTubeListenerAccess != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(c.surface)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("! enable Notification Access to auto-capture YouTube watches offline", style = AsciiType.small, color = c.warn, modifier = Modifier.weight(1f))
+                AsciiButton("grant", onRequestYouTubeListenerAccess, primary = true)
             }
             AsciiRule(glyph = "-", color = c.border)
         }
@@ -1166,6 +1250,7 @@ fun AsciiRaycastPaletteWindow(
                             onPreviewChildImage = onPreviewImage,
                             onExecuteDirectNumber = onExecuteDirectNumber,
                             onExecuteTimerAlarm = onExecuteTimerAlarm,
+                            onResumeYouTubeWatch = { w -> onOpenYouTubeWatch?.invoke(w, true) },
                         )
                     }
                 }
@@ -1393,6 +1478,22 @@ fun AsciiRaycastPaletteWindow(
                 actionSheetItem = null
                 onQuickDeleteHistory?.invoke(h)
             },
+            onResumeYouTubeWatch = { w ->
+                actionSheetItem = null
+                onOpenYouTubeWatch?.invoke(w, true)
+            },
+            onSearchYouTubeChannel = { ch ->
+                actionSheetItem = null
+                onSearchYouTubeChannel?.invoke(ch)
+            },
+            onBookmarkYouTubeWatch = { w ->
+                actionSheetItem = null
+                onBookmarkYouTubeWatch?.invoke(w)
+            },
+            onDeleteYouTubeWatch = { w ->
+                actionSheetItem = null
+                onDeleteYouTubeWatch?.invoke(w)
+            },
             onAppInfoInstalledApp = { app ->
                 actionSheetItem = null
                 onAppInfoInstalledApp?.invoke(app)
@@ -1545,6 +1646,43 @@ fun AsciiFaviconBadge(
         placeholderText = fallbackText.trim().uppercase().take(3),
         placeholderColor = fallbackColor,
         fitInside = true,
+        modifier = modifier.padding(end = 6.dp),
+    )
+}
+
+/**
+ * 100% offline YouTube watch history thumbnail badge.
+ * Loads locally saved `MediaMetadata` JPEG from `filesDir/yt_thumbs/` (zero network calls)
+ * or renders an ASCII `YT` placeholder tile when no local thumbnail exists (e.g. Takeout import).
+ */
+@Composable
+fun AsciiYouTubeThumbBadge(
+    thumbnailPath: String,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAscii.current
+    var bitmap by remember(thumbnailPath) {
+        mutableStateOf(
+            if (thumbnailPath.isNotBlank()) {
+                com.sujan.pipe.data.OfflineYouTubeHistoryManager.loadLocalThumbnail(thumbnailPath)
+            } else null
+        )
+    }
+    LaunchedEffect(thumbnailPath) {
+        if (bitmap == null && thumbnailPath.isNotBlank()) {
+            bitmap = withContext(Dispatchers.IO) {
+                com.sujan.pipe.data.OfflineYouTubeHistoryManager.loadLocalThumbnail(thumbnailPath)
+            }
+        }
+    }
+    CellBitmapImage(
+        bitmap = bitmap?.asImageBitmap(),
+        contentDescription = "youtube watch thumbnail",
+        cellCols = com.sujan.pipe.ui.ascii.UNIFIED_THUMB_COLS,
+        cellRows = com.sujan.pipe.ui.ascii.UNIFIED_THUMB_ROWS,
+        placeholderText = "YT",
+        placeholderColor = c.accent2,
+        fitInside = false,
         modifier = modifier.padding(end = 6.dp),
     )
 }
@@ -2259,6 +2397,7 @@ fun AsciiRaycastRow(
     onPreviewChildImage: ((LocalFileItem) -> Unit)? = null,
     onExecuteDirectNumber: (com.sujan.pipe.domain.PaletteItem.DirectNumberAction, DirectNumberPrimaryMode) -> Unit = { _, _ -> },
     onExecuteTimerAlarm: (com.sujan.pipe.domain.PaletteItem.TimerAlarmAction, Boolean) -> Unit = { _, _ -> },
+    onResumeYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
 ) {
     val c = LocalAscii.current
     val src = remember { MutableInteractionSource() }
@@ -2403,6 +2542,21 @@ fun AsciiRaycastRow(
             titleText = h.rawInput
             subtitleText = "-> ${h.engineName.lowercase()} (${h.resolvedUrl})"
             hasActionSheet = true
+            folderPeekPath = null
+        }
+        is com.sujan.pipe.domain.PaletteItem.YouTubeWatchAction -> {
+            val w = item.entry
+            tagText = prefixes.youtubeHistoryClean
+            tagColor = c.accent2
+            if (item.isSetupPrompt || w == null) {
+                titleText = item.setupTitle
+                subtitleText = item.setupSubtitle
+                hasActionSheet = false
+            } else {
+                titleText = w.title
+                subtitleText = w.subtitleSummary()
+                hasActionSheet = true
+            }
             folderPeekPath = null
         }
         is com.sujan.pipe.domain.PaletteItem.QuickAddAction -> {
@@ -2560,6 +2714,11 @@ fun AsciiRaycastRow(
                         fallbackColor = c.purple,
                     )
                 }
+                item is com.sujan.pipe.domain.PaletteItem.YouTubeWatchAction -> {
+                    AsciiYouTubeThumbBadge(
+                        thumbnailPath = item.entry?.thumbnailPath.orEmpty(),
+                    )
+                }
             }
 
             Column(
@@ -2627,6 +2786,13 @@ fun AsciiRaycastRow(
                     onClick = { onExecuteTimerAlarm(item, true) },
                     primary = isTop,
                 )
+            } else if (item is com.sujan.pipe.domain.PaletteItem.YouTubeWatchAction && item.entry != null && item.entry.hasResumePosition) {
+                AsciiButton(
+                    label = "res",
+                    onClick = { onResumeYouTubeWatch(item.entry) },
+                    primary = isTop,
+                    spokenLabel = "resume at ${item.entry.formattedPosition}",
+                )
             }
 
             if (hasActionSheet) {
@@ -2634,6 +2800,12 @@ fun AsciiRaycastRow(
                     label = "...",
                     onClick = onOpenActionSheet,
                     spokenLabel = "more actions for $titleText",
+                )
+            } else if (item is com.sujan.pipe.domain.PaletteItem.YouTubeWatchAction && item.isSetupPrompt) {
+                AsciiButton(
+                    label = "setup",
+                    onClick = onExecute,
+                    primary = true,
                 )
             } else if (item is com.sujan.pipe.domain.PaletteItem.DictionaryAction && item.isSetupPrompt) {
                 AsciiButton(
@@ -2801,6 +2973,10 @@ fun AsciiResultActionSheet(
     onEditEngine: (SearchEngine) -> Unit,
     onDeleteEngine: (SearchEngine) -> Unit,
     onDeleteHistory: (SearchHistoryEntry) -> Unit = {},
+    onResumeYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
+    onSearchYouTubeChannel: (String) -> Unit = {},
+    onBookmarkYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
+    onDeleteYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
     onAppInfoInstalledApp: (InstalledAppItem) -> Unit = {},
     onUninstallInstalledApp: (InstalledAppItem) -> Unit = {},
     onCopyText: (String) -> Unit,
@@ -3134,6 +3310,42 @@ fun AsciiResultActionSheet(
                         AsciiSheetActionRow("open", "Re-run \"${h.rawInput}\"", onPrimaryExecute, isPrimary = true)
                         AsciiSheetActionRow("copy", "Copy query text", { onCopyText(h.rawInput) })
                         AsciiSheetActionRow("delete", "Delete from history", { onDeleteHistory(h) }, isDestructive = true)
+                    }
+
+                    is com.sujan.pipe.domain.PaletteItem.YouTubeWatchAction -> {
+                        val w = item.entry
+                        if (w != null) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    AsciiKindBadge(prefixes.youtubeHistoryClean, c.accent2)
+                                    Spacer(Modifier.width(8.dp))
+                                    Column {
+                                        AsciiText(w.title, style = AsciiType.title, color = c.fg, maxLines = 2)
+                                        AsciiText(w.subtitleSummary(), style = AsciiType.small, color = c.dim, maxLines = 1)
+                                    }
+                                }
+                                AsciiButton("x", onDismiss)
+                            }
+                            AsciiRule(glyph = "-", color = c.border)
+                            AsciiSheetActionRow("play", "Open video on YouTube", onPrimaryExecute, isPrimary = true)
+                            if (w.hasResumePosition) {
+                                AsciiSheetActionRow("res", "Resume at ${w.formattedPosition}", { onResumeYouTubeWatch(w) })
+                            }
+                            if (w.channel.isNotBlank()) {
+                                AsciiSheetActionRow("ch", "Search channel: ${w.channel}", { onSearchYouTubeChannel(w.channel) })
+                            }
+                            AsciiSheetActionRow("bm", "Save video as Pipe bookmark", { onBookmarkYouTubeWatch(w) })
+                            val aliasLabel = if (!currentAlias.isNullOrBlank()) "Edit alias (@$currentAlias)" else "Set quick alias (@...)"
+                            AsciiSheetActionRow("alias", aliasLabel, onSetAliasClick)
+                            AsciiSheetActionRow("copy", "Copy YouTube URL", { onCopyText(w.watchUrl) })
+                            AsciiSheetActionRow("delete", "Remove from offline YT history", { onDeleteYouTubeWatch(w) }, isDestructive = true)
+                        } else {
+                            AsciiButton("close", onDismiss)
+                        }
                     }
 
                     else -> {
@@ -4139,6 +4351,13 @@ private fun PipeSettingsScreen(
     onImportDictionaryFileClick: () -> Unit = {},
     onAutoDetectDownloadsDictionary: () -> Unit = {},
     onRemoveDictionaryClick: () -> Unit = {},
+    onYouTubeHistoryEnabledChange: (Boolean) -> Unit = {},
+    onYouTubeSaveThumbnailsChange: (Boolean) -> Unit = {},
+    onRequestYouTubeListenerAccess: () -> Unit = {},
+    onImportYouTubeHistoryClick: () -> Unit = {},
+    onScanDownloadsYouTubeHistory: () -> Unit = {},
+    onExportYouTubeHistoryClick: () -> Unit = {},
+    onClearYouTubeHistoryClick: () -> Unit = {},
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
@@ -4309,14 +4528,99 @@ private fun PipeSettingsScreen(
                             )
                         }
                         Spacer(Modifier.height(8.dp))
-                        AsciiButton(
-                            label = "default apps settings (browser / assist)",
-                            onClick = onOpenDefaultAppsSettings,
-                            primary = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 46.dp),
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            AsciiButton(
+                                label = if (state.isYouTubeListenerEnabled) "yt listener: ok" else "! grant yt listener",
+                                onClick = onRequestYouTubeListenerAccess,
+                                primary = !state.isYouTubeListenerEnabled,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 46.dp),
+                            )
+                            AsciiButton(
+                                label = "default apps",
+                                onClick = onOpenDefaultAppsSettings,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 46.dp),
+                            )
+                        }
+                    }
+
+                    // True Offline YouTube Watch History Box
+                    AsciiBox(title = "index - offline youtube watch history (${state.prefixConfig.youtubeHistoryClean})") {
+                        AsciiText(
+                            text = "stored: ${state.youtubeHistoryCount} videos  |  listener: ${if (state.isYouTubeListenerEnabled) "active" else "off"}  |  100% offline",
+                            style = AsciiType.body,
+                            color = if (state.isYouTubeListenerEnabled || state.youtubeHistoryCount > 0) c.good else c.accent2,
                         )
+                        AsciiText(
+                            text = if (state.isYouTubeHistoryImporting) {
+                                "importing offline YouTube watch history..."
+                            } else {
+                                "captures YouTube, ReVanced, YT Music, NewPipe, LibreTube & browser tabs locally; search via `${state.prefixConfig.youtubeHistoryClean} <query>`"
+                            },
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        AsciiToggleRow(
+                            label = "auto-capture YouTube playback (offline)",
+                            checked = state.youtubeHistoryEnabled,
+                            onCheckedChange = onYouTubeHistoryEnabledChange,
+                        )
+                        AsciiToggleRow(
+                            label = "cache offline video thumbnails locally",
+                            checked = state.youtubeSaveThumbnails,
+                            onCheckedChange = onYouTubeSaveThumbnailsChange,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            AsciiButton(
+                                label = if (state.isYouTubeHistoryImporting) "importing..." else "import takeout/json",
+                                onClick = onImportYouTubeHistoryClick,
+                                enabled = !state.isYouTubeHistoryImporting,
+                                primary = true,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 46.dp),
+                            )
+                            AsciiButton(
+                                label = "scan Download/",
+                                onClick = onScanDownloadsYouTubeHistory,
+                                enabled = !state.isYouTubeHistoryImporting,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 46.dp),
+                            )
+                        }
+                        if (state.youtubeHistoryCount > 0) {
+                            Spacer(Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                AsciiButton(
+                                    label = "export json",
+                                    onClick = onExportYouTubeHistoryClick,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 42.dp),
+                                )
+                                AsciiButton(
+                                    label = "clear history",
+                                    onClick = onClearYouTubeHistoryClick,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 42.dp),
+                                )
+                            }
+                        }
                     }
 
                     // On-Demand External Offline Dictionary Box
@@ -4493,6 +4797,7 @@ private fun PipeSettingsScreen(
                     var dictField by remember(p.dictionary) { mutableStateOf(TextFieldValue(p.dictionary, TextRange(p.dictionary.length))) }
                     var clipField by remember(p.clipboard) { mutableStateOf(TextFieldValue(p.clipboard, TextRange(p.clipboard.length))) }
                     var setField by remember(p.systemSettings) { mutableStateOf(TextFieldValue(p.systemSettings, TextRange(p.systemSettings.length))) }
+                    var ythField by remember(p.youtubeHistory) { mutableStateOf(TextFieldValue(p.youtubeHistory, TextRange(p.youtubeHistory.length))) }
 
                     val pushPrefixUpdate: (String, String, String, String, String, String, String, String) -> Unit = { fVal, sVal, bVal, appVal, hVal, cVal, dVal, clVal ->
                         onPrefixConfigChange(
@@ -4506,6 +4811,7 @@ private fun PipeSettingsScreen(
                                 dictionary = dVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "def" },
                                 clipboard = clVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "clip" },
                                 systemSettings = setField.text.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "set" },
+                                youtubeHistory = ythField.text.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "yth" },
                             )
                         )
                     }
@@ -4637,31 +4943,64 @@ private fun PipeSettingsScreen(
                             }
                         }
                         Spacer(Modifier.height(6.dp))
-                        AsciiTextField(
-                            label = "system settings jumper prefix (e.g. set dev, set spot, set dns)",
-                            promptPrefix = "> ",
-                            value = setField,
-                            onValueChange = {
-                                setField = it
-                                onPrefixConfigChange(
-                                    PrefixConfig(
-                                        files = filesField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "f" },
-                                        pipes = pipesField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "s" },
-                                        bookmarks = bookmarksField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "b" },
-                                        apps = appsField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "app" },
-                                        history = histField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "hist" },
-                                        contacts = contactsField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "c" },
-                                        dictionary = dictField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "def" },
-                                        clipboard = clipField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "clip" },
-                                        systemSettings = it.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "set" },
-                                    )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(Modifier.weight(1f)) {
+                                AsciiTextField(
+                                    label = "settings prefix",
+                                    promptPrefix = "> ",
+                                    value = setField,
+                                    onValueChange = {
+                                        setField = it
+                                        onPrefixConfigChange(
+                                            PrefixConfig(
+                                                files = filesField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "f" },
+                                                pipes = pipesField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "s" },
+                                                bookmarks = bookmarksField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "b" },
+                                                apps = appsField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "app" },
+                                                history = histField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "hist" },
+                                                contacts = contactsField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "c" },
+                                                dictionary = dictField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "def" },
+                                                clipboard = clipField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "clip" },
+                                                systemSettings = it.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "set" },
+                                                youtubeHistory = ythField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "yth" },
+                                            )
+                                        )
+                                    },
+                                    placeholder = "set",
                                 )
-                            },
-                            placeholder = "set",
-                        )
+                            }
+                            Box(Modifier.weight(1f)) {
+                                AsciiTextField(
+                                    label = "yt history prefix",
+                                    promptPrefix = "> ",
+                                    value = ythField,
+                                    onValueChange = {
+                                        ythField = it
+                                        onPrefixConfigChange(
+                                            PrefixConfig(
+                                                files = filesField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "f" },
+                                                pipes = pipesField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "s" },
+                                                bookmarks = bookmarksField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "b" },
+                                                apps = appsField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "app" },
+                                                history = histField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "hist" },
+                                                contacts = contactsField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "c" },
+                                                dictionary = dictField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "def" },
+                                                clipboard = clipField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "clip" },
+                                                systemSettings = setField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "set" },
+                                                youtubeHistory = it.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "yth" },
+                                            )
+                                        )
+                                    },
+                                    placeholder = "yth",
+                                )
+                            }
+                        }
                         Spacer(Modifier.height(8.dp))
                         AsciiButton(
-                            label = "reset default prefixes (f, s, b, app, hist, c, def, clip, set)",
+                            label = "reset default prefixes (f, s, b, app, hist, c, def, clip, set, yth)",
                             onClick = onResetPrefixConfig,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -4821,8 +5160,9 @@ private fun PipeSettingsScreen(
                         BoxWithConstraints(Modifier.fillMaxWidth()) {
                             val cols = rememberCols(AsciiType.small)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                AsciiText("pipe v2.9.3 (release)", style = AsciiType.title, color = c.purple)
+                                AsciiText("pipe v2.10.0 (release)", style = AsciiType.title, color = c.purple)
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
+                                AsciiText(leader("yt watch history", "${state.prefixConfig.youtubeHistoryClean} <query> (100% offline)", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("system settings", "${state.prefixConfig.systemSettingsClean} <dev|spot|dns|notif>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("whatsapp / biz", "wa <num> / wab <num>", cols), style = AsciiType.small, color = c.good, softWrap = false)
                                 AsciiText(leader("timer & alarm", "timer 12m / alarm 06:30", cols), style = AsciiType.small, color = c.warn, softWrap = false)

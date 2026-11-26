@@ -18,6 +18,7 @@ import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.model.SystemSettingShortcut
 import com.sujan.pipe.model.WhatsAppFlavor
+import com.sujan.pipe.model.YouTubeWatchEntry
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -375,6 +376,7 @@ enum class PromptIntentMode(val scopeBadge: String) {
     PIPES_LIST("s:pipes"),
     APPS_ONLY("app:launcher"),
     HISTORY_ONLY("hist:history"),
+    YOUTUBE_HISTORY_ONLY("yth:watch"),
     DICTIONARY_ONLY("def:dict"),
     CLIPBOARD_ONLY("clip:tools"),
     SYSTEM_SETTINGS_ONLY("set:sys"),
@@ -508,6 +510,17 @@ sealed interface PaletteItem {
         override val usageKey: String,
         override val rankScore: Int,
         override val usageCount: Int,
+    ) : PaletteItem
+
+    data class YouTubeWatchAction(
+        val entry: YouTubeWatchEntry?,
+        val query: String,
+        val isSetupPrompt: Boolean = false,
+        val setupTitle: String = "Enable Offline YouTube Watch History",
+        val setupSubtitle: String = "grant Notification Access for auto-capture, or import Takeout watch-history.json",
+        override val usageKey: String = "ytw:${entry?.id ?: "setup"}",
+        override val rankScore: Int = 9400,
+        override val usageCount: Int = 0,
     ) : PaletteItem
 
     data class SystemSettingAction(
@@ -793,6 +806,12 @@ object QueryRouter {
         val defPrefix = prefixes.dictionaryClean
         val clipPrefix = prefixes.clipboardClean
         val setPrefix = prefixes.systemSettingsClean
+        val ythPrefix = prefixes.youtubeHistoryClean
+
+        // True Offline YouTube Watch History: `yth` / `yth <query>` / `ytwatch <query>`
+        if (firstLower == ythPrefix || firstLower == "yth" || firstLower == "ytwatch" || firstLower == "watchhist") {
+            return ParsedPromptCommand(PromptIntentMode.YOUTUBE_HISTORY_ONLY, remainder)
+        }
 
         // On-Demand Offline Dictionary: `def <word>` or custom dictionary prefix
         if ((firstLower == defPrefix || firstLower == "def" || firstLower == "dict" || firstLower == "define") && hasSpaceAfterFirst) {
@@ -1014,6 +1033,9 @@ object QueryRouter {
         dictionaryMatches: List<DictionaryEntry> = emptyList(),
         isDictionaryInstalled: Boolean = false,
         whatsAppFlavor: WhatsAppFlavor = WhatsAppFlavor.BOTH,
+        youtubeHistoryMatches: List<YouTubeWatchEntry> = emptyList(),
+        youtubeHistoryTotalCount: Int = 0,
+        isYouTubeListenerEnabled: Boolean = false,
     ): List<PaletteItem> {
         val cmd = parsePromptCommand(rawInput, bookmarks, engines, prefixes)
         val aliasByTargetKey = universalAliases.associate { it.targetKey to it.aliasLower }
@@ -1034,6 +1056,63 @@ object QueryRouter {
             PromptIntentMode.ADD_COMMAND -> buildQuickAddSuggestions(cmd.filterQuery, clipboardText, prefixes)
 
             PromptIntentMode.RM_COMMAND -> buildQuickRemoveSuggestions(cmd.filterQuery, bookmarks, engines, history, prefixes)
+
+            PromptIntentMode.YOUTUBE_HISTORY_ONLY -> {
+                val q = cmd.filterQuery.trim()
+                val out = mutableListOf<PaletteItem>()
+                if (youtubeHistoryMatches.isEmpty() && youtubeHistoryTotalCount == 0) {
+                    out.add(
+                        PaletteItem.YouTubeWatchAction(
+                            entry = null,
+                            query = q,
+                            isSetupPrompt = true,
+                            setupTitle = if (isYouTubeListenerEnabled) {
+                                "Offline YouTube History Ready (0 videos yet)"
+                            } else {
+                                "Enable Offline YouTube Watch History"
+                            },
+                            setupSubtitle = if (isYouTubeListenerEnabled) {
+                                "play a YouTube video or tap to import Takeout watch-history.json"
+                            } else {
+                                "tap to grant Notification Access for auto-capture or import Takeout JSON"
+                            },
+                            usageKey = "ytw:setup",
+                            rankScore = 100_000,
+                        )
+                    )
+                } else {
+                    youtubeHistoryMatches.forEachIndexed { idx, entry ->
+                        val uKey = "ytw:${entry.id}"
+                        out.add(
+                            PaletteItem.YouTubeWatchAction(
+                                entry = entry,
+                                query = q,
+                                isSetupPrompt = false,
+                                usageKey = uKey,
+                                rankScore = 50_000 - idx * 100 + usageBonus(uKey),
+                                usageCount = usageOf(uKey).coerceAtLeast(entry.watchCount),
+                            )
+                        )
+                    }
+                }
+                if (q.isNotEmpty()) {
+                    val ytEng = engines.firstOrNull { it.keyword.equals("yt", ignoreCase = true) }
+                        ?: engines.firstOrNull { it.isDefault }
+                        ?: DefaultEngines.LIST.first()
+                    out.add(
+                        PaletteItem.EngineAction(
+                            engine = ytEng,
+                            query = q,
+                            targetUrl = buildSearchUrl(ytEng.urlTemplate, q),
+                            isHome = false,
+                            usageKey = "eng:${ytEng.id}",
+                            rankScore = 500,
+                            usageCount = usageOf("eng:${ytEng.id}"),
+                        )
+                    )
+                }
+                out.take(MAX_PALETTE_RESULTS)
+            }
 
             PromptIntentMode.DICTIONARY_ONLY -> {
                 val q = cmd.filterQuery.trim()
@@ -1421,6 +1500,20 @@ object QueryRouter {
                     rankScore = 100_000,
                     usageCount = uCount,
                 )
+                val isYtPipe = eng.keyword.lowercase() in setOf("yt", "ytt", "ytw", "ytm")
+                val relatedWatched = if (isYtPipe && youtubeHistoryMatches.isNotEmpty()) {
+                    youtubeHistoryMatches.take(3).mapIndexed { idx, entry ->
+                        val uKey = "ytw:${entry.id}"
+                        PaletteItem.YouTubeWatchAction(
+                            entry = entry,
+                            query = q,
+                            isSetupPrompt = false,
+                            usageKey = uKey,
+                            rankScore = 40_000 - idx * 100 + usageBonus(uKey),
+                            usageCount = usageOf(uKey).coerceAtLeast(entry.watchCount),
+                        )
+                    }
+                } else emptyList()
                 val relatedHistory = history
                     .filter { it.engineKeyword.equals(eng.keyword, ignoreCase = true) }
                     .mapNotNull { h ->
@@ -1431,8 +1524,8 @@ object QueryRouter {
                         } else null
                     }
                     .sortedByDescending { it.rankScore }
-                    .take(MAX_PALETTE_RESULTS - 1)
-                listOf(primary) + relatedHistory
+                    .take((MAX_PALETTE_RESULTS - 1 - relatedWatched.size).coerceAtLeast(0))
+                listOf(primary) + relatedWatched + relatedHistory
             }
 
             PromptIntentMode.ALL -> {
@@ -2414,7 +2507,8 @@ object QueryRouter {
         sb.append("    \"contacts\": \"${escapeJson(p.contactsClean)}\",\n")
         sb.append("    \"dictionary\": \"${escapeJson(p.dictionaryClean)}\",\n")
         sb.append("    \"clipboard\": \"${escapeJson(p.clipboardClean)}\",\n")
-        sb.append("    \"systemSettings\": \"${escapeJson(p.systemSettingsClean)}\"\n")
+        sb.append("    \"systemSettings\": \"${escapeJson(p.systemSettingsClean)}\",\n")
+        sb.append("    \"youtubeHistory\": \"${escapeJson(p.youtubeHistoryClean)}\"\n")
         sb.append("  },\n")
         sb.append("  \"excludedFolders\": [")
         bundle.excludedFolders.forEachIndexed { idx, f ->
@@ -2497,6 +2591,7 @@ object QueryRouter {
                 dictionary = extractJsonString(prefixesSection, "dictionary") ?: "def",
                 clipboard = extractJsonString(prefixesSection, "clipboard") ?: "clip",
                 systemSettings = extractJsonString(prefixesSection, "systemSettings") ?: "set",
+                youtubeHistory = extractJsonString(prefixesSection, "youtubeHistory") ?: "yth",
             )
         } else null
 

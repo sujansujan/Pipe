@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import com.sujan.pipe.data.DeviceIntegrationManager
+import com.sujan.pipe.data.OfflineYouTubeHistoryManager
 import com.sujan.pipe.data.PipeRepository
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.model.BookmarkKind
@@ -59,6 +60,13 @@ class WebSearchReceiverActivity : Activity() {
         // forward straight to the real browser / native app excluding `com.sujan.pipe`.
         val incomingUriString = intent?.dataString
         if (intent?.action == Intent.ACTION_VIEW && !incomingUriString.isNullOrBlank()) {
+            if (OfflineYouTubeHistoryManager.extractYouTubeVideoId(incomingUriString) != null) {
+                OfflineYouTubeHistoryManager.recordYouTubeUrlInteraction(
+                    context = applicationContext,
+                    rawUrl = incomingUriString,
+                    sourceApp = "Link",
+                )
+            }
             if (DeviceIntegrationManager.openUrlExcludingSelf(this, incomingUriString)) {
                 finish()
                 return

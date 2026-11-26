@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import com.sujan.pipe.data.DeviceIntegrationManager
 import com.sujan.pipe.data.ExternalTextMode
+import com.sujan.pipe.data.OfflineYouTubeHistoryManager
 import com.sujan.pipe.data.PipeRepository
 import com.sujan.pipe.domain.QueryRouter
 
@@ -18,6 +19,18 @@ class TextPipeActivity : Activity() {
             Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
             else -> null
         }?.trim().orEmpty()
+        val sharedSubject = intent?.getStringExtra(Intent.EXTRA_SUBJECT)?.trim().orEmpty()
+
+        // Capture shared YouTube video links directly into local offline watch history
+        val sharedYtUrl = OfflineYouTubeHistoryManager.extractFirstYouTubeUrl(incomingText)
+        if (sharedYtUrl != null && OfflineYouTubeHistoryManager.extractYouTubeVideoId(sharedYtUrl) != null) {
+            OfflineYouTubeHistoryManager.recordYouTubeUrlInteraction(
+                context = applicationContext,
+                rawUrl = sharedYtUrl,
+                titleHint = sharedSubject,
+                sourceApp = "Share",
+            )
+        }
 
         val repo = PipeRepository(applicationContext)
         val mode = repo.loadExternalTextMode()

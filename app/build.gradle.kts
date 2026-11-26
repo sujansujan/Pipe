@@ -11,8 +11,8 @@ android {
         applicationId = "com.sujan.pipe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 22
-        versionName = "2.9.3"
+        versionCode = 23
+        versionName = "2.10.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -68,5 +68,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

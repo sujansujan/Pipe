@@ -67,6 +67,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.sujan.pipe.data.DeviceIntegrationManager
 import com.sujan.pipe.data.OfflineDictionaryManager
+import com.sujan.pipe.data.OfflineYouTubeHistoryManager
 import com.sujan.pipe.data.PipeRepository
 import com.sujan.pipe.domain.ClipActionKind
 import com.sujan.pipe.domain.DirectNumberPrimaryMode
@@ -90,12 +91,14 @@ import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.model.SystemSettingShortcut
 import com.sujan.pipe.model.UniversalAlias
 import com.sujan.pipe.model.WhatsAppFlavor
+import com.sujan.pipe.model.YouTubeWatchEntry
 import com.sujan.pipe.ui.AsciiContactAvatar
 import com.sujan.pipe.ui.AsciiFaviconBadge
 import com.sujan.pipe.ui.AsciiFileTypeBadge
 import com.sujan.pipe.ui.AsciiDictionaryDetailDialog
 import com.sujan.pipe.ui.AsciiImagePreviewDialog
 import com.sujan.pipe.ui.AsciiThumbnailBadge
+import com.sujan.pipe.ui.AsciiYouTubeThumbBadge
 import com.sujan.pipe.ui.QuickAddInlineCard
 import com.sujan.pipe.ui.ascii.AsciiButton
 import com.sujan.pipe.ui.ascii.AsciiText
@@ -177,10 +180,31 @@ class PipeOverlayActivity : ComponentActivity() {
                     initialCachedApps = DeviceIntegrationManager.peekMemoryInstalledApps(),
                     initialCachedShortcuts = DeviceIntegrationManager.peekMemoryAppShortcuts(),
                     initialDictInstalled = OfflineDictionaryManager.isDictionaryInstalled(applicationContext),
+                    initialYtListenerEnabled = OfflineYouTubeHistoryManager.isNotificationListenerEnabled(applicationContext),
+                    initialYtHistoryCount = OfflineYouTubeHistoryManager.peekMemoryHistory().size,
                     searchDictionaryOnDemand = { q ->
                         withContext(Dispatchers.IO) {
                             OfflineDictionaryManager.searchOnDemand(applicationContext, q, limit = 10)
                         }
+                    },
+                    searchYouTubeHistoryOnDemand = { q, limit ->
+                        withContext(Dispatchers.IO) {
+                            val total = OfflineYouTubeHistoryManager.getCachedOrLoadHistory(applicationContext).size
+                            val matches = OfflineYouTubeHistoryManager.searchOnDemand(applicationContext, q, limit = limit)
+                            matches to total
+                        }
+                    },
+                    onDeleteYouTubeWatch = { entry ->
+                        OfflineYouTubeHistoryManager.deleteEntry(applicationContext, entry.id).size
+                    },
+                    onOpenYouTubeSettings = {
+                        startActivity(
+                            Intent(this, MainActivity::class.java).apply {
+                                putExtra(MainActivity.EXTRA_OPEN_SETTINGS_SECTION, "INDEX")
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            }
+                        )
+                        finish()
                     },
                     loadContacts = {
                         withContext(Dispatchers.IO) {
@@ -357,7 +381,12 @@ private fun SleekRaycastOverlay(
     initialCachedApps: List<InstalledAppItem>,
     initialCachedShortcuts: List<AppShortcutItem> = emptyList(),
     initialDictInstalled: Boolean = false,
+    initialYtListenerEnabled: Boolean = false,
+    initialYtHistoryCount: Int = 0,
     searchDictionaryOnDemand: suspend (String) -> List<DictionaryEntry>,
+    searchYouTubeHistoryOnDemand: suspend (String, Int) -> Pair<List<YouTubeWatchEntry>, Int> = { _, _ -> emptyList<YouTubeWatchEntry>() to 0 },
+    onDeleteYouTubeWatch: (YouTubeWatchEntry) -> Int = { 0 },
+    onOpenYouTubeSettings: () -> Unit = {},
     loadContacts: suspend () -> List<ContactItem>,
     loadApps: suspend () -> List<InstalledAppItem>,
     loadShortcuts: suspend () -> List<AppShortcutItem> = { emptyList() },
@@ -413,6 +442,8 @@ private fun SleekRaycastOverlay(
     var scopedFiles by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
     var dictionaryMatches by remember { mutableStateOf<List<DictionaryEntry>>(emptyList()) }
     var activeDictEntry by remember { mutableStateOf<DictionaryEntry?>(null) }
+    var ytHistoryMatches by remember { mutableStateOf<List<YouTubeWatchEntry>>(emptyList()) }
+    var ytHistoryTotalCount by remember { mutableStateOf(initialYtHistoryCount) }
     var expandedFolderPath by remember { mutableStateOf<String?>(null) }
     var expandedFolderChildren by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
     var previewImageFile by remember { mutableStateOf<LocalFileItem?>(null) }
@@ -452,6 +483,23 @@ private fun SleekRaycastOverlay(
         }
     }
 
+    // On-demand offline YouTube watch history search (`yth <query>` or under `yt`/`ytt`/`ytw`/`ytm`)
+    val isYtEngineMode = parsedCommand.mode == PromptIntentMode.ENGINE_ONLY &&
+        parsedCommand.matchedEngine?.keyword?.lowercase() in setOf("yt", "ytt", "ytw", "ytm")
+    LaunchedEffect(parsedCommand.mode, parsedCommand.filterQuery, isYtEngineMode, ytHistoryTotalCount) {
+        if (parsedCommand.mode == PromptIntentMode.YOUTUBE_HISTORY_ONLY) {
+            val (matches, total) = searchYouTubeHistoryOnDemand(parsedCommand.filterQuery, 10)
+            ytHistoryMatches = matches
+            ytHistoryTotalCount = total
+        } else if (isYtEngineMode) {
+            val (matches, total) = searchYouTubeHistoryOnDemand(parsedCommand.filterQuery, 3)
+            ytHistoryMatches = matches
+            ytHistoryTotalCount = total
+        } else if (ytHistoryMatches.isNotEmpty()) {
+            ytHistoryMatches = emptyList()
+        }
+    }
+
     var results by remember {
         mutableStateOf(
             if (initialQuery.isBlank() && !showIdleSuggestions) {
@@ -474,12 +522,15 @@ private fun SleekRaycastOverlay(
                     whatsAppFlavor = whatsAppFlavor,
                     appShortcuts = initialCachedShortcuts,
                     universalAliases = initialUniversalAliases,
+                    youtubeHistoryMatches = emptyList(),
+                    youtubeHistoryTotalCount = initialYtHistoryCount,
+                    isYouTubeListenerEnabled = initialYtListenerEnabled,
                 )
             }
         )
     }
 
-    LaunchedEffect(input.text, showIdleSuggestions, activeEngines, activeBookmarks, contacts, installedApps, appShortcuts, universalAliases, storageFiles, scopedFiles, history, usageMap, clipText, prefixes, dictionaryMatches, dictInstalled) {
+    LaunchedEffect(input.text, showIdleSuggestions, activeEngines, activeBookmarks, contacts, installedApps, appShortcuts, universalAliases, storageFiles, scopedFiles, history, usageMap, clipText, prefixes, dictionaryMatches, dictInstalled, ytHistoryMatches, ytHistoryTotalCount) {
         if (input.text.isBlank() && !showIdleSuggestions) {
             if (results.isNotEmpty()) results = emptyList()
             return@LaunchedEffect
@@ -502,6 +553,9 @@ private fun SleekRaycastOverlay(
                 whatsAppFlavor = whatsAppFlavor,
                 appShortcuts = appShortcuts,
                 universalAliases = universalAliases,
+                youtubeHistoryMatches = ytHistoryMatches,
+                youtubeHistoryTotalCount = ytHistoryTotalCount,
+                isYouTubeListenerEnabled = initialYtListenerEnabled,
             )
         }
         results = computed
@@ -768,6 +822,13 @@ private fun SleekRaycastOverlay(
             is PaletteItem.HistoryAction -> {
                 if (!onDispatchUrl(item.entry.rawInput, item.entry.resolvedUrl)) errorMsg = "! no browser found"
             }
+            is PaletteItem.YouTubeWatchAction -> {
+                if (item.isSetupPrompt || item.entry == null) {
+                    onOpenYouTubeSettings()
+                } else {
+                    if (!onDispatchUrl(item.entry.title, item.entry.watchUrl)) errorMsg = "! no browser found"
+                }
+            }
         }
     }
 
@@ -801,6 +862,7 @@ private fun SleekRaycastOverlay(
         PromptIntentMode.PIPES_LIST -> "${prefixes.pipesClean}:pipes"
         PromptIntentMode.APPS_ONLY -> "${prefixes.appsClean}:launcher"
         PromptIntentMode.HISTORY_ONLY -> "${prefixes.historyClean}:history"
+        PromptIntentMode.YOUTUBE_HISTORY_ONLY -> "${prefixes.youtubeHistoryClean}:watch"
         PromptIntentMode.DICTIONARY_ONLY -> "${prefixes.dictionaryClean}:dict"
         PromptIntentMode.CLIPBOARD_ONLY -> "${prefixes.clipboardClean}:tools"
         PromptIntentMode.SYSTEM_SETTINGS_ONLY -> "${prefixes.systemSettingsClean}:sys"
@@ -1185,6 +1247,16 @@ private fun SleekRaycastOverlay(
                                 if (tItem.isAlarm) onSetAlarm(tItem.hour24, tItem.minute, tItem.label, false)
                                 else onStartTimer(tItem.totalSeconds, tItem.label, false)
                             },
+                            onResumeYouTubeWatch = { entry ->
+                                usageMap = onRecordUsage("ytw:${entry.id}")
+                                if (!onDispatchUrl(entry.title, entry.resumeUrl)) errorMsg = "! no browser found"
+                            },
+                            onDeleteYouTubeWatch = { entry ->
+                                val remaining = onDeleteYouTubeWatch(entry)
+                                ytHistoryTotalCount = remaining
+                                ytHistoryMatches = ytHistoryMatches.filterNot { it.id == entry.id }
+                                statusMsg = "ok: removed \"${entry.title.take(24)}\""
+                            },
                         )
                     }
                 }
@@ -1262,6 +1334,8 @@ private fun SleekOverlayRow(
     onDirectSms: (String) -> Unit = {},
     onDirectSaveContact: (String) -> Unit = {},
     onOpenTimerAlarmClockUi: (PaletteItem.TimerAlarmAction) -> Unit = {},
+    onResumeYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
+    onDeleteYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
 ) {
     val c = LocalAscii.current
     val clipboard = LocalClipboardManager.current
@@ -1844,6 +1918,44 @@ private fun SleekOverlayRow(
                 AsciiText("$ptr ", style = AsciiType.small, color = if (isTop) c.purple else c.dim)
                 AsciiFaviconBadge(url = h.resolvedUrl, fallbackText = h.engineKeyword.ifBlank { h.engineName }, fallbackColor = c.purple)
                 AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1, modifier = Modifier.weight(1f))
+            }
+        }
+
+        is PaletteItem.YouTubeWatchAction -> {
+            val w = item.entry
+            val titleText = if (item.isSetupPrompt || w == null) item.setupTitle else "${w.title}$aliasSuffix"
+            val subText = if (item.isSetupPrompt || w == null) item.setupSubtitle else w.subtitleSummary()
+            val titleAnn = remember(titleText, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+                buildFzfHighlightedText(titleText, highlightQuery, c.fg, c.yellow)
+            }
+            val subAnn = remember(subText, highlightQuery, pressed, c.dim, c.cyan, c.bg) {
+                buildFzfHighlightedText(subText, highlightQuery, c.dim, c.cyan)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr ", style = AsciiType.small, color = if (isTop) c.purple else c.dim)
+                AsciiYouTubeThumbBadge(thumbnailPath = w?.thumbnailPath.orEmpty())
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
+                    AsciiText(subAnn, style = AsciiType.small, color = c.dim, maxLines = 1)
+                }
+                if (w != null) {
+                    if (w.hasResumePosition) {
+                        AsciiButton("res", { onResumeYouTubeWatch(w) }, primary = isTop)
+                    }
+                    AsciiButton("cp", { clipboard.setText(AnnotatedString(w.watchUrl)) })
+                    AsciiButton("x", { onDeleteYouTubeWatch(w) })
+                } else {
+                    AsciiButton("set", onExecute, primary = true)
+                }
             }
         }
     }    }

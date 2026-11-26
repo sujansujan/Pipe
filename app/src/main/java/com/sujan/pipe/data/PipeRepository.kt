@@ -74,6 +74,7 @@ class PipeRepository(context: Context) {
             dictionary = prefs.getString("prefix_dictionary_v1", "def")?.trim()?.ifEmpty { "def" } ?: "def",
             clipboard = prefs.getString("prefix_clipboard_v1", "clip")?.trim()?.ifEmpty { "clip" } ?: "clip",
             systemSettings = prefs.getString("prefix_system_settings_v1", "set")?.trim()?.ifEmpty { "set" } ?: "set",
+            youtubeHistory = prefs.getString("prefix_yt_history_v1", "yth")?.trim()?.ifEmpty { "yth" } ?: "yth",
         )
     }
 
@@ -88,6 +89,7 @@ class PipeRepository(context: Context) {
             .putString("prefix_dictionary_v1", config.dictionaryClean)
             .putString("prefix_clipboard_v1", config.clipboardClean)
             .putString("prefix_system_settings_v1", config.systemSettingsClean)
+            .putString("prefix_yt_history_v1", config.youtubeHistoryClean)
             .apply()
     }
 
@@ -319,6 +321,12 @@ class PipeRepository(context: Context) {
 
     fun isHistoryEnabled(): Boolean = prefs.getBoolean("history_enabled", true)
     fun setHistoryEnabled(enabled: Boolean) = prefs.edit().putBoolean("history_enabled", enabled).apply()
+
+    fun loadYouTubeHistoryEnabled(): Boolean = prefs.getBoolean("yt_watch_history_enabled_v1", true)
+    fun saveYouTubeHistoryEnabled(enabled: Boolean) = prefs.edit().putBoolean("yt_watch_history_enabled_v1", enabled).apply()
+
+    fun loadYouTubeSaveThumbnails(): Boolean = prefs.getBoolean("yt_watch_save_thumbs_v1", true)
+    fun saveYouTubeSaveThumbnails(enabled: Boolean) = prefs.edit().putBoolean("yt_watch_save_thumbs_v1", enabled).apply()
 
     fun loadHourlyAutoIndexEnabled(): Boolean = prefs.getBoolean("hourly_auto_index_v1", true)
     fun saveHourlyAutoIndexEnabled(enabled: Boolean) = prefs.edit().putBoolean("hourly_auto_index_v1", enabled).apply()

@@ -33,7 +33,7 @@ enum class WhatsAppFlavor(val label: String, val badge: String, val packageName:
 }
 
 /**
- * User-customizable command prefixes and row badge tags for `f`, `s`, `b`, `app`, `hist`, `c`, `def`, `clip`, and `set`.
+ * User-customizable command prefixes and row badge tags for `f`, `s`, `b`, `app`, `hist`, `c`, `def`, `clip`, `set`, and `yth`.
  */
 data class PrefixConfig(
     val files: String = "f",
@@ -45,6 +45,7 @@ data class PrefixConfig(
     val dictionary: String = "def",
     val clipboard: String = "clip",
     val systemSettings: String = "set",
+    val youtubeHistory: String = "yth",
 ) {
     val filesClean: String get() = files.trim().lowercase().ifEmpty { "f" }
     val pipesClean: String get() = pipes.trim().lowercase().ifEmpty { "s" }
@@ -55,6 +56,7 @@ data class PrefixConfig(
     val dictionaryClean: String get() = dictionary.trim().lowercase().ifEmpty { "def" }
     val clipboardClean: String get() = clipboard.trim().lowercase().ifEmpty { "clip" }
     val systemSettingsClean: String get() = systemSettings.trim().lowercase().ifEmpty { "set" }
+    val youtubeHistoryClean: String get() = youtubeHistory.trim().lowercase().ifEmpty { "yth" }
 }
 
 /**
@@ -140,10 +142,10 @@ object DefaultSystemShortcuts {
         SystemSettingShortcut(
             id = "pipe_set_index",
             alias = "idx",
-            title = "Pipe Settings: Storage & Offline Dictionary",
-            subtitle = "Permissions, storage index, excluded folders, offline dictionary",
+            title = "Pipe Settings: Storage, Dictionary & YT History",
+            subtitle = "Permissions, storage index, offline dictionary, offline YouTube watch history",
             intentAction = "pipe://settings/INDEX",
-            keywords = "pipe settings index dictionary permissions storage",
+            keywords = "pipe settings index dictionary permissions storage youtube watch history yth",
             internalPipeSection = "INDEX",
         ),
         SystemSettingShortcut(
@@ -513,6 +515,118 @@ data class SearchHistoryEntry(
     val resolvedUrl: String,
     val timestampEpochMs: Long,
 )
+
+/**
+ * 100% offline YouTube watch history entry captured locally via Android MediaSession /
+ * NotificationListenerService, intercepted YouTube links/shares, or imported from
+ * Google Takeout / NewPipe / LibreTube / FreeTube / Pipe TSV & JSON.
+ */
+data class YouTubeWatchEntry(
+    val id: String,
+    val videoId: String = "",
+    val title: String,
+    val channel: String = "",
+    val url: String = "",
+    val watchedAtMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val positionMs: Long = 0L,
+    val watchCount: Int = 1,
+    val sourceApp: String = "YouTube",
+    val thumbnailPath: String = "",
+) {
+    val titleLower: String = title.trim().lowercase()
+    val channelLower: String = channel.trim().lowercase()
+    val videoIdLower: String = videoId.trim().lowercase()
+
+    val hasDirectVideoId: Boolean
+        get() = videoId.length == 11
+
+    val watchUrl: String
+        get() = when {
+            videoId.isNotBlank() -> "https://www.youtube.com/watch?v=$videoId"
+            url.isNotBlank() -> url
+            else -> {
+                val q = if (channel.isNotBlank()) "$title $channel" else title
+                val encoded = java.net.URLEncoder.encode(q.trim(), "UTF-8")
+                "https://www.youtube.com/results?search_query=$encoded"
+            }
+        }
+
+    val hasResumePosition: Boolean
+        get() = videoId.isNotBlank() && positionMs >= 10_000L && (durationMs <= 0L || positionMs < durationMs - 10_000L)
+
+    val resumeUrl: String
+        get() = if (hasResumePosition) {
+            "https://www.youtube.com/watch?v=$videoId&t=${positionMs / 1000L}s"
+        } else {
+            watchUrl
+        }
+
+    val formattedDuration: String
+        get() = formatMillisShort(durationMs)
+
+    val formattedPosition: String
+        get() = formatMillisShort(positionMs)
+
+    fun formattedWatchedAge(nowMs: Long = System.currentTimeMillis()): String {
+        if (watchedAtMs <= 0L) return ""
+        val diff = (nowMs - watchedAtMs).coerceAtLeast(0L)
+        val mins = diff / 60_000L
+        val hours = mins / 60L
+        val days = hours / 24L
+        return when {
+            mins < 1L -> "just now"
+            mins < 60L -> "${mins}m ago"
+            hours < 24L -> "${hours}h ago"
+            days < 30L -> "${days}d ago"
+            else -> {
+                val cal = java.util.Calendar.getInstance().apply { timeInMillis = watchedAtMs }
+                String.format(
+                    java.util.Locale.US,
+                    "%04d-%02d-%02d",
+                    cal.get(java.util.Calendar.YEAR),
+                    cal.get(java.util.Calendar.MONTH) + 1,
+                    cal.get(java.util.Calendar.DAY_OF_MONTH),
+                )
+            }
+        }
+    }
+
+    fun subtitleSummary(nowMs: Long = System.currentTimeMillis()): String {
+        val parts = mutableListOf<String>()
+        if (channel.isNotBlank()) parts.add(channel)
+        if (durationMs > 0L) {
+            if (hasResumePosition) {
+                parts.add("${formattedPosition}/${formattedDuration}")
+            } else {
+                parts.add(formattedDuration)
+            }
+        } else if (hasResumePosition) {
+            parts.add("at $formattedPosition")
+        }
+        val age = formattedWatchedAge(nowMs)
+        if (age.isNotBlank()) parts.add(age)
+        if (watchCount > 1) parts.add("${watchCount}x")
+        if (sourceApp.isNotBlank()) parts.add(sourceApp)
+        if (videoId.isBlank()) parts.add("title-match")
+        return parts.joinToString(" · ")
+    }
+
+    companion object {
+        fun formatMillisShort(ms: Long): String {
+            if (ms <= 0L) return ""
+            val totalSecs = ms / 1000L
+            val h = totalSecs / 3600L
+            val m = (totalSecs % 3600L) / 60L
+            val s = totalSecs % 60L
+            return if (h > 0L) {
+                String.format(java.util.Locale.US, "%d:%02d:%02d", h, m, s)
+            } else {
+                String.format(java.util.Locale.US, "%d:%02d", m, s)
+            }
+        }
+    }
+}
 
 object DefaultEngines {
     val YT_TIME_PIPES: List<SearchEngine> = listOf(

@@ -27,6 +27,7 @@ import com.sujan.pipe.model.PrefixConfig
 import com.sujan.pipe.model.SearchEngine
 import com.sujan.pipe.model.SearchHistoryEntry
 import com.sujan.pipe.model.UniversalAlias
+import com.sujan.pipe.model.YouTubeWatchEntry
 import com.sujan.pipe.ui.ascii.PaletteChoice
 import com.sujan.pipe.ui.ascii.ThemeMode
 import kotlinx.coroutines.Job
@@ -108,6 +109,12 @@ data class PipeUiState(
     val dictionarySourceName: String = "not linked",
     val dictionaryMatches: List<DictionaryEntry> = emptyList(),
     val isDictionaryIndexing: Boolean = false,
+    val youtubeHistoryEnabled: Boolean = true,
+    val youtubeSaveThumbnails: Boolean = true,
+    val isYouTubeListenerEnabled: Boolean = false,
+    val youtubeHistoryCount: Int = 0,
+    val youtubeHistoryMatches: List<YouTubeWatchEntry> = emptyList(),
+    val isYouTubeHistoryImporting: Boolean = false,
     val clipboardPreviewText: String = "",
     val storageFiles: List<LocalFileItem> = emptyList(),
     val scopedFolderFiles: List<LocalFileItem> = emptyList(),
@@ -159,6 +166,8 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             universalAliases = repository.loadUniversalAliases(),
             dictionaryWordCount = repository.loadDictionaryWordCount(),
             dictionarySourceName = repository.loadDictionarySourceName(),
+            youtubeHistoryEnabled = repository.loadYouTubeHistoryEnabled(),
+            youtubeSaveThumbnails = repository.loadYouTubeSaveThumbnails(),
             history = repository.loadHistory(),
             usageCounts = repository.loadUsageCounts(),
             themeMode = repository.loadThemeMode(),
@@ -214,6 +223,9 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 whatsAppFlavor = snap.whatsAppFlavor,
                 appShortcuts = snap.appShortcuts,
                 universalAliases = snap.universalAliases,
+                youtubeHistoryMatches = snap.youtubeHistoryMatches,
+                youtubeHistoryTotalCount = snap.youtubeHistoryCount,
+                isYouTubeListenerEnabled = snap.isYouTubeListenerEnabled,
             )
             _uiState.update { it.copy(paletteResults = computed) }
         }
@@ -300,6 +312,36 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         _uiState.update { it.copy(activeDictionaryEntry = entry) }
     }
 
+    fun syncYouTubeHistoryState(
+        listenerEnabled: Boolean,
+        totalCount: Int,
+        isImporting: Boolean = false,
+    ) {
+        _uiState.update {
+            it.copy(
+                isYouTubeListenerEnabled = listenerEnabled,
+                youtubeHistoryCount = totalCount,
+                isYouTubeHistoryImporting = isImporting,
+            )
+        }
+        recomputePaletteAsync()
+    }
+
+    fun updateYouTubeHistoryMatches(matches: List<YouTubeWatchEntry>) {
+        _uiState.update { it.copy(youtubeHistoryMatches = matches) }
+        recomputePaletteAsync()
+    }
+
+    fun setYouTubeHistoryEnabled(enabled: Boolean) {
+        repository.saveYouTubeHistoryEnabled(enabled)
+        _uiState.update { it.copy(youtubeHistoryEnabled = enabled) }
+    }
+
+    fun setYouTubeSaveThumbnails(enabled: Boolean) {
+        repository.saveYouTubeSaveThumbnails(enabled)
+        _uiState.update { it.copy(youtubeSaveThumbnails = enabled) }
+    }
+
     fun setPrefixConfig(config: PrefixConfig) {
         val normalized = PrefixConfig(
             files = config.filesClean,
@@ -311,6 +353,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             dictionary = config.dictionaryClean,
             clipboard = config.clipboardClean,
             systemSettings = config.systemSettingsClean,
+            youtubeHistory = config.youtubeHistoryClean,
         )
         repository.savePrefixConfig(normalized)
         _uiState.update { it.copy(prefixConfig = normalized) }
@@ -320,7 +363,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun resetPrefixConfig() {
         val def = PrefixConfig()
         repository.savePrefixConfig(def)
-        _uiState.update { it.copy(prefixConfig = def, jsonStatusMessage = "ok: restored default prefixes (f, s, b, app, hist, c, def, clip, set)") }
+        _uiState.update { it.copy(prefixConfig = def, jsonStatusMessage = "ok: restored default prefixes (f, s, b, app, hist, c, def, clip, set, yth)") }
         recomputePaletteAsync()
     }
 

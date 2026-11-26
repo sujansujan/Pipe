@@ -11,4 +11,5 @@
     <string name="pipe_selection">pipe</string>
     <string name="widget_name">~/pipe overlay bar</string>
     <string name="tile_name">pipe overlay</string>
+    <string name="yt_listener_label">pipe offline yt watch history</string>
 </resources>

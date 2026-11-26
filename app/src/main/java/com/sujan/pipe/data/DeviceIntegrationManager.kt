@@ -872,6 +872,16 @@ object DeviceIntegrationManager {
      */
     fun openUrlExcludingSelf(context: Context, url: String): Boolean {
         val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return false
+        // Record direct YouTube video URLs opened via Pipe into offline watch history
+        if (OfflineYouTubeHistoryManager.extractYouTubeVideoId(url) != null) {
+            runCatching {
+                OfflineYouTubeHistoryManager.recordYouTubeUrlInteraction(
+                    context = context.applicationContext,
+                    rawUrl = url,
+                    sourceApp = "Pipe",
+                )
+            }
+        }
         val baseIntent = Intent(Intent.ACTION_VIEW, uri).apply {
             addCategory(Intent.CATEGORY_BROWSABLE)
             flags = Intent.FLAG_ACTIVITY_NEW_TASK

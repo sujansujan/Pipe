@@ -26,6 +26,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.lifecycleScope
 import com.sujan.pipe.data.DeviceIntegrationManager
 import com.sujan.pipe.data.OfflineDictionaryManager
+import com.sujan.pipe.data.OfflineYouTubeHistoryManager
 import com.sujan.pipe.data.PipeRepository
 import com.sujan.pipe.domain.ClipActionKind
 import com.sujan.pipe.domain.PromptIntentMode
@@ -80,6 +81,26 @@ class MainActivity : ComponentActivity() {
                     viewModel.updateDictionaryMatches(matches)
                 } else if (cmdMode != PromptIntentMode.DICTIONARY_ONLY && state.dictionaryMatches.isNotEmpty()) {
                     viewModel.updateDictionaryMatches(emptyList())
+                }
+            }
+
+            // True Offline YouTube Watch History search (runs in YOUTUBE_HISTORY_ONLY or `yt`/`ytt`/`ytw`/`ytm` mode)
+            val matchedEngineKw = state.parsedCommand.matchedEngine?.keyword?.lowercase().orEmpty()
+            val isYtEngineMode = cmdMode == PromptIntentMode.ENGINE_ONLY &&
+                matchedEngineKw in setOf("yt", "ytt", "ytw", "ytm")
+            LaunchedEffect(cmdMode, filterQ, isYtEngineMode, state.youtubeHistoryCount) {
+                if (cmdMode == PromptIntentMode.YOUTUBE_HISTORY_ONLY) {
+                    val matches = withContext(Dispatchers.IO) {
+                        OfflineYouTubeHistoryManager.searchOnDemand(applicationContext, filterQ, limit = 10)
+                    }
+                    viewModel.updateYouTubeHistoryMatches(matches)
+                } else if (isYtEngineMode) {
+                    val matches = withContext(Dispatchers.IO) {
+                        OfflineYouTubeHistoryManager.searchOnDemand(applicationContext, filterQ, limit = 3)
+                    }
+                    viewModel.updateYouTubeHistoryMatches(matches)
+                } else if (state.youtubeHistoryMatches.isNotEmpty()) {
+                    viewModel.updateYouTubeHistoryMatches(emptyList())
                 }
             }
 
@@ -140,6 +161,33 @@ class MainActivity : ComponentActivity() {
             ) { uri: Uri? ->
                 if (uri != null) {
                     importDictionaryUriAsync(uri)
+                }
+            }
+
+            val ytHistoryImportLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.OpenDocument(),
+            ) { uri: Uri? ->
+                if (uri != null) {
+                    importYouTubeHistoryUriAsync(uri)
+                }
+            }
+
+            val ytHistoryExportLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.CreateDocument("application/json"),
+            ) { uri: Uri? ->
+                if (uri != null) {
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            val entries = OfflineYouTubeHistoryManager.getCachedOrLoadHistory(applicationContext)
+                            val json = OfflineYouTubeHistoryManager.exportHistoryToJson(entries)
+                            contentResolver.openOutputStream(uri)?.use {
+                                it.write(json.toByteArray(Charsets.UTF_8))
+                            }
+                            viewModel.setJsonStatusMessage("ok: exported ${entries.size} offline YouTube watches to json")
+                        }.onFailure {
+                            viewModel.setJsonStatusMessage("! failed to export YouTube watch history")
+                        }
+                    }
                 }
             }
 
@@ -240,6 +288,15 @@ class MainActivity : ComponentActivity() {
                                 DeviceIntegrationManager.openUrlExcludingSelf(this, url)
                             })
                         }
+                        is com.sujan.pipe.domain.PaletteItem.YouTubeWatchAction -> {
+                            if (top.isSetupPrompt || top.entry == null) {
+                                viewModel.selectSettingsSection(SettingsSection.INDEX)
+                                viewModel.navigateTo(PipeView.SETTINGS)
+                            } else {
+                                viewModel.recordItemUsage(top.usageKey)
+                                DeviceIntegrationManager.openUrlExcludingSelf(this, top.entry.watchUrl)
+                            }
+                        }
                         is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
                             viewModel.recordItemUsage(top.usageKey)
                             val raw = if (top.query.isNotEmpty()) "${top.engine.keyword} ${top.query}" else top.engine.keyword
@@ -291,6 +348,41 @@ class MainActivity : ComponentActivity() {
                     repository.saveDictionaryMetadata(0, "not linked")
                     viewModel.syncDictionaryState(false, 0, "not linked")
                     viewModel.setJsonStatusMessage("ok: unlinked offline dictionary file")
+                },
+                onOpenYouTubeWatch = { entry, resume ->
+                    viewModel.recordItemUsage("ytw:${entry.id}")
+                    DeviceIntegrationManager.openUrlExcludingSelf(this, if (resume) entry.resumeUrl else entry.watchUrl)
+                },
+                onSetupYouTubeHistoryClick = {
+                    viewModel.selectSettingsSection(SettingsSection.INDEX)
+                    viewModel.navigateTo(PipeView.SETTINGS)
+                },
+                onDeleteYouTubeWatch = { entry ->
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        val updated = OfflineYouTubeHistoryManager.deleteEntry(applicationContext, entry.id)
+                        val listenerOn = OfflineYouTubeHistoryManager.isNotificationListenerEnabled(applicationContext)
+                        viewModel.syncYouTubeHistoryState(listenerOn, updated.size)
+                        val q = viewModel.uiState.value.parsedCommand.filterQuery
+                        viewModel.updateYouTubeHistoryMatches(
+                            OfflineYouTubeHistoryManager.searchEntries(updated, q, limit = 10)
+                        )
+                        viewModel.setJsonStatusMessage("ok: deleted \"${entry.title.take(28)}\" from offline YT history")
+                    }
+                },
+                onYouTubeHistoryEnabledChange = viewModel::setYouTubeHistoryEnabled,
+                onYouTubeSaveThumbnailsChange = viewModel::setYouTubeSaveThumbnails,
+                onRequestYouTubeListenerAccess = ::openNotificationListenerSettings,
+                onImportYouTubeHistoryClick = { ytHistoryImportLauncher.launch(arrayOf("*/*")) },
+                onScanDownloadsYouTubeHistory = ::autoDetectDownloadsYouTubeHistory,
+                onExportYouTubeHistoryClick = { ytHistoryExportLauncher.launch("pipe-yt-history.json") },
+                onClearYouTubeHistoryClick = {
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        OfflineYouTubeHistoryManager.clearAll(applicationContext)
+                        val listenerOn = OfflineYouTubeHistoryManager.isNotificationListenerEnabled(applicationContext)
+                        viewModel.syncYouTubeHistoryState(listenerOn, 0)
+                        viewModel.updateYouTubeHistoryMatches(emptyList())
+                        viewModel.setJsonStatusMessage("ok: cleared offline YouTube watch history")
+                    }
                 },
                 onExecuteClipboardAction = { action ->
                     handleClipboardAction(action, clipboard::setText)
@@ -604,6 +696,50 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun openNotificationListenerSettings() {
+        runCatching {
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        }.onFailure {
+            runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+        }
+    }
+
+    private fun importYouTubeHistoryUriAsync(uri: Uri) {
+        val listenerOn = OfflineYouTubeHistoryManager.isNotificationListenerEnabled(applicationContext)
+        viewModel.syncYouTubeHistoryState(listenerOn, viewModel.uiState.value.youtubeHistoryCount, isImporting = true)
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching {
+                val nameHint = uri.lastPathSegment?.substringAfterLast('/') ?: "watch-history.json"
+                val (imported, total) = OfflineYouTubeHistoryManager.importFromUri(applicationContext, uri, nameHint)
+                viewModel.syncYouTubeHistoryState(listenerOn, total, isImporting = false)
+                viewModel.setJsonStatusMessage("ok: imported $imported watches ($total total offline)")
+            }.onFailure { err ->
+                viewModel.syncYouTubeHistoryState(listenerOn, viewModel.uiState.value.youtubeHistoryCount, isImporting = false)
+                viewModel.setJsonStatusMessage(err.message ?: "! failed to import YouTube watch history")
+            }
+        }
+    }
+
+    private fun autoDetectDownloadsYouTubeHistory() {
+        val candidate = OfflineYouTubeHistoryManager.findCandidateInDownloads()
+        if (candidate == null) {
+            viewModel.setJsonStatusMessage("! no watch-history.json / .html found in Download/ (use [import file])")
+            return
+        }
+        val listenerOn = OfflineYouTubeHistoryManager.isNotificationListenerEnabled(applicationContext)
+        viewModel.syncYouTubeHistoryState(listenerOn, viewModel.uiState.value.youtubeHistoryCount, isImporting = true)
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching {
+                val (imported, total) = OfflineYouTubeHistoryManager.importFromFile(applicationContext, candidate)
+                viewModel.syncYouTubeHistoryState(listenerOn, total, isImporting = false)
+                viewModel.setJsonStatusMessage("ok: imported $imported watches from ${candidate.name} ($total total)")
+            }.onFailure { err ->
+                viewModel.syncYouTubeHistoryState(listenerOn, viewModel.uiState.value.youtubeHistoryCount, isImporting = false)
+                viewModel.setJsonStatusMessage(err.message ?: "! could not parse ${candidate.name}")
+            }
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         refreshDeviceDataAsync()
@@ -621,9 +757,12 @@ class MainActivity : ComponentActivity() {
         val currentBookmarks = viewModel.uiState.value.bookmarks
         val dictInstalled = OfflineDictionaryManager.isDictionaryInstalled(applicationContext)
         viewModel.syncDictionaryState(installed = dictInstalled)
+        val ytListenerOn = OfflineYouTubeHistoryManager.isNotificationListenerEnabled(applicationContext)
         DeviceIntegrationManager.syncHourlyIndexSchedule(this, repository.loadHourlyAutoIndexEnabled())
 
         lifecycleScope.launch(Dispatchers.IO) {
+            val ytCount = OfflineYouTubeHistoryManager.getCachedOrLoadHistory(applicationContext).size
+            viewModel.syncYouTubeHistoryState(listenerEnabled = ytListenerOn, totalCount = ytCount)
             val cachedFiles = if (hasFiles) DeviceIntegrationManager.getCachedStorageFiles(applicationContext) else emptyList()
             val contacts = if (hasContacts) DeviceIntegrationManager.getCachedOrLoadContacts(applicationContext) else emptyList()
             val apps = DeviceIntegrationManager.loadInstalledApps(applicationContext)
