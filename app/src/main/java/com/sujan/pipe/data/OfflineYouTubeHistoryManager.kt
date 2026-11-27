@@ -361,6 +361,99 @@ object OfflineYouTubeHistoryManager {
     }
 
     /**
+     * Updates the saved playback position (and optional duration) of an already-recorded video in place
+     * without incrementing `watchCount` or reordering it above a newly started video.
+     * Falls back to [recordWatch] if the entry has not been persisted yet.
+     */
+    fun updateWatchPosition(
+        context: Context,
+        title: String,
+        channel: String = "",
+        videoId: String = "",
+        url: String = "",
+        positionMs: Long,
+        durationMs: Long = 0L,
+        sourceApp: String = "YouTube",
+    ) {
+        val cleanPos = positionMs.coerceAtLeast(0L)
+        if (cleanPos <= 0L) return
+        val cleanTitle = cleanVideoTitle(title)
+        val cleanChannel = channel.trim()
+        val resolvedVideoId = extractYouTubeVideoId(videoId, allowBareId = true)
+            ?: extractYouTubeVideoId(url)
+            ?: ""
+        if (cleanTitle.isBlank() && resolvedVideoId.isBlank()) return
+
+        synchronized(writeLock) {
+            val current = memoryCache ?: readHistoryFileLocked(getHistoryFile(context))
+            val (updated, found) = applyPositionUpdate(
+                existing = current,
+                videoId = resolvedVideoId,
+                title = cleanTitle,
+                channel = cleanChannel,
+                positionMs = cleanPos,
+                durationMs = durationMs.coerceAtLeast(0L),
+            )
+            if (found) {
+                writeHistoryFileLocked(getHistoryFile(context), updated)
+                memoryCache = updated
+                return
+            }
+        }
+
+        if (cleanTitle.isNotBlank()) {
+            recordWatch(
+                context = context,
+                title = cleanTitle,
+                channel = cleanChannel,
+                videoId = resolvedVideoId,
+                url = url,
+                durationMs = durationMs,
+                positionMs = cleanPos,
+                sourceApp = sourceApp,
+            )
+        }
+    }
+
+    /**
+     * Pure helper that updates `positionMs` (and `durationMs` if > 0) for a matching entry in place
+     * without changing order or `watchCount`.
+     */
+    fun applyPositionUpdate(
+        existing: List<YouTubeWatchEntry>,
+        videoId: String,
+        title: String,
+        channel: String,
+        positionMs: Long,
+        durationMs: Long = 0L,
+    ): Pair<List<YouTubeWatchEntry>, Boolean> {
+        val titleLower = title.trim().lowercase()
+        val channelLower = channel.trim().lowercase()
+        val stableId = buildStableId(videoId, title, channel)
+
+        val matchIdx = existing.indexOfFirst { cur ->
+            (videoId.isNotBlank() && cur.videoId == videoId) ||
+                cur.id == stableId ||
+                (titleLower.isNotEmpty() && cur.titleLower == titleLower &&
+                    (cur.channelLower == channelLower || cur.channelLower.isEmpty() || channelLower.isEmpty()))
+        }
+        if (matchIdx < 0) return existing to false
+
+        val prev = existing[matchIdx]
+        val effectiveDuration = if (durationMs > 0L) durationMs else prev.durationMs
+        val clampedPos = if (effectiveDuration > 0L) positionMs.coerceIn(0L, effectiveDuration) else positionMs.coerceAtLeast(0L)
+        if (prev.positionMs == clampedPos && prev.durationMs == effectiveDuration) {
+            return existing to true
+        }
+        val mutable = existing.toMutableList()
+        mutable[matchIdx] = prev.copy(
+            positionMs = clampedPos,
+            durationMs = effectiveDuration,
+        )
+        return mutable to true
+    }
+
+    /**
      * Upserts a single live watch event cleanly:
      * - Matches existing entry by `videoId` OR by normalized `title + channel` (upgrading placeholder titles or missing videoIds!).
      * - Only increments `watchCount` when re-watched after [SESSION_REWATCH_WINDOW_MS] (10m) or after another video played in between.

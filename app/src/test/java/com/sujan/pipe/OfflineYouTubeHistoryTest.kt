@@ -285,4 +285,96 @@ class OfflineYouTubeHistoryTest {
         assertEquals("ReVanced", YouTubeWatchListenerService.friendlyAppLabel("app.revanced.android.youtube"))
         assertEquals("PipePipe", YouTubeWatchListenerService.friendlyAppLabel("InfinityLoop1309.NewPipeEnhanced"))
     }
+
+    @Test
+    fun `estimatePositionMs extrapolates live playback at 1x and 2x speed, respects pause, and clamps to duration`() {
+        // 1x speed: base 30s + 45s elapsed = 75s
+        assertEquals(
+            75_000L,
+            YouTubeWatchListenerService.estimatePositionMs(
+                basePositionMs = 30_000L,
+                lastUpdateElapsedMs = 100_000L,
+                playbackSpeed = 1.0f,
+                isPlaying = true,
+                durationMs = 300_000L,
+                nowElapsedMs = 145_000L,
+            ),
+        )
+        // 2x speed: base 10s + 20s*2 = 50s
+        assertEquals(
+            50_000L,
+            YouTubeWatchListenerService.estimatePositionMs(
+                basePositionMs = 10_000L,
+                lastUpdateElapsedMs = 100_000L,
+                playbackSpeed = 2.0f,
+                isPlaying = true,
+                durationMs = 300_000L,
+                nowElapsedMs = 120_000L,
+            ),
+        )
+        // Paused: stays at base position regardless of elapsed time
+        assertEquals(
+            42_000L,
+            YouTubeWatchListenerService.estimatePositionMs(
+                basePositionMs = 42_000L,
+                lastUpdateElapsedMs = 100_000L,
+                playbackSpeed = 1.0f,
+                isPlaying = false,
+                durationMs = 300_000L,
+                nowElapsedMs = 500_000L,
+            ),
+        )
+        // Clamped to duration when playback overshoots
+        assertEquals(
+            180_000L,
+            YouTubeWatchListenerService.estimatePositionMs(
+                basePositionMs = 150_000L,
+                lastUpdateElapsedMs = 100_000L,
+                playbackSpeed = 1.5f,
+                isPlaying = true,
+                durationMs = 180_000L,
+                nowElapsedMs = 200_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun `applyPositionUpdate updates watch position in place without inflating watchCount or reordering`() {
+        val videoB = YouTubeWatchEntry(
+            id = "vidBBBBBBBB",
+            videoId = "vidBBBBBBBB",
+            title = "Video B (Current)",
+            channel = "Channel B",
+            watchedAtMs = 2_000_000L,
+            durationMs = 600_000L,
+            positionMs = 5_000L,
+            watchCount = 1,
+        )
+        val videoA = YouTubeWatchEntry(
+            id = "vidAAAAAAAA",
+            videoId = "vidAAAAAAAA",
+            title = "Video A (Previous)",
+            channel = "Channel A",
+            watchedAtMs = 1_000_000L,
+            durationMs = 900_000L,
+            positionMs = 0L,
+            watchCount = 2,
+        )
+        val (updated, found) = OfflineYouTubeHistoryManager.applyPositionUpdate(
+            existing = listOf(videoB, videoA),
+            videoId = "vidAAAAAAAA",
+            title = "Video A (Previous)",
+            channel = "Channel A",
+            positionMs = 420_000L,
+            durationMs = 900_000L,
+        )
+        assertTrue(found)
+        // Video B stays #1, Video A stays #2 with updated position and unchanged watchCount
+        assertEquals("vidBBBBBBBB", updated[0].videoId)
+        assertEquals("vidAAAAAAAA", updated[1].videoId)
+        assertEquals(420_000L, updated[1].positionMs)
+        assertEquals(2, updated[1].watchCount)
+        assertTrue(updated[1].hasResumePosition)
+        assertEquals("https://www.youtube.com/watch?v=vidAAAAAAAA&t=420s", updated[1].resumeUrl)
+    }
 }
