@@ -71,6 +71,7 @@ import com.sujan.pipe.data.DeviceIntegrationManager
 import com.sujan.pipe.data.OfflineDictionaryManager
 import com.sujan.pipe.data.OfflineYouTubeHistoryManager
 import com.sujan.pipe.data.PipeRepository
+import com.sujan.pipe.service.YouTubeWatchListenerService
 import com.sujan.pipe.domain.ClipActionKind
 import com.sujan.pipe.domain.DirectNumberPrimaryMode
 import com.sujan.pipe.domain.PaletteItem
@@ -191,9 +192,12 @@ class PipeOverlayActivity : ComponentActivity() {
                     },
                     searchYouTubeHistoryOnDemand = { q, limit ->
                         withContext(Dispatchers.IO) {
-                            val total = OfflineYouTubeHistoryManager.getCachedOrLoadHistory(applicationContext).size
-                            val matches = OfflineYouTubeHistoryManager.searchOnDemand(applicationContext, q, limit = limit)
-                            matches to total
+                            if (q.isBlank()) {
+                                YouTubeWatchListenerService.ensureBoundAndCaptureActive(applicationContext)
+                            }
+                            val all = OfflineYouTubeHistoryManager.getCachedOrLoadHistory(applicationContext)
+                            val matches = OfflineYouTubeHistoryManager.searchEntries(all, q, limit = limit)
+                            matches to all.size
                         }
                     },
                     onDeleteYouTubeWatch = { entry ->
@@ -202,7 +206,7 @@ class PipeOverlayActivity : ComponentActivity() {
                     onOpenYouTubeWatch = { entry, resume ->
                         if (entry.hasDirectVideoId) {
                             val targetUrl = if (resume) entry.resumeUrl else entry.watchUrl
-                            if (DeviceIntegrationManager.openUrlExcludingSelf(this, targetUrl)) finish()
+                            if (DeviceIntegrationManager.openUrlExcludingSelf(this, targetUrl, recordInYtHistory = false)) finish()
                         } else {
                             lifecycleScope.launch(Dispatchers.IO) {
                                 val resolved = OfflineYouTubeHistoryManager.resolveAndAttachVideoId(
@@ -212,7 +216,7 @@ class PipeOverlayActivity : ComponentActivity() {
                                 )
                                 val targetUrl = if (resume) resolved.resumeUrl else resolved.watchUrl
                                 withContext(Dispatchers.Main) {
-                                    if (DeviceIntegrationManager.openUrlExcludingSelf(this@PipeOverlayActivity, targetUrl)) {
+                                    if (DeviceIntegrationManager.openUrlExcludingSelf(this@PipeOverlayActivity, targetUrl, recordInYtHistory = false)) {
                                         finish()
                                     }
                                 }

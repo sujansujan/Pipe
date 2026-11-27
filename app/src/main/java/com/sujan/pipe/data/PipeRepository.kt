@@ -331,6 +331,9 @@ class PipeRepository(context: Context) {
     fun loadYouTubeResolveVideoId(): Boolean = prefs.getBoolean("yt_watch_resolve_vid_v1", true)
     fun saveYouTubeResolveVideoId(enabled: Boolean) = prefs.edit().putBoolean("yt_watch_resolve_vid_v1", enabled).apply()
 
+    fun loadYouTubeKeepAliveEnabled(): Boolean = prefs.getBoolean("yt_watch_keepalive_v1", true)
+    fun saveYouTubeKeepAliveEnabled(enabled: Boolean) = prefs.edit().putBoolean("yt_watch_keepalive_v1", enabled).apply()
+
     fun loadHourlyAutoIndexEnabled(): Boolean = prefs.getBoolean("hourly_auto_index_v1", true)
     fun saveHourlyAutoIndexEnabled(enabled: Boolean) = prefs.edit().putBoolean("hourly_auto_index_v1", enabled).apply()
 

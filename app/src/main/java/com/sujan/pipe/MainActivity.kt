@@ -28,6 +28,9 @@ import com.sujan.pipe.data.DeviceIntegrationManager
 import com.sujan.pipe.data.OfflineDictionaryManager
 import com.sujan.pipe.data.OfflineYouTubeHistoryManager
 import com.sujan.pipe.data.PipeRepository
+import com.sujan.pipe.service.YouTubeMediaSessionTracker
+import com.sujan.pipe.service.YouTubeWatchKeepAliveService
+import com.sujan.pipe.service.YouTubeWatchListenerService
 import com.sujan.pipe.domain.ClipActionKind
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
@@ -90,8 +93,16 @@ class MainActivity : ComponentActivity() {
                 matchedEngineKw in setOf("yt", "ytt", "ytw", "ytm")
             LaunchedEffect(cmdMode, filterQ, isYtEngineMode, state.youtubeHistoryCount) {
                 if (cmdMode == PromptIntentMode.YOUTUBE_HISTORY_ONLY) {
-                    val matches = withContext(Dispatchers.IO) {
-                        OfflineYouTubeHistoryManager.searchOnDemand(applicationContext, filterQ, limit = 10)
+                    val (matches, total) = withContext(Dispatchers.IO) {
+                        if (filterQ.isBlank()) {
+                            YouTubeWatchListenerService.ensureBoundAndCaptureActive(applicationContext)
+                        }
+                        val all = OfflineYouTubeHistoryManager.getCachedOrLoadHistory(applicationContext)
+                        OfflineYouTubeHistoryManager.searchEntries(all, filterQ, limit = 10) to all.size
+                    }
+                    if (total != state.youtubeHistoryCount) {
+                        val listenerOn = OfflineYouTubeHistoryManager.isNotificationListenerEnabled(applicationContext)
+                        viewModel.syncYouTubeHistoryState(listenerOn, total)
                     }
                     viewModel.updateYouTubeHistoryMatches(matches)
                 } else if (isYtEngineMode) {
@@ -367,9 +378,25 @@ class MainActivity : ComponentActivity() {
                         viewModel.setJsonStatusMessage("ok: deleted \"${entry.title.take(28)}\" from offline YT history")
                     }
                 },
-                onYouTubeHistoryEnabledChange = viewModel::setYouTubeHistoryEnabled,
+                onYouTubeHistoryEnabledChange = { enabled ->
+                    viewModel.setYouTubeHistoryEnabled(enabled)
+                    if (enabled) YouTubeMediaSessionTracker.start(applicationContext)
+                    YouTubeWatchKeepAliveService.syncRunningState(applicationContext)
+                },
                 onYouTubeSaveThumbnailsChange = viewModel::setYouTubeSaveThumbnails,
                 onYouTubeResolveVideoIdChange = viewModel::setYouTubeResolveVideoId,
+                onYouTubeKeepAliveEnabledChange = { enabled ->
+                    viewModel.setYouTubeKeepAliveEnabled(enabled)
+                    YouTubeWatchKeepAliveService.syncRunningState(applicationContext)
+                    val listenerOn = OfflineYouTubeHistoryManager.isNotificationListenerEnabled(applicationContext)
+                    viewModel.syncYouTubeHistoryState(
+                        listenerEnabled = listenerOn,
+                        totalCount = state.youtubeHistoryCount,
+                        trackerLive = YouTubeMediaSessionTracker.isActivelyTracking,
+                        batteryUnrestricted = isIgnoringBatteryOptimizations(),
+                    )
+                },
+                onRequestBatteryUnrestricted = ::requestIgnoreBatteryOptimizations,
                 onRequestYouTubeListenerAccess = ::openNotificationListenerSettings,
                 onImportYouTubeHistoryClick = { ytHistoryImportLauncher.launch(arrayOf("*/*")) },
                 onScanDownloadsYouTubeHistory = ::autoDetectDownloadsYouTubeHistory,
@@ -702,7 +729,7 @@ class MainActivity : ComponentActivity() {
         viewModel.recordItemUsage("ytw:${entry.id}")
         if (entry.hasDirectVideoId) {
             val targetUrl = if (resume) entry.resumeUrl else entry.watchUrl
-            DeviceIntegrationManager.openUrlExcludingSelf(this, targetUrl)
+            DeviceIntegrationManager.openUrlExcludingSelf(this, targetUrl, recordInYtHistory = false)
             return
         }
         viewModel.setJsonStatusMessage("resolving video link for \"${entry.title.take(26)}\"...")
@@ -715,12 +742,33 @@ class MainActivity : ComponentActivity() {
             val targetUrl = if (resume) resolved.resumeUrl else resolved.watchUrl
             withContext(Dispatchers.Main) {
                 viewModel.setJsonStatusMessage(null)
-                DeviceIntegrationManager.openUrlExcludingSelf(this@MainActivity, targetUrl)
+                DeviceIntegrationManager.openUrlExcludingSelf(this@MainActivity, targetUrl, recordInYtHistory = false)
             }
             if (resolved.hasDirectVideoId) {
                 val q = viewModel.uiState.value.parsedCommand.filterQuery
                 val fresh = OfflineYouTubeHistoryManager.searchOnDemand(applicationContext, q, limit = 10)
                 viewModel.updateYouTubeHistoryMatches(fresh)
+            }
+        }
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(android.os.PowerManager::class.java) ?: return false
+        return runCatching { pm.isIgnoringBatteryOptimizations(packageName) }.getOrDefault(false)
+    }
+
+    @android.annotation.SuppressLint("BatteryLife")
+    private fun requestIgnoreBatteryOptimizations() {
+        runCatching {
+            startActivity(
+                Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName"),
+                )
+            )
+        }.onFailure {
+            runCatching {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             }
         }
     }
@@ -790,8 +838,16 @@ class MainActivity : ComponentActivity() {
         DeviceIntegrationManager.syncHourlyIndexSchedule(this, repository.loadHourlyAutoIndexEnabled())
 
         lifecycleScope.launch(Dispatchers.IO) {
+            if (ytListenerOn) {
+                YouTubeWatchListenerService.ensureBoundAndCaptureActive(applicationContext)
+            }
             val ytCount = OfflineYouTubeHistoryManager.getCachedOrLoadHistory(applicationContext).size
-            viewModel.syncYouTubeHistoryState(listenerEnabled = ytListenerOn, totalCount = ytCount)
+            viewModel.syncYouTubeHistoryState(
+                listenerEnabled = ytListenerOn,
+                totalCount = ytCount,
+                trackerLive = YouTubeMediaSessionTracker.isActivelyTracking,
+                batteryUnrestricted = isIgnoringBatteryOptimizations(),
+            )
             val cachedFiles = if (hasFiles) DeviceIntegrationManager.getCachedStorageFiles(applicationContext) else emptyList()
             val contacts = if (hasContacts) DeviceIntegrationManager.getCachedOrLoadContacts(applicationContext) else emptyList()
             val apps = DeviceIntegrationManager.loadInstalledApps(applicationContext)

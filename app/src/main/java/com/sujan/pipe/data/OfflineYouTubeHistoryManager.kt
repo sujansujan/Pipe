@@ -58,7 +58,8 @@ object OfflineYouTubeHistoryManager {
     private var pendingRecentLink: PendingLinkHint? = null
 
     private val thumbBitmapCache = object : LruCache<String, Bitmap>(48) {}
-    private val failedResolveKeys = Collections.synchronizedSet(HashSet<String>())
+    private val failedResolveTimestamps = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private const val FAILED_RESOLVE_COOLDOWN_MS = 20_000L
 
     data class YouTubeSearchCandidate(
         val videoId: String,
@@ -516,7 +517,10 @@ object OfflineYouTubeHistoryManager {
         if (repo != null && !repo.loadYouTubeResolveVideoId()) return entry
 
         val failKey = entry.id
-        if (!forceRetry && failKey in failedResolveKeys) return entry
+        val lastFailMs = failedResolveTimestamps[failKey]
+        if (!forceRetry && lastFailMs != null && (System.currentTimeMillis() - lastFailMs) < FAILED_RESOLVE_COOLDOWN_MS) {
+            return entry
+        }
 
         val resolvedId = lookupVideoIdOnline(
             title = entry.title,
@@ -524,10 +528,10 @@ object OfflineYouTubeHistoryManager {
             durationMs = entry.durationMs,
         )
         if (resolvedId.isNullOrBlank()) {
-            failedResolveKeys.add(failKey)
+            failedResolveTimestamps[failKey] = System.currentTimeMillis()
             return entry
         }
-        failedResolveKeys.remove(failKey)
+        failedResolveTimestamps.remove(failKey)
 
         synchronized(writeLock) {
             val current = memoryCache ?: readHistoryFileLocked(getHistoryFile(context))
@@ -581,8 +585,8 @@ object OfflineYouTubeHistoryManager {
 
         val conn = (URL("https://www.youtube.com/youtubei/v1/search?prettyPrint=false").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 3_000
-            readTimeout = 4_000
+            connectTimeout = 5_000
+            readTimeout = 6_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=UTF-8")
             setRequestProperty("Accept-Encoding", "gzip")
@@ -607,8 +611,8 @@ object OfflineYouTubeHistoryManager {
         val encoded = URLEncoder.encode(query.trim(), StandardCharsets.UTF_8.name())
         val conn = (URL("https://www.youtube.com/results?search_query=$encoded").openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 3_000
-            readTimeout = 4_000
+            connectTimeout = 5_000
+            readTimeout = 6_000
             instanceFollowRedirects = true
             setRequestProperty("Accept-Encoding", "gzip")
             setRequestProperty("Accept-Language", "en-US,en;q=0.9")

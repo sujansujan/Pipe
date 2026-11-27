@@ -112,7 +112,10 @@ data class PipeUiState(
     val youtubeHistoryEnabled: Boolean = true,
     val youtubeSaveThumbnails: Boolean = true,
     val youtubeResolveVideoId: Boolean = true,
+    val youtubeKeepAliveEnabled: Boolean = true,
     val isYouTubeListenerEnabled: Boolean = false,
+    val isYouTubeTrackerLive: Boolean = false,
+    val isBatteryUnrestricted: Boolean = false,
     val youtubeHistoryCount: Int = 0,
     val youtubeHistoryMatches: List<YouTubeWatchEntry> = emptyList(),
     val isYouTubeHistoryImporting: Boolean = false,
@@ -170,6 +173,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             youtubeHistoryEnabled = repository.loadYouTubeHistoryEnabled(),
             youtubeSaveThumbnails = repository.loadYouTubeSaveThumbnails(),
             youtubeResolveVideoId = repository.loadYouTubeResolveVideoId(),
+            youtubeKeepAliveEnabled = repository.loadYouTubeKeepAliveEnabled(),
             history = repository.loadHistory(),
             usageCounts = repository.loadUsageCounts(),
             themeMode = repository.loadThemeMode(),
@@ -318,12 +322,16 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         listenerEnabled: Boolean,
         totalCount: Int,
         isImporting: Boolean = false,
+        trackerLive: Boolean = _uiState.value.isYouTubeTrackerLive,
+        batteryUnrestricted: Boolean = _uiState.value.isBatteryUnrestricted,
     ) {
         _uiState.update {
             it.copy(
                 isYouTubeListenerEnabled = listenerEnabled,
                 youtubeHistoryCount = totalCount,
                 isYouTubeHistoryImporting = isImporting,
+                isYouTubeTrackerLive = trackerLive,
+                isBatteryUnrestricted = batteryUnrestricted,
             )
         }
         recomputePaletteAsync()
@@ -347,6 +355,11 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun setYouTubeResolveVideoId(enabled: Boolean) {
         repository.saveYouTubeResolveVideoId(enabled)
         _uiState.update { it.copy(youtubeResolveVideoId = enabled) }
+    }
+
+    fun setYouTubeKeepAliveEnabled(enabled: Boolean) {
+        repository.saveYouTubeKeepAliveEnabled(enabled)
+        _uiState.update { it.copy(youtubeKeepAliveEnabled = enabled) }
     }
 
     fun setPrefixConfig(config: PrefixConfig) {

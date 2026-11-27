@@ -374,6 +374,8 @@ fun PipeApp(
     onYouTubeHistoryEnabledChange: (Boolean) -> Unit = {},
     onYouTubeSaveThumbnailsChange: (Boolean) -> Unit = {},
     onYouTubeResolveVideoIdChange: (Boolean) -> Unit = {},
+    onYouTubeKeepAliveEnabledChange: (Boolean) -> Unit = {},
+    onRequestBatteryUnrestricted: () -> Unit = {},
     onRequestYouTubeListenerAccess: () -> Unit = {},
     onImportYouTubeHistoryClick: () -> Unit = {},
     onScanDownloadsYouTubeHistory: () -> Unit = {},
@@ -608,6 +610,8 @@ fun PipeApp(
                         onYouTubeHistoryEnabledChange = onYouTubeHistoryEnabledChange,
                         onYouTubeSaveThumbnailsChange = onYouTubeSaveThumbnailsChange,
                         onYouTubeResolveVideoIdChange = onYouTubeResolveVideoIdChange,
+                        onYouTubeKeepAliveEnabledChange = onYouTubeKeepAliveEnabledChange,
+                        onRequestBatteryUnrestricted = onRequestBatteryUnrestricted,
                         onRequestYouTubeListenerAccess = onRequestYouTubeListenerAccess,
                         onImportYouTubeHistoryClick = onImportYouTubeHistoryClick,
                         onScanDownloadsYouTubeHistory = onScanDownloadsYouTubeHistory,
@@ -4363,6 +4367,8 @@ private fun PipeSettingsScreen(
     onYouTubeHistoryEnabledChange: (Boolean) -> Unit = {},
     onYouTubeSaveThumbnailsChange: (Boolean) -> Unit = {},
     onYouTubeResolveVideoIdChange: (Boolean) -> Unit = {},
+    onYouTubeKeepAliveEnabledChange: (Boolean) -> Unit = {},
+    onRequestBatteryUnrestricted: () -> Unit = {},
     onRequestYouTubeListenerAccess: () -> Unit = {},
     onImportYouTubeHistoryClick: () -> Unit = {},
     onScanDownloadsYouTubeHistory: () -> Unit = {},
@@ -4562,16 +4568,21 @@ private fun PipeSettingsScreen(
 
                     // True Offline YouTube Watch History Box
                     AsciiBox(title = "index - offline youtube watch history (${state.prefixConfig.youtubeHistoryClean})") {
+                        val listenerLabel = when {
+                            state.isYouTubeTrackerLive -> "LIVE"
+                            state.isYouTubeListenerEnabled -> "enabled"
+                            else -> "off"
+                        }
                         AsciiText(
-                            text = "stored: ${state.youtubeHistoryCount} videos  |  listener: ${if (state.isYouTubeListenerEnabled) "active" else "off"}  |  100% offline",
+                            text = "stored: ${state.youtubeHistoryCount} videos  |  tracker: $listenerLabel  |  battery: ${if (state.isBatteryUnrestricted) "ok" else "restricted"}",
                             style = AsciiType.body,
-                            color = if (state.isYouTubeListenerEnabled || state.youtubeHistoryCount > 0) c.good else c.accent2,
+                            color = if (state.isYouTubeTrackerLive) c.good else c.accent2,
                         )
                         AsciiText(
                             text = if (state.isYouTubeHistoryImporting) {
                                 "importing offline YouTube watch history..."
                             } else {
-                                "captures YouTube, ReVanced, YT Music, NewPipe, LibreTube & browser tabs locally; search via `${state.prefixConfig.youtubeHistoryClean} <query>`"
+                                "captures YouTube, Morphe, ReVanced, YT Music, NewPipe, LibreTube & browser tabs locally; search via `${state.prefixConfig.youtubeHistoryClean} <query>`"
                             },
                             style = AsciiType.small,
                             color = c.dim,
@@ -4580,6 +4591,11 @@ private fun PipeSettingsScreen(
                             label = "auto-capture YouTube playback (offline)",
                             checked = state.youtubeHistoryEnabled,
                             onCheckedChange = onYouTubeHistoryEnabledChange,
+                        )
+                        AsciiToggleRow(
+                            label = "keep monitor alive (anti-freeze for HyperOS/MIUI)",
+                            checked = state.youtubeKeepAliveEnabled,
+                            onCheckedChange = onYouTubeKeepAliveEnabledChange,
                         )
                         AsciiToggleRow(
                             label = "cache offline video thumbnails locally",
@@ -4591,6 +4607,17 @@ private fun PipeSettingsScreen(
                             checked = state.youtubeResolveVideoId,
                             onCheckedChange = onYouTubeResolveVideoIdChange,
                         )
+                        if (!state.isBatteryUnrestricted) {
+                            Spacer(Modifier.height(6.dp))
+                            AsciiButton(
+                                label = "! unrestrict battery (prevents HyperOS freeze)",
+                                onClick = onRequestBatteryUnrestricted,
+                                primary = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 44.dp),
+                            )
+                        }
                         Spacer(Modifier.height(8.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),

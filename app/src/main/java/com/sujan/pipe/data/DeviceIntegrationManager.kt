@@ -870,10 +870,10 @@ object DeviceIntegrationManager {
      * 3. If `com.sujan.pipe` IS set as the system Default Browser, uses the user's configured
      *    `preferredBrowserPackage` from `PipeRepository` (or the first non-self browser).
      */
-    fun openUrlExcludingSelf(context: Context, url: String): Boolean {
+    fun openUrlExcludingSelf(context: Context, url: String, recordInYtHistory: Boolean = true): Boolean {
         val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return false
         // Record direct YouTube video URLs opened via Pipe into offline watch history
-        if (OfflineYouTubeHistoryManager.extractYouTubeVideoId(url) != null) {
+        if (recordInYtHistory && OfflineYouTubeHistoryManager.extractYouTubeVideoId(url) != null) {
             runCatching {
                 OfflineYouTubeHistoryManager.recordYouTubeUrlInteraction(
                     context = context.applicationContext,

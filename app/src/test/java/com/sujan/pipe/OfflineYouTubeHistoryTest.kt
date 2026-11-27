@@ -272,6 +272,8 @@ class OfflineYouTubeHistoryTest {
     @Test
     fun `YouTubeWatchListenerService recognizes YouTube, ReVanced, NewPipe, LibreTube, Grayjay, and browsers`() {
         assertTrue(YouTubeWatchListenerService.isKnownYouTubePackage("com.google.android.youtube"))
+        assertTrue(YouTubeWatchListenerService.isKnownYouTubePackage("app.morphe.android.youtube"))
+        assertTrue(YouTubeWatchListenerService.isKnownYouTubePackage("app.morphe.android.apps.youtube.music"))
         assertTrue(YouTubeWatchListenerService.isKnownYouTubePackage("app.revanced.android.youtube"))
         assertTrue(YouTubeWatchListenerService.isKnownYouTubePackage("app.rvx.android.youtube"))
         assertTrue(YouTubeWatchListenerService.isKnownYouTubePackage("org.schabi.newpipe"))
@@ -282,6 +284,8 @@ class OfflineYouTubeHistoryTest {
 
         assertTrue(YouTubeWatchListenerService.isKnownBrowserPackage("com.brave.browser"))
         assertTrue(YouTubeWatchListenerService.isKnownBrowserPackage("org.mozilla.firefox"))
+        assertEquals("Morphe", YouTubeWatchListenerService.friendlyAppLabel("app.morphe.android.youtube"))
+        assertEquals("Morphe Music", YouTubeWatchListenerService.friendlyAppLabel("app.morphe.android.apps.youtube.music"))
         assertEquals("ReVanced", YouTubeWatchListenerService.friendlyAppLabel("app.revanced.android.youtube"))
         assertEquals("PipePipe", YouTubeWatchListenerService.friendlyAppLabel("InfinityLoop1309.NewPipeEnhanced"))
     }
