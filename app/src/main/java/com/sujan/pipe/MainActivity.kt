@@ -293,8 +293,7 @@ class MainActivity : ComponentActivity() {
                                 viewModel.selectSettingsSection(SettingsSection.INDEX)
                                 viewModel.navigateTo(PipeView.SETTINGS)
                             } else {
-                                viewModel.recordItemUsage(top.usageKey)
-                                DeviceIntegrationManager.openUrlExcludingSelf(this, top.entry.watchUrl)
+                                openYouTubeWatchEntry(top.entry, resume = true)
                             }
                         }
                         is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
@@ -350,8 +349,7 @@ class MainActivity : ComponentActivity() {
                     viewModel.setJsonStatusMessage("ok: unlinked offline dictionary file")
                 },
                 onOpenYouTubeWatch = { entry, resume ->
-                    viewModel.recordItemUsage("ytw:${entry.id}")
-                    DeviceIntegrationManager.openUrlExcludingSelf(this, if (resume) entry.resumeUrl else entry.watchUrl)
+                    openYouTubeWatchEntry(entry, resume = resume)
                 },
                 onSetupYouTubeHistoryClick = {
                     viewModel.selectSettingsSection(SettingsSection.INDEX)
@@ -371,6 +369,7 @@ class MainActivity : ComponentActivity() {
                 },
                 onYouTubeHistoryEnabledChange = viewModel::setYouTubeHistoryEnabled,
                 onYouTubeSaveThumbnailsChange = viewModel::setYouTubeSaveThumbnails,
+                onYouTubeResolveVideoIdChange = viewModel::setYouTubeResolveVideoId,
                 onRequestYouTubeListenerAccess = ::openNotificationListenerSettings,
                 onImportYouTubeHistoryClick = { ytHistoryImportLauncher.launch(arrayOf("*/*")) },
                 onScanDownloadsYouTubeHistory = ::autoDetectDownloadsYouTubeHistory,
@@ -692,6 +691,36 @@ class MainActivity : ComponentActivity() {
                     isIndexing = false,
                 )
                 viewModel.setJsonStatusMessage(err.message ?: "! could not index ${candidate.name}")
+            }
+        }
+    }
+
+    private fun openYouTubeWatchEntry(
+        entry: com.sujan.pipe.model.YouTubeWatchEntry,
+        resume: Boolean,
+    ) {
+        viewModel.recordItemUsage("ytw:${entry.id}")
+        if (entry.hasDirectVideoId) {
+            val targetUrl = if (resume) entry.resumeUrl else entry.watchUrl
+            DeviceIntegrationManager.openUrlExcludingSelf(this, targetUrl)
+            return
+        }
+        viewModel.setJsonStatusMessage("resolving video link for \"${entry.title.take(26)}\"...")
+        lifecycleScope.launch(Dispatchers.IO) {
+            val resolved = OfflineYouTubeHistoryManager.resolveAndAttachVideoId(
+                context = applicationContext,
+                entry = entry,
+                forceRetry = true,
+            )
+            val targetUrl = if (resume) resolved.resumeUrl else resolved.watchUrl
+            withContext(Dispatchers.Main) {
+                viewModel.setJsonStatusMessage(null)
+                DeviceIntegrationManager.openUrlExcludingSelf(this@MainActivity, targetUrl)
+            }
+            if (resolved.hasDirectVideoId) {
+                val q = viewModel.uiState.value.parsedCommand.filterQuery
+                val fresh = OfflineYouTubeHistoryManager.searchOnDemand(applicationContext, q, limit = 10)
+                viewModel.updateYouTubeHistoryMatches(fresh)
             }
         }
     }

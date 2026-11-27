@@ -373,6 +373,7 @@ fun PipeApp(
     onDeleteYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
     onYouTubeHistoryEnabledChange: (Boolean) -> Unit = {},
     onYouTubeSaveThumbnailsChange: (Boolean) -> Unit = {},
+    onYouTubeResolveVideoIdChange: (Boolean) -> Unit = {},
     onRequestYouTubeListenerAccess: () -> Unit = {},
     onImportYouTubeHistoryClick: () -> Unit = {},
     onScanDownloadsYouTubeHistory: () -> Unit = {},
@@ -606,6 +607,7 @@ fun PipeApp(
                         onRemoveDictionaryClick = onRemoveDictionaryClick,
                         onYouTubeHistoryEnabledChange = onYouTubeHistoryEnabledChange,
                         onYouTubeSaveThumbnailsChange = onYouTubeSaveThumbnailsChange,
+                        onYouTubeResolveVideoIdChange = onYouTubeResolveVideoIdChange,
                         onRequestYouTubeListenerAccess = onRequestYouTubeListenerAccess,
                         onImportYouTubeHistoryClick = onImportYouTubeHistoryClick,
                         onScanDownloadsYouTubeHistory = onScanDownloadsYouTubeHistory,
@@ -880,7 +882,7 @@ private fun PipePromptScreen(
                         if (item.isSetupPrompt || item.entry == null) {
                             onSetupYouTubeHistoryClick()
                         } else {
-                            onOpenYouTubeWatch(item.entry, false)
+                            onOpenYouTubeWatch(item.entry, true)
                         }
                     }
                 }
@@ -1481,6 +1483,10 @@ fun AsciiRaycastPaletteWindow(
             onResumeYouTubeWatch = { w ->
                 actionSheetItem = null
                 onOpenYouTubeWatch?.invoke(w, true)
+            },
+            onPlayFromStartYouTubeWatch = { w ->
+                actionSheetItem = null
+                onOpenYouTubeWatch?.invoke(w, false)
             },
             onSearchYouTubeChannel = { ch ->
                 actionSheetItem = null
@@ -2974,6 +2980,7 @@ fun AsciiResultActionSheet(
     onDeleteEngine: (SearchEngine) -> Unit,
     onDeleteHistory: (SearchHistoryEntry) -> Unit = {},
     onResumeYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
+    onPlayFromStartYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
     onSearchYouTubeChannel: (String) -> Unit = {},
     onBookmarkYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
     onDeleteYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
@@ -3331,9 +3338,11 @@ fun AsciiResultActionSheet(
                                 AsciiButton("x", onDismiss)
                             }
                             AsciiRule(glyph = "-", color = c.border)
-                            AsciiSheetActionRow("play", "Open video on YouTube", onPrimaryExecute, isPrimary = true)
                             if (w.hasResumePosition) {
-                                AsciiSheetActionRow("res", "Resume at ${w.formattedPosition}", { onResumeYouTubeWatch(w) })
+                                AsciiSheetActionRow("res", "Resume at ${w.formattedPosition}", { onResumeYouTubeWatch(w) }, isPrimary = true)
+                                AsciiSheetActionRow("play", "Play from start (0:00)", { onPlayFromStartYouTubeWatch(w) })
+                            } else {
+                                AsciiSheetActionRow("play", "Open video on YouTube", onPrimaryExecute, isPrimary = true)
                             }
                             if (w.channel.isNotBlank()) {
                                 AsciiSheetActionRow("ch", "Search channel: ${w.channel}", { onSearchYouTubeChannel(w.channel) })
@@ -4353,6 +4362,7 @@ private fun PipeSettingsScreen(
     onRemoveDictionaryClick: () -> Unit = {},
     onYouTubeHistoryEnabledChange: (Boolean) -> Unit = {},
     onYouTubeSaveThumbnailsChange: (Boolean) -> Unit = {},
+    onYouTubeResolveVideoIdChange: (Boolean) -> Unit = {},
     onRequestYouTubeListenerAccess: () -> Unit = {},
     onImportYouTubeHistoryClick: () -> Unit = {},
     onScanDownloadsYouTubeHistory: () -> Unit = {},
@@ -4575,6 +4585,11 @@ private fun PipeSettingsScreen(
                             label = "cache offline video thumbnails locally",
                             checked = state.youtubeSaveThumbnails,
                             onCheckedChange = onYouTubeSaveThumbnailsChange,
+                        )
+                        AsciiToggleRow(
+                            label = "resolve exact video ID for direct resume (&t=)",
+                            checked = state.youtubeResolveVideoId,
+                            onCheckedChange = onYouTubeResolveVideoIdChange,
                         )
                         Spacer(Modifier.height(8.dp))
                         Row(

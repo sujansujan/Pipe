@@ -6,6 +6,8 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -197,6 +199,26 @@ class PipeOverlayActivity : ComponentActivity() {
                     onDeleteYouTubeWatch = { entry ->
                         OfflineYouTubeHistoryManager.deleteEntry(applicationContext, entry.id).size
                     },
+                    onOpenYouTubeWatch = { entry, resume ->
+                        if (entry.hasDirectVideoId) {
+                            val targetUrl = if (resume) entry.resumeUrl else entry.watchUrl
+                            if (DeviceIntegrationManager.openUrlExcludingSelf(this, targetUrl)) finish()
+                        } else {
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                val resolved = OfflineYouTubeHistoryManager.resolveAndAttachVideoId(
+                                    context = applicationContext,
+                                    entry = entry,
+                                    forceRetry = true,
+                                )
+                                val targetUrl = if (resume) resolved.resumeUrl else resolved.watchUrl
+                                withContext(Dispatchers.Main) {
+                                    if (DeviceIntegrationManager.openUrlExcludingSelf(this@PipeOverlayActivity, targetUrl)) {
+                                        finish()
+                                    }
+                                }
+                            }
+                        }
+                    },
                     onOpenYouTubeSettings = {
                         startActivity(
                             Intent(this, MainActivity::class.java).apply {
@@ -385,6 +407,7 @@ private fun SleekRaycastOverlay(
     initialYtHistoryCount: Int = 0,
     searchDictionaryOnDemand: suspend (String) -> List<DictionaryEntry>,
     searchYouTubeHistoryOnDemand: suspend (String, Int) -> Pair<List<YouTubeWatchEntry>, Int> = { _, _ -> emptyList<YouTubeWatchEntry>() to 0 },
+    onOpenYouTubeWatch: (YouTubeWatchEntry, Boolean) -> Unit = { _, _ -> },
     onDeleteYouTubeWatch: (YouTubeWatchEntry) -> Int = { 0 },
     onOpenYouTubeSettings: () -> Unit = {},
     loadContacts: suspend () -> List<ContactItem>,
@@ -826,7 +849,10 @@ private fun SleekRaycastOverlay(
                 if (item.isSetupPrompt || item.entry == null) {
                     onOpenYouTubeSettings()
                 } else {
-                    if (!onDispatchUrl(item.entry.title, item.entry.watchUrl)) errorMsg = "! no browser found"
+                    if (!item.entry.hasDirectVideoId) {
+                        statusMsg = "resolving video link..."
+                    }
+                    onOpenYouTubeWatch(item.entry, true)
                 }
             }
         }
@@ -1249,7 +1275,8 @@ private fun SleekRaycastOverlay(
                             },
                             onResumeYouTubeWatch = { entry ->
                                 usageMap = onRecordUsage("ytw:${entry.id}")
-                                if (!onDispatchUrl(entry.title, entry.resumeUrl)) errorMsg = "! no browser found"
+                                if (!entry.hasDirectVideoId) statusMsg = "resolving video link..."
+                                onOpenYouTubeWatch(entry, true)
                             },
                             onDeleteYouTubeWatch = { entry ->
                                 val remaining = onDeleteYouTubeWatch(entry)

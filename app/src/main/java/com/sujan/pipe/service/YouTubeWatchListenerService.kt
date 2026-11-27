@@ -9,6 +9,7 @@ import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.Build
+import android.os.Bundle
 import android.os.SystemClock
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
@@ -288,6 +289,9 @@ class YouTubeWatchListenerService : NotificationListenerService() {
         val extractedVideoId = OfflineYouTubeHistoryManager.extractYouTubeVideoId(mediaUri)
             ?: OfflineYouTubeHistoryManager.extractYouTubeVideoId(artUri)
             ?: OfflineYouTubeHistoryManager.extractYouTubeVideoId(mediaId, allowBareId = isKnownYouTubePackage(pkg))
+            ?: extractVideoIdFromMetadata(metadata)
+            ?: extractVideoIdFromBundle(controller.extras, allowBareForIdKeys = isKnownYouTubePackage(pkg))
+            ?: extractVideoIdFromBundle(playbackState?.extras, allowBareForIdKeys = isKnownYouTubePackage(pkg))
             ?: ""
 
         val isYtApp = isKnownYouTubePackage(pkg)
@@ -366,7 +370,7 @@ class YouTubeWatchListenerService : NotificationListenerService() {
 
         scheduler.execute {
             if (isFirstForVideo) {
-                OfflineYouTubeHistoryManager.recordWatch(
+                val saved = OfflineYouTubeHistoryManager.recordWatch(
                     context = applicationContext,
                     title = rawTitle,
                     channel = rawChannel,
@@ -377,6 +381,20 @@ class YouTubeWatchListenerService : NotificationListenerService() {
                     sourceApp = sourceLabel,
                     thumbnailBitmap = artBitmap,
                 )
+                // If YouTube / ReVanced omitted videoId in MediaSession, resolve & cache it once in the background
+                // so future offline opens jump straight to `watch?v=<id>&t=<sec>s`!
+                if (saved != null && !saved.hasDirectVideoId && repo.loadYouTubeResolveVideoId()) {
+                    val upgraded = OfflineYouTubeHistoryManager.resolveAndAttachVideoId(applicationContext, saved)
+                    if (upgraded.hasDirectVideoId) {
+                        val cur = activeSnapshots[token]
+                        if (cur != null && cur.identityKey == newSnapshot.identityKey && cur.videoId.isBlank()) {
+                            activeSnapshots[token] = cur.copy(
+                                videoId = upgraded.videoId,
+                                url = upgraded.watchUrl,
+                            )
+                        }
+                    }
+                }
             } else {
                 OfflineYouTubeHistoryManager.updateWatchPosition(
                     context = applicationContext,
@@ -390,6 +408,29 @@ class YouTubeWatchListenerService : NotificationListenerService() {
                 )
             }
         }
+    }
+
+    private fun extractVideoIdFromMetadata(metadata: MediaMetadata): String? {
+        val keys = runCatching { metadata.keySet() }.getOrNull() ?: return null
+        for (key in keys) {
+            val str = runCatching { metadata.getString(key) }.getOrNull() ?: continue
+            val allowBare = key.contains("id", ignoreCase = true) || key.contains("video", ignoreCase = true)
+            OfflineYouTubeHistoryManager.extractYouTubeVideoId(str, allowBareId = allowBare)?.let { return it }
+        }
+        return null
+    }
+
+    private fun extractVideoIdFromBundle(bundle: Bundle?, allowBareForIdKeys: Boolean): String? {
+        if (bundle == null) return null
+        val keys = runCatching { bundle.keySet() }.getOrNull() ?: return null
+        for (key in keys) {
+            val rawVal = runCatching { @Suppress("DEPRECATION") bundle.get(key) }.getOrNull() ?: continue
+            val str = rawVal.toString()
+            if (str.isBlank()) continue
+            val allowBare = allowBareForIdKeys && (key.contains("video", ignoreCase = true) || key.contains("media_id", ignoreCase = true))
+            OfflineYouTubeHistoryManager.extractYouTubeVideoId(str, allowBareId = allowBare)?.let { return it }
+        }
+        return null
     }
 
     private fun flushSnapshotPosition(snapshot: ActiveVideoSnapshot, force: Boolean) {

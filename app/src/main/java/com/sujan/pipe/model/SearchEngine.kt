@@ -553,10 +553,10 @@ data class YouTubeWatchEntry(
         }
 
     val hasResumePosition: Boolean
-        get() = videoId.isNotBlank() && positionMs >= 10_000L && (durationMs <= 0L || positionMs < durationMs - 10_000L)
+        get() = positionMs >= 3_000L && (durationMs <= 0L || positionMs < durationMs - 5_000L)
 
     val resumeUrl: String
-        get() = if (hasResumePosition) {
+        get() = if (videoId.isNotBlank() && hasResumePosition) {
             "https://www.youtube.com/watch?v=$videoId&t=${positionMs / 1000L}s"
         } else {
             watchUrl

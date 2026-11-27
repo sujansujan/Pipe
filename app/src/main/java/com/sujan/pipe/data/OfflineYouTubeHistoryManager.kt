@@ -18,8 +18,12 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
+import java.util.Collections
 import java.util.Locale
 import java.util.TimeZone
 import java.util.zip.GZIPInputStream
@@ -54,6 +58,14 @@ object OfflineYouTubeHistoryManager {
     private var pendingRecentLink: PendingLinkHint? = null
 
     private val thumbBitmapCache = object : LruCache<String, Bitmap>(48) {}
+    private val failedResolveKeys = Collections.synchronizedSet(HashSet<String>())
+
+    data class YouTubeSearchCandidate(
+        val videoId: String,
+        val title: String,
+        val channel: String = "",
+        val durationMs: Long = 0L,
+    )
 
     private data class PendingLinkHint(
         val videoId: String,
@@ -451,6 +463,300 @@ object OfflineYouTubeHistoryManager {
             durationMs = effectiveDuration,
         )
         return mutable to true
+    }
+
+    /**
+     * Pure helper that attaches a newly resolved 11-char [resolvedVideoId] to an existing metadata-only
+     * entry, upgrading its `id` and `url` while preserving `positionMs`, `durationMs`, `watchCount`,
+     * `thumbnailPath`, and list position.
+     */
+    fun applyVideoIdResolution(
+        existing: List<YouTubeWatchEntry>,
+        targetEntryId: String,
+        resolvedVideoId: String,
+    ): Pair<List<YouTubeWatchEntry>, YouTubeWatchEntry?> {
+        val cleanVid = extractYouTubeVideoId(resolvedVideoId, allowBareId = true) ?: return existing to null
+        val matchIdx = existing.indexOfFirst { it.id == targetEntryId || it.videoId == cleanVid }
+        if (matchIdx < 0) return existing to null
+
+        val prev = existing[matchIdx]
+        val upgraded = prev.copy(
+            id = cleanVid,
+            videoId = cleanVid,
+            url = "https://www.youtube.com/watch?v=$cleanVid",
+        )
+        val out = ArrayList<YouTubeWatchEntry>(existing.size)
+        for (i in existing.indices) {
+            if (i == matchIdx) {
+                out.add(upgraded)
+            } else {
+                val other = existing[i]
+                if (other.id != cleanVid && other.videoId != cleanVid) {
+                    out.add(other)
+                }
+            }
+        }
+        return out to upgraded
+    }
+
+    /**
+     * Resolves the exact 11-char YouTube `videoId` for a metadata-only entry (such as stock YouTube /
+     * ReVanced `MediaSession` captures that omit `MEDIA_URI`/`ART_URI`), caches it permanently into
+     * `pipe_yt_history_v1.tsv`, and returns the upgraded [YouTubeWatchEntry] so direct video launch
+     * and `&t=XXs` resume work immediately.
+     */
+    fun resolveAndAttachVideoId(
+        context: Context,
+        entry: YouTubeWatchEntry,
+        forceRetry: Boolean = false,
+    ): YouTubeWatchEntry {
+        if (entry.hasDirectVideoId) return entry
+        if (entry.title.isBlank()) return entry
+        val repo = runCatching { PipeRepository(context) }.getOrNull()
+        if (repo != null && !repo.loadYouTubeResolveVideoId()) return entry
+
+        val failKey = entry.id
+        if (!forceRetry && failKey in failedResolveKeys) return entry
+
+        val resolvedId = lookupVideoIdOnline(
+            title = entry.title,
+            channel = entry.channel,
+            durationMs = entry.durationMs,
+        )
+        if (resolvedId.isNullOrBlank()) {
+            failedResolveKeys.add(failKey)
+            return entry
+        }
+        failedResolveKeys.remove(failKey)
+
+        synchronized(writeLock) {
+            val current = memoryCache ?: readHistoryFileLocked(getHistoryFile(context))
+            val (updated, upgraded) = applyVideoIdResolution(current, entry.id, resolvedId)
+            if (upgraded != null) {
+                writeHistoryFileLocked(getHistoryFile(context), updated)
+                memoryCache = updated
+                return upgraded
+            }
+        }
+        return entry.copy(
+            id = resolvedId,
+            videoId = resolvedId,
+            url = "https://www.youtube.com/watch?v=$resolvedId",
+        )
+    }
+
+    private fun lookupVideoIdOnline(
+        title: String,
+        channel: String,
+        durationMs: Long,
+    ): String? {
+        val query = if (channel.isNotBlank()) "$title $channel" else title
+        // 1. Lightweight InnerTube JSON search (no API key, no cookies)
+        val innerTubeCandidates = fetchInnerTubeCandidates(query)
+        pickBestVideoIdCandidate(innerTubeCandidates, title, channel, durationMs)?.let { return it }
+
+        // 2. Fallback to standard YouTube search HTML `ytInitialData`
+        val htmlCandidates = fetchHtmlSearchCandidates(query)
+        return pickBestVideoIdCandidate(htmlCandidates, title, channel, durationMs)
+    }
+
+    private fun fetchInnerTubeCandidates(query: String): List<YouTubeSearchCandidate> = runCatching {
+        val payload = JSONObject().apply {
+            put(
+                "context",
+                JSONObject().apply {
+                    put(
+                        "client",
+                        JSONObject().apply {
+                            put("clientName", "WEB")
+                            put("clientVersion", "2.20240726.00.00")
+                            put("hl", "en")
+                            put("gl", "US")
+                        }
+                    )
+                }
+            )
+            put("query", query)
+        }.toString()
+
+        val conn = (URL("https://www.youtube.com/youtubei/v1/search?prettyPrint=false").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 3_000
+            readTimeout = 4_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            setRequestProperty("Accept-Encoding", "gzip")
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
+        }
+        try {
+            conn.outputStream.use { it.write(payload.toByteArray(StandardCharsets.UTF_8)) }
+            if (conn.responseCode !in 200..299) return@runCatching emptyList()
+            val rawStream = if (conn.contentEncoding.equals("gzip", ignoreCase = true)) {
+                GZIPInputStream(conn.inputStream)
+            } else {
+                conn.inputStream
+            }
+            val body = BufferedReader(InputStreamReader(rawStream, StandardCharsets.UTF_8)).use { it.readText() }
+            parseInnerTubeSearchCandidates(body)
+        } finally {
+            conn.disconnect()
+        }
+    }.getOrDefault(emptyList())
+
+    private fun fetchHtmlSearchCandidates(query: String): List<YouTubeSearchCandidate> = runCatching {
+        val encoded = URLEncoder.encode(query.trim(), StandardCharsets.UTF_8.name())
+        val conn = (URL("https://www.youtube.com/results?search_query=$encoded").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 3_000
+            readTimeout = 4_000
+            instanceFollowRedirects = true
+            setRequestProperty("Accept-Encoding", "gzip")
+            setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+        }
+        try {
+            if (conn.responseCode !in 200..299) return@runCatching emptyList()
+            val rawStream = if (conn.contentEncoding.equals("gzip", ignoreCase = true)) {
+                GZIPInputStream(conn.inputStream)
+            } else {
+                conn.inputStream
+            }
+            val html = BufferedReader(InputStreamReader(rawStream, StandardCharsets.UTF_8)).use { it.readText() }
+            parseHtmlSearchCandidates(html)
+        } finally {
+            conn.disconnect()
+        }
+    }.getOrDefault(emptyList())
+
+    fun parseHtmlSearchCandidates(html: String): List<YouTubeSearchCandidate> {
+        val marker = "var ytInitialData = "
+        val idx = html.indexOf(marker)
+        if (idx < 0) return emptyList()
+        val start = idx + marker.length
+        val end = html.indexOf(";</script>", start)
+        if (end <= start) return emptyList()
+        return parseInnerTubeSearchCandidates(html.substring(start, end))
+    }
+
+    fun parseInnerTubeSearchCandidates(rawJson: String): List<YouTubeSearchCandidate> {
+        val out = ArrayList<YouTubeSearchCandidate>()
+        runCatching {
+            val root = JSONObject(rawJson)
+            val sections = root
+                .optJSONObject("contents")
+                ?.optJSONObject("twoColumnSearchResultsRenderer")
+                ?.optJSONObject("primaryContents")
+                ?.optJSONObject("sectionListRenderer")
+                ?.optJSONArray("contents")
+                ?: return emptyList()
+
+            for (s in 0 until sections.length()) {
+                val items = sections.optJSONObject(s)
+                    ?.optJSONObject("itemSectionRenderer")
+                    ?.optJSONArray("contents")
+                    ?: continue
+                for (i in 0 until items.length()) {
+                    val vr = items.optJSONObject(i)?.optJSONObject("videoRenderer") ?: continue
+                    val vid = vr.optString("videoId", "").trim()
+                    if (vid.length != 11 || !YT_ID_REGEX.matches(vid)) continue
+                    val title = extractRunsText(vr.optJSONObject("title"))
+                    if (title.isBlank()) continue
+                    val channel = extractRunsText(vr.optJSONObject("ownerText"))
+                        .ifBlank { extractRunsText(vr.optJSONObject("longBylineText")) }
+                        .ifBlank { extractRunsText(vr.optJSONObject("shortBylineText")) }
+                    val durText = vr.optJSONObject("lengthText")?.optString("simpleText", "").orEmpty()
+                    val durMs = parseDurationTextToMs(durText)
+                    out.add(YouTubeSearchCandidate(vid, title, channel, durMs))
+                    if (out.size >= 15) return out
+                }
+            }
+        }
+        return out
+    }
+
+    private fun extractRunsText(obj: JSONObject?): String {
+        if (obj == null) return ""
+        val simple = obj.optString("simpleText", "").trim()
+        if (simple.isNotEmpty()) return simple
+        val runs = obj.optJSONArray("runs") ?: return ""
+        val sb = StringBuilder()
+        for (i in 0 until runs.length()) {
+            sb.append(runs.optJSONObject(i)?.optString("text", "").orEmpty())
+        }
+        return sb.toString().trim()
+    }
+
+    fun parseDurationTextToMs(text: String): Long {
+        val clean = text.trim()
+        if (clean.isEmpty() || !clean.contains(':')) return 0L
+        val parts = clean.split(':').mapNotNull { it.trim().toLongOrNull() }
+        return when (parts.size) {
+            2 -> (parts[0] * 60L + parts[1]) * 1000L
+            3 -> (parts[0] * 3600L + parts[1] * 60L + parts[2]) * 1000L
+            else -> 0L
+        }.coerceAtLeast(0L)
+    }
+
+    /**
+     * Picks the best matching `videoId` from YouTube search [candidates] using title, channel,
+     * and duration proximity.
+     */
+    fun pickBestVideoIdCandidate(
+        candidates: List<YouTubeSearchCandidate>,
+        targetTitle: String,
+        targetChannel: String,
+        targetDurationMs: Long,
+    ): String? {
+        if (candidates.isEmpty()) return null
+        val normTargetTitle = FuzzyMatcher.normalizeForSearch(targetTitle)
+        val normTargetChannel = FuzzyMatcher.normalizeForSearch(targetChannel)
+
+        var bestVid: String? = null
+        var bestScore = Int.MIN_VALUE
+
+        for ((idx, cand) in candidates.withIndex()) {
+            val normCandTitle = FuzzyMatcher.normalizeForSearch(cand.title)
+            val normCandChannel = FuzzyMatcher.normalizeForSearch(cand.channel)
+
+            var score = (20 - idx).coerceAtLeast(0) * 5
+
+            // Title similarity
+            score += when {
+                normCandTitle == normTargetTitle && normTargetTitle.isNotEmpty() -> 1_200
+                normCandTitle.startsWith(normTargetTitle) || normTargetTitle.startsWith(normCandTitle) -> 900
+                else -> FuzzyMatcher.score(targetTitle, cand.title)
+            }
+
+            // Channel similarity (strongly distinguishes official uploads from reuploads/lyrics)
+            if (normTargetChannel.isNotEmpty() && normCandChannel.isNotEmpty()) {
+                score += when {
+                    normCandChannel == normTargetChannel -> 900
+                    normCandChannel.contains(normTargetChannel) || normTargetChannel.contains(normCandChannel) -> 650
+                    else -> {
+                        val chScore = FuzzyMatcher.score(targetChannel, cand.channel)
+                        if (chScore >= 500) chScore / 2 else -150
+                    }
+                }
+            }
+
+            // Duration proximity (very high signal when MediaSession provided duration)
+            if (targetDurationMs > 0L && cand.durationMs > 0L) {
+                val diffSec = kotlin.math.abs(targetDurationMs - cand.durationMs) / 1000L
+                score += when {
+                    diffSec <= 3L -> 500
+                    diffSec <= 10L -> 250
+                    diffSec <= 30L -> 50
+                    diffSec >= 120L -> -250
+                    else -> -50
+                }
+            }
+
+            if (score > bestScore) {
+                bestScore = score
+                bestVid = cand.videoId
+            }
+        }
+        return if (bestScore >= 300) bestVid else candidates.firstOrNull()?.videoId
     }
 
     /**

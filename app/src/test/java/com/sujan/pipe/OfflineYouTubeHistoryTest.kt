@@ -377,4 +377,54 @@ class OfflineYouTubeHistoryTest {
         assertTrue(updated[1].hasResumePosition)
         assertEquals("https://www.youtube.com/watch?v=vidAAAAAAAA&t=420s", updated[1].resumeUrl)
     }
+
+    @Test
+    fun `pickBestVideoIdCandidate disambiguates official video using channel and duration and upgrades metadata entry`() {
+        assertEquals(214_000L, OfflineYouTubeHistoryManager.parseDurationTextToMs("3:34"))
+        assertEquals(3_723_000L, OfflineYouTubeHistoryManager.parseDurationTextToMs("1:02:03"))
+
+        val candidates = listOf(
+            OfflineYouTubeHistoryManager.YouTubeSearchCandidate(
+                videoId = "7FwDP17XPlk",
+                title = "Rick Astley - Never Gonna Give You Up",
+                channel = "Amazing Lyrics",
+                durationMs = 214_000L,
+            ),
+            OfflineYouTubeHistoryManager.YouTubeSearchCandidate(
+                videoId = "dQw4w9WgXcQ",
+                title = "Rick Astley - Never Gonna Give You Up (Official Video)",
+                channel = "Rick Astley",
+                durationMs = 213_000L,
+            ),
+        )
+        val picked = OfflineYouTubeHistoryManager.pickBestVideoIdCandidate(
+            candidates = candidates,
+            targetTitle = "Rick Astley - Never Gonna Give You Up",
+            targetChannel = "Rick Astley",
+            targetDurationMs = 213_000L,
+        )
+        assertEquals("dQw4w9WgXcQ", picked)
+
+        val metaEntry = YouTubeWatchEntry(
+            id = "meta:rick astley never gonna give you up|rick astley",
+            videoId = "",
+            title = "Rick Astley - Never Gonna Give You Up",
+            channel = "Rick Astley",
+            watchedAtMs = 1_732_600_000_000L,
+            durationMs = 213_000L,
+            positionMs = 95_000L,
+            sourceApp = "YouTube",
+        )
+        assertTrue(metaEntry.hasResumePosition)
+        val (upgradedList, upgraded) = OfflineYouTubeHistoryManager.applyVideoIdResolution(
+            existing = listOf(metaEntry),
+            targetEntryId = metaEntry.id,
+            resolvedVideoId = picked!!,
+        )
+        assertNotNull(upgraded)
+        assertEquals("dQw4w9WgXcQ", upgraded!!.videoId)
+        assertEquals(95_000L, upgraded.positionMs)
+        assertEquals("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=95s", upgraded.resumeUrl)
+        assertEquals(1, upgradedList.size)
+    }
 }

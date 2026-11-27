@@ -111,6 +111,7 @@ data class PipeUiState(
     val isDictionaryIndexing: Boolean = false,
     val youtubeHistoryEnabled: Boolean = true,
     val youtubeSaveThumbnails: Boolean = true,
+    val youtubeResolveVideoId: Boolean = true,
     val isYouTubeListenerEnabled: Boolean = false,
     val youtubeHistoryCount: Int = 0,
     val youtubeHistoryMatches: List<YouTubeWatchEntry> = emptyList(),
@@ -168,6 +169,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             dictionarySourceName = repository.loadDictionarySourceName(),
             youtubeHistoryEnabled = repository.loadYouTubeHistoryEnabled(),
             youtubeSaveThumbnails = repository.loadYouTubeSaveThumbnails(),
+            youtubeResolveVideoId = repository.loadYouTubeResolveVideoId(),
             history = repository.loadHistory(),
             usageCounts = repository.loadUsageCounts(),
             themeMode = repository.loadThemeMode(),
@@ -340,6 +342,11 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun setYouTubeSaveThumbnails(enabled: Boolean) {
         repository.saveYouTubeSaveThumbnails(enabled)
         _uiState.update { it.copy(youtubeSaveThumbnails = enabled) }
+    }
+
+    fun setYouTubeResolveVideoId(enabled: Boolean) {
+        repository.saveYouTubeResolveVideoId(enabled)
+        _uiState.update { it.copy(youtubeResolveVideoId = enabled) }
     }
 
     fun setPrefixConfig(config: PrefixConfig) {
@@ -999,7 +1006,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         e.message ?: "! invalid json"
     }
 
-    fun setJsonStatusMessage(msg: String) = _uiState.update { it.copy(jsonStatusMessage = msg) }
+    fun setJsonStatusMessage(msg: String?) = _uiState.update { it.copy(jsonStatusMessage = msg) }
 
     private fun postUndo(msg: String, payload: UndoPayload) {
         undoJob?.cancel()
