@@ -38,6 +38,7 @@ object YouTubeMediaSessionTracker {
 
     private const val TAG = "PipeYT"
     private const val CHECKPOINT_INTERVAL_SECONDS = 4L
+    private const val DISK_FLUSH_INTERVAL_MS = 30_000L
 
     private data class ActiveVideoSnapshot(
         val packageName: String,
@@ -83,6 +84,9 @@ object YouTubeMediaSessionTracker {
 
     @Volatile
     private var isListenerRegistered: Boolean = false
+
+    @Volatile
+    private var lastDiskFlushElapsedMs: Long = 0L
 
     private var mediaSessionManager: MediaSessionManager? = null
     private var sessionsListener: MediaSessionManager.OnActiveSessionsChangedListener? = null
@@ -156,6 +160,9 @@ object YouTubeMediaSessionTracker {
         val ctx = appContext ?: return
         for (snap in activeSnapshots.values) {
             flushSnapshotPosition(ctx, snap, force = true)
+        }
+        runCatching {
+            scheduler.execute { OfflineYouTubeHistoryManager.flushPendingToDisk(ctx) }
         }
     }
 
@@ -422,6 +429,8 @@ object YouTubeMediaSessionTracker {
                     resolveInBackgroundOnce(ctx, token, newSnapshot.identityKey, saved)
                 }
             } else {
+                val shouldFlush = isTerminalOrPause || (nowElapsed - lastDiskFlushElapsedMs) >= DISK_FLUSH_INTERVAL_MS
+                if (shouldFlush) lastDiskFlushElapsedMs = nowElapsed
                 OfflineYouTubeHistoryManager.updateWatchPosition(
                     context = ctx,
                     title = rawTitle,
@@ -431,6 +440,7 @@ object YouTubeMediaSessionTracker {
                     positionMs = estimatedPosMs,
                     durationMs = durationMs,
                     sourceApp = sourceLabel,
+                    flushToDisk = shouldFlush,
                 )
             }
         }
@@ -473,6 +483,7 @@ object YouTubeMediaSessionTracker {
             return
         }
         lastLoggedPosition[throttleKey] = estimatedPos
+        lastDiskFlushElapsedMs = SystemClock.elapsedRealtime()
         Log.d(TAG, "flush [${snapshot.sourceApp}] pos=${estimatedPos / 1000}s/${snapshot.durationMs / 1000}s vid='${snapshot.videoId}' title='${snapshot.title.take(36)}'")
 
         runCatching {
@@ -486,6 +497,7 @@ object YouTubeMediaSessionTracker {
                     positionMs = estimatedPos,
                     durationMs = snapshot.durationMs,
                     sourceApp = snapshot.sourceApp,
+                    flushToDisk = true,
                 )
             }
         }
@@ -558,9 +570,13 @@ object YouTubeMediaSessionTracker {
             }
 
             val prev = lastLoggedPosition[snap.identityKey]
-            if (livePos > 0L && (prev == null || kotlin.math.abs(livePos - prev) >= 3_000L || !livePlaying)) {
+            val diskDue = !livePlaying || (nowElapsed - lastDiskFlushElapsedMs) >= DISK_FLUSH_INTERVAL_MS
+            if (livePos > 0L && (prev == null || kotlin.math.abs(livePos - prev) >= 3_000L || diskDue)) {
                 lastLoggedPosition[snap.identityKey] = livePos
-                Log.d(TAG, "checkpoint [${snap.sourceApp}] pos=${livePos / 1000}s/${snap.durationMs / 1000}s title='${snap.title.take(32)}'")
+                if (diskDue) {
+                    lastDiskFlushElapsedMs = nowElapsed
+                    Log.d(TAG, "checkpoint(disk) [${snap.sourceApp}] pos=${livePos / 1000}s/${snap.durationMs / 1000}s title='${snap.title.take(32)}'")
+                }
                 OfflineYouTubeHistoryManager.updateWatchPosition(
                     context = ctx,
                     title = snap.title,
@@ -570,6 +586,7 @@ object YouTubeMediaSessionTracker {
                     positionMs = livePos,
                     durationMs = snap.durationMs,
                     sourceApp = snap.sourceApp,
+                    flushToDisk = diskDue,
                 )
             }
         }

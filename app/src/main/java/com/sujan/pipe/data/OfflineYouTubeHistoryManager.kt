@@ -55,6 +55,9 @@ object OfflineYouTubeHistoryManager {
     private var memoryCache: List<YouTubeWatchEntry>? = null
 
     @Volatile
+    private var hasPendingDiskChanges: Boolean = false
+
+    @Volatile
     private var pendingRecentLink: PendingLinkHint? = null
 
     private val thumbBitmapCache = object : LruCache<String, Bitmap>(48) {}
@@ -368,6 +371,7 @@ object OfflineYouTubeHistoryManager {
             val updated = upsertSingleEntry(current, incoming)
             writeHistoryFileLocked(getHistoryFile(context), updated)
             memoryCache = updated
+            hasPendingDiskChanges = false
             return updated.firstOrNull { it.id == stableId || (resolvedVideoId.isNotBlank() && it.videoId == resolvedVideoId) }
                 ?: incoming
         }
@@ -376,7 +380,8 @@ object OfflineYouTubeHistoryManager {
     /**
      * Updates the saved playback position (and optional duration) of an already-recorded video in place
      * without incrementing `watchCount` or reordering it above a newly started video.
-     * Falls back to [recordWatch] if the entry has not been persisted yet.
+     * When [flushToDisk] is `false`, updates RAM immediately (visible to `yth` right away) and defers
+     * disk serialization until the next periodic 30s flush or pause/stop/switch event.
      */
     fun updateWatchPosition(
         context: Context,
@@ -387,6 +392,7 @@ object OfflineYouTubeHistoryManager {
         positionMs: Long,
         durationMs: Long = 0L,
         sourceApp: String = "YouTube",
+        flushToDisk: Boolean = true,
     ) {
         val cleanPos = positionMs.coerceAtLeast(0L)
         if (cleanPos <= 0L) return
@@ -408,8 +414,13 @@ object OfflineYouTubeHistoryManager {
                 durationMs = durationMs.coerceAtLeast(0L),
             )
             if (found) {
-                writeHistoryFileLocked(getHistoryFile(context), updated)
                 memoryCache = updated
+                if (flushToDisk) {
+                    writeHistoryFileLocked(getHistoryFile(context), updated)
+                    hasPendingDiskChanges = false
+                } else {
+                    hasPendingDiskChanges = true
+                }
                 return
             }
         }
@@ -425,6 +436,16 @@ object OfflineYouTubeHistoryManager {
                 positionMs = cleanPos,
                 sourceApp = sourceApp,
             )
+        }
+    }
+
+    fun flushPendingToDisk(context: Context) {
+        if (!hasPendingDiskChanges) return
+        synchronized(writeLock) {
+            if (!hasPendingDiskChanges) return
+            val current = memoryCache ?: return
+            writeHistoryFileLocked(getHistoryFile(context), current)
+            hasPendingDiskChanges = false
         }
     }
 
