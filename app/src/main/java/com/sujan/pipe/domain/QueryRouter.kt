@@ -1,7 +1,9 @@
 package com.sujan.pipe.domain
 
+import com.sujan.pipe.data.FloccusBookmarkManager
 import com.sujan.pipe.model.AppShortcutItem
 import com.sujan.pipe.model.BookmarkKind
+import com.sujan.pipe.model.FloccusBookmarkItem
 import com.sujan.pipe.model.UniversalAlias
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.ContactQuickAction
@@ -373,6 +375,7 @@ enum class PromptIntentMode(val scopeBadge: String) {
     FILES_ONLY("f:files"),
     DIRS_ONLY("d:folders"),
     BOOKMARKS_ONLY("b:bookmarks"),
+    FLOCCUS_ONLY("fl:floccus"),
     PIPES_LIST("s:pipes"),
     APPS_ONLY("app:launcher"),
     HISTORY_ONLY("hist:history"),
@@ -419,6 +422,17 @@ sealed interface PaletteItem {
         override val usageKey: String,
         override val rankScore: Int,
         override val usageCount: Int,
+    ) : PaletteItem
+
+    data class FloccusBookmarkAction(
+        val bookmark: FloccusBookmarkItem?,
+        val query: String = "",
+        val isSetupPrompt: Boolean = false,
+        val setupTitle: String = "Link Floccus Bookmarks (.xbel / .html)",
+        val setupSubtitle: String = "tap to auto-detect bookmarks.xbel or pick file in Settings -> index",
+        override val usageKey: String = bookmark?.usageKey ?: "floccus:setup",
+        override val rankScore: Int = 9300,
+        override val usageCount: Int = 0,
     ) : PaletteItem
 
     data class ContactAction(
@@ -807,10 +821,20 @@ object QueryRouter {
         val clipPrefix = prefixes.clipboardClean
         val setPrefix = prefixes.systemSettingsClean
         val ythPrefix = prefixes.youtubeHistoryClean
+        val flPrefix = prefixes.floccusClean
 
         // True Offline YouTube Watch History: `yth` / `yth <query>` / `ytwatch <query>`
         if (firstLower == ythPrefix || firstLower == "yth" || firstLower == "ytwatch" || firstLower == "watchhist") {
             return ParsedPromptCommand(PromptIntentMode.YOUTUBE_HISTORY_ONLY, remainder)
+        }
+
+        // Floccus Synced Bookmarks: `fl` / `fl <query>` / `floccus <query>`
+        // Guard against user explicitly setting another category's prefix (e.g. files="fl") to the same token.
+        val flCollidesWithOtherPrefix = flPrefix == fPrefix || flPrefix == bPrefix || flPrefix == sPrefix ||
+            flPrefix == cPrefix || flPrefix == appPrefix || flPrefix == histPrefix ||
+            flPrefix == defPrefix || flPrefix == clipPrefix || flPrefix == setPrefix || flPrefix == ythPrefix
+        if (firstLower == "floccus" || (!flCollidesWithOtherPrefix && firstLower == flPrefix)) {
+            return ParsedPromptCommand(PromptIntentMode.FLOCCUS_ONLY, remainder)
         }
 
         // On-Demand Offline Dictionary: `def <word>` or custom dictionary prefix
@@ -1036,6 +1060,8 @@ object QueryRouter {
         youtubeHistoryMatches: List<YouTubeWatchEntry> = emptyList(),
         youtubeHistoryTotalCount: Int = 0,
         isYouTubeListenerEnabled: Boolean = false,
+        floccusBookmarks: List<FloccusBookmarkItem> = emptyList(),
+        includeFloccusInUnified: Boolean = true,
     ): List<PaletteItem> {
         val cmd = parsePromptCommand(rawInput, bookmarks, engines, prefixes)
         val aliasByTargetKey = universalAliases.associate { it.targetKey to it.aliasLower }
@@ -1395,18 +1421,81 @@ object QueryRouter {
                 ).take(MAX_PALETTE_RESULTS).toList()
             }
 
+            PromptIntentMode.FLOCCUS_ONLY -> {
+                val q = cmd.filterQuery.trim()
+                val qLower = q.lowercase()
+                if (floccusBookmarks.isEmpty()) {
+                    listOf(
+                        PaletteItem.FloccusBookmarkAction(
+                            bookmark = null,
+                            query = q,
+                            isSetupPrompt = true,
+                            usageKey = "floccus:setup",
+                            rankScore = 100_000,
+                        )
+                    )
+                } else {
+                    floccusBookmarks.mapNotNull { fb ->
+                        val uKey = fb.usageKey
+                        val uCount = usageOf(uKey)
+                        val fScore = maxOf(
+                            FloccusBookmarkManager.scoreFloccusBookmark(q, fb),
+                            customAliasScore(uKey, qLower),
+                        )
+                        if (fScore > 0) {
+                            PaletteItem.FloccusBookmarkAction(
+                                bookmark = fb,
+                                query = q,
+                                isSetupPrompt = false,
+                                usageKey = uKey,
+                                rankScore = fScore * 10 + usageBonus(uKey),
+                                usageCount = uCount,
+                            )
+                        } else null
+                    }.sortedWith(
+                        if (q.isEmpty()) compareByDescending<PaletteItem.FloccusBookmarkAction> { it.usageCount }.thenByDescending { it.rankScore }
+                        else compareByDescending<PaletteItem.FloccusBookmarkAction> { it.rankScore }.thenByDescending { it.usageCount }
+                    ).take(MAX_PALETTE_RESULTS)
+                }
+            }
+
             PromptIntentMode.BOOKMARKS_ONLY -> {
                 val q = cmd.filterQuery.trim()
-                bookmarks.mapNotNull { bm ->
+                val qLower = q.lowercase()
+                val out = mutableListOf<PaletteItem>()
+                bookmarks.forEach { bm ->
                     val uKey = "bm:${bm.id}"
                     val uCount = usageOf(uKey)
-                    val fScore = FuzzyMatcher.scoreBookmark(q, bm)
+                    val fScore = maxOf(FuzzyMatcher.scoreBookmark(q, bm), customAliasScore(uKey, qLower))
                     if (fScore > 0) {
-                        PaletteItem.BookmarkAction(bm, uKey, fScore * 10 + usageBonus(uKey), uCount)
-                    } else null
-                }.sortedWith(
-                    if (q.isEmpty()) compareByDescending<PaletteItem.BookmarkAction> { it.usageCount }.thenByDescending { it.rankScore }
-                    else compareByDescending<PaletteItem.BookmarkAction> { it.rankScore }.thenByDescending { it.usageCount }
+                        out.add(PaletteItem.BookmarkAction(bm, uKey, fScore * 10 + 25 + usageBonus(uKey), uCount))
+                    }
+                }
+                if (includeFloccusInUnified && floccusBookmarks.isNotEmpty()) {
+                    floccusBookmarks.forEach { fb ->
+                        val uKey = fb.usageKey
+                        val uCount = usageOf(uKey)
+                        val fScore = maxOf(
+                            FloccusBookmarkManager.scoreFloccusBookmark(q, fb),
+                            customAliasScore(uKey, qLower),
+                        )
+                        if (fScore > 0) {
+                            out.add(
+                                PaletteItem.FloccusBookmarkAction(
+                                    bookmark = fb,
+                                    query = q,
+                                    isSetupPrompt = false,
+                                    usageKey = uKey,
+                                    rankScore = fScore * 10 + usageBonus(uKey),
+                                    usageCount = uCount,
+                                )
+                            )
+                        }
+                    }
+                }
+                out.sortedWith(
+                    if (q.isEmpty()) compareByDescending<PaletteItem> { it.usageCount }.thenByDescending { it.rankScore }
+                    else compareByDescending<PaletteItem> { it.rankScore }.thenByDescending { it.usageCount }
                 ).take(MAX_PALETTE_RESULTS)
             }
 
@@ -1542,6 +1631,22 @@ object QueryRouter {
                         val uCount = usageOf(uKey)
                         pool.add(PaletteItem.BookmarkAction(bm, uKey, 90 - idx + uCount * 180, uCount))
                     }
+                    if (includeFloccusInUnified) {
+                        floccusBookmarks.forEach { fb ->
+                            val uKey = fb.usageKey
+                            val uCount = usageOf(uKey)
+                            if (uCount > 0) {
+                                pool.add(
+                                    PaletteItem.FloccusBookmarkAction(
+                                        bookmark = fb,
+                                        usageKey = uKey,
+                                        rankScore = 78 + uCount * 180,
+                                        usageCount = uCount,
+                                    )
+                                )
+                            }
+                        }
+                    }
                     engines.forEachIndexed { idx, eng ->
                         val uKey = "eng:${eng.id}"
                         val uCount = usageOf(uKey)
@@ -1667,6 +1772,28 @@ object QueryRouter {
                         if (s > 0) {
                             val tieBonus = if (s >= 500) usageBonus(uKey) else 0
                             pool.add(PaletteItem.BookmarkAction(bm, uKey, s * 10 + 40 + tieBonus, usageOf(uKey)))
+                        }
+                    }
+                    floccusBookmarks.forEach { fb ->
+                        val uKey = fb.usageKey
+                        val aliasScore = customAliasScore(uKey, qLower)
+                        val s = if (includeFloccusInUnified) {
+                            maxOf(FloccusBookmarkManager.scoreFloccusBookmark(q, fb), aliasScore)
+                        } else {
+                            aliasScore
+                        }
+                        if (s > 0) {
+                            val tieBonus = if (s >= 500) usageBonus(uKey) else 0
+                            pool.add(
+                                PaletteItem.FloccusBookmarkAction(
+                                    bookmark = fb,
+                                    query = q,
+                                    isSetupPrompt = false,
+                                    usageKey = uKey,
+                                    rankScore = s * 10 + 32 + tieBonus,
+                                    usageCount = usageOf(uKey),
+                                )
+                            )
                         }
                     }
                     engines.forEach { eng ->
@@ -2508,7 +2635,8 @@ object QueryRouter {
         sb.append("    \"dictionary\": \"${escapeJson(p.dictionaryClean)}\",\n")
         sb.append("    \"clipboard\": \"${escapeJson(p.clipboardClean)}\",\n")
         sb.append("    \"systemSettings\": \"${escapeJson(p.systemSettingsClean)}\",\n")
-        sb.append("    \"youtubeHistory\": \"${escapeJson(p.youtubeHistoryClean)}\"\n")
+        sb.append("    \"youtubeHistory\": \"${escapeJson(p.youtubeHistoryClean)}\",\n")
+        sb.append("    \"floccus\": \"${escapeJson(p.floccusClean)}\"\n")
         sb.append("  },\n")
         sb.append("  \"excludedFolders\": [")
         bundle.excludedFolders.forEachIndexed { idx, f ->
@@ -2592,6 +2720,7 @@ object QueryRouter {
                 clipboard = extractJsonString(prefixesSection, "clipboard") ?: "clip",
                 systemSettings = extractJsonString(prefixesSection, "systemSettings") ?: "set",
                 youtubeHistory = extractJsonString(prefixesSection, "youtubeHistory") ?: "yth",
+                floccus = extractJsonString(prefixesSection, "floccus") ?: "fl",
             )
         } else null
 

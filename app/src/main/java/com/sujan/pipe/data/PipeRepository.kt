@@ -75,6 +75,7 @@ class PipeRepository(context: Context) {
             clipboard = prefs.getString("prefix_clipboard_v1", "clip")?.trim()?.ifEmpty { "clip" } ?: "clip",
             systemSettings = prefs.getString("prefix_system_settings_v1", "set")?.trim()?.ifEmpty { "set" } ?: "set",
             youtubeHistory = prefs.getString("prefix_yt_history_v1", "yth")?.trim()?.ifEmpty { "yth" } ?: "yth",
+            floccus = prefs.getString("prefix_floccus_v1", "fl")?.trim()?.ifEmpty { "fl" } ?: "fl",
         )
     }
 
@@ -90,6 +91,7 @@ class PipeRepository(context: Context) {
             .putString("prefix_clipboard_v1", config.clipboardClean)
             .putString("prefix_system_settings_v1", config.systemSettingsClean)
             .putString("prefix_yt_history_v1", config.youtubeHistoryClean)
+            .putString("prefix_floccus_v1", config.floccusClean)
             .apply()
     }
 
@@ -333,6 +335,18 @@ class PipeRepository(context: Context) {
 
     fun loadYouTubeKeepAliveEnabled(): Boolean = prefs.getBoolean("yt_watch_keepalive_v1", true)
     fun saveYouTubeKeepAliveEnabled(enabled: Boolean) = prefs.edit().putBoolean("yt_watch_keepalive_v1", enabled).apply()
+
+    fun loadFloccusSourcePath(): String = prefs.getString("floccus_source_path_v1", "") ?: ""
+    fun saveFloccusSourcePath(path: String) = prefs.edit().putString("floccus_source_path_v1", path.trim()).apply()
+
+    fun loadFloccusSourceLabel(): String = prefs.getString("floccus_source_label_v1", "not linked") ?: "not linked"
+    fun saveFloccusSourceLabel(label: String) = prefs.edit().putString("floccus_source_label_v1", label.trim().ifEmpty { "not linked" }).apply()
+
+    fun loadFloccusUnifiedSearch(): Boolean = prefs.getBoolean("floccus_unified_search_v1", true)
+    fun saveFloccusUnifiedSearch(enabled: Boolean) = prefs.edit().putBoolean("floccus_unified_search_v1", enabled).apply()
+
+    fun loadFloccusLastSyncedMs(): Long = prefs.getLong("floccus_last_synced_ms_v1", 0L)
+    fun saveFloccusLastSyncedMs(ms: Long) = prefs.edit().putLong("floccus_last_synced_ms_v1", ms).apply()
 
     fun loadHourlyAutoIndexEnabled(): Boolean = prefs.getBoolean("hourly_auto_index_v1", true)
     fun saveHourlyAutoIndexEnabled(enabled: Boolean) = prefs.edit().putBoolean("hourly_auto_index_v1", enabled).apply()

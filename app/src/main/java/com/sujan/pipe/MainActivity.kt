@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.lifecycleScope
 import com.sujan.pipe.data.DeviceIntegrationManager
+import com.sujan.pipe.data.FloccusBookmarkManager
 import com.sujan.pipe.data.OfflineDictionaryManager
 import com.sujan.pipe.data.OfflineYouTubeHistoryManager
 import com.sujan.pipe.data.PipeRepository
@@ -183,6 +184,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val floccusImportLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.OpenDocument(),
+            ) { uri: Uri? ->
+                if (uri != null) {
+                    linkFloccusUriAsync(uri)
+                }
+            }
+
             val ytHistoryExportLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.CreateDocument("application/json"),
             ) { uri: Uri? ->
@@ -245,6 +254,15 @@ class MainActivity : ComponentActivity() {
                         is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> {
                             viewModel.recordItemUsage(top.usageKey)
                             handleOpenBookmark(top.bookmark)
+                        }
+                        is com.sujan.pipe.domain.PaletteItem.FloccusBookmarkAction -> {
+                            if (top.isSetupPrompt || top.bookmark == null) {
+                                viewModel.selectSettingsSection(SettingsSection.INDEX)
+                                viewModel.navigateTo(PipeView.SETTINGS)
+                            } else {
+                                viewModel.recordItemUsage(top.usageKey)
+                                DeviceIntegrationManager.openUrlExcludingSelf(this, top.bookmark.url)
+                            }
                         }
                         is com.sujan.pipe.domain.PaletteItem.FileAction -> {
                             viewModel.recordItemUsage(top.usageKey)
@@ -409,6 +427,23 @@ class MainActivity : ComponentActivity() {
                         viewModel.updateYouTubeHistoryMatches(emptyList())
                         viewModel.setJsonStatusMessage("ok: cleared offline YouTube watch history")
                     }
+                },
+                onOpenFloccusBookmark = { fb ->
+                    viewModel.recordItemUsage(fb.usageKey)
+                    DeviceIntegrationManager.openUrlExcludingSelf(this, fb.url)
+                },
+                onSetupFloccusClick = {
+                    viewModel.selectSettingsSection(SettingsSection.INDEX)
+                    viewModel.navigateTo(PipeView.SETTINGS)
+                },
+                onFloccusUnifiedSearchChange = viewModel::setFloccusUnifiedSearch,
+                onPickFloccusFileClick = { floccusImportLauncher.launch(arrayOf("*/*")) },
+                onAutoDetectFloccusClick = ::autoDetectFloccusFileAsync,
+                onSyncFloccusNowClick = { syncFloccusNowAsync(forceReload = true) },
+                onUnlinkFloccusClick = {
+                    FloccusBookmarkManager.unlink(applicationContext)
+                    viewModel.syncFloccusState(emptyList(), "not linked", 0L, false)
+                    viewModel.setJsonStatusMessage("ok: unlinked Floccus bookmarks file")
                 },
                 onExecuteClipboardAction = { action ->
                     handleClipboardAction(action, clipboard::setText)
@@ -773,6 +808,66 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun linkFloccusUriAsync(uri: Uri) {
+        viewModel.syncFloccusState(viewModel.uiState.value.floccusBookmarks, isSyncing = true)
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching {
+                val hint = uri.lastPathSegment?.substringAfterLast('/') ?: "bookmarks.xbel"
+                val items = FloccusBookmarkManager.linkUri(applicationContext, uri, hint)
+                viewModel.syncFloccusState(
+                    bookmarks = items,
+                    sourceLabel = repository.loadFloccusSourceLabel(),
+                    lastSyncedMs = repository.loadFloccusLastSyncedMs(),
+                    isSyncing = false,
+                )
+                viewModel.setJsonStatusMessage("ok: linked ${items.size} Floccus bookmarks (${repository.loadFloccusSourceLabel()})")
+            }.onFailure { err ->
+                viewModel.syncFloccusState(viewModel.uiState.value.floccusBookmarks, isSyncing = false)
+                viewModel.setJsonStatusMessage(err.message ?: "! failed to parse Floccus file")
+            }
+        }
+    }
+
+    private fun autoDetectFloccusFileAsync() {
+        val candidate = FloccusBookmarkManager.findCandidateFile()
+        if (candidate == null) {
+            viewModel.setJsonStatusMessage("! no bookmarks.xbel found (use [pick .xbel / .html])")
+            return
+        }
+        viewModel.syncFloccusState(viewModel.uiState.value.floccusBookmarks, isSyncing = true)
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching {
+                val items = FloccusBookmarkManager.linkFile(applicationContext, candidate)
+                viewModel.syncFloccusState(
+                    bookmarks = items,
+                    sourceLabel = candidate.name,
+                    lastSyncedMs = repository.loadFloccusLastSyncedMs(),
+                    isSyncing = false,
+                )
+                viewModel.setJsonStatusMessage("ok: linked ${items.size} Floccus bookmarks from ${candidate.name}")
+            }.onFailure { err ->
+                viewModel.syncFloccusState(viewModel.uiState.value.floccusBookmarks, isSyncing = false)
+                viewModel.setJsonStatusMessage(err.message ?: "! could not read ${candidate.name}")
+            }
+        }
+    }
+
+    private fun syncFloccusNowAsync(forceReload: Boolean) {
+        viewModel.syncFloccusState(viewModel.uiState.value.floccusBookmarks, isSyncing = true)
+        lifecycleScope.launch(Dispatchers.IO) {
+            val items = FloccusBookmarkManager.syncIfNeeded(applicationContext, forceReload = forceReload)
+            viewModel.syncFloccusState(
+                bookmarks = items,
+                sourceLabel = repository.loadFloccusSourceLabel(),
+                lastSyncedMs = repository.loadFloccusLastSyncedMs(),
+                isSyncing = false,
+            )
+            if (forceReload) {
+                viewModel.setJsonStatusMessage("ok: synced ${items.size} Floccus bookmarks")
+            }
+        }
+    }
+
     private fun openNotificationListenerSettings() {
         runCatching {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -847,6 +942,13 @@ class MainActivity : ComponentActivity() {
                 totalCount = ytCount,
                 trackerLive = YouTubeMediaSessionTracker.isActivelyTracking,
                 batteryUnrestricted = isIgnoringBatteryOptimizations(),
+            )
+            val floccusItems = FloccusBookmarkManager.syncIfNeeded(applicationContext, forceReload = false)
+            viewModel.syncFloccusState(
+                bookmarks = floccusItems,
+                sourceLabel = repository.loadFloccusSourceLabel(),
+                lastSyncedMs = repository.loadFloccusLastSyncedMs(),
+                isSyncing = false,
             )
             val cachedFiles = if (hasFiles) DeviceIntegrationManager.getCachedStorageFiles(applicationContext) else emptyList()
             val contacts = if (hasContacts) DeviceIntegrationManager.getCachedOrLoadContacts(applicationContext) else emptyList()

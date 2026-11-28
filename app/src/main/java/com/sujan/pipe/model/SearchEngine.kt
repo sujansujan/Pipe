@@ -33,7 +33,7 @@ enum class WhatsAppFlavor(val label: String, val badge: String, val packageName:
 }
 
 /**
- * User-customizable command prefixes and row badge tags for `f`, `s`, `b`, `app`, `hist`, `c`, `def`, `clip`, `set`, and `yth`.
+ * User-customizable command prefixes and row badge tags for `f`, `s`, `b`, `app`, `hist`, `c`, `def`, `clip`, `set`, `yth`, and `fl`.
  */
 data class PrefixConfig(
     val files: String = "f",
@@ -46,6 +46,7 @@ data class PrefixConfig(
     val clipboard: String = "clip",
     val systemSettings: String = "set",
     val youtubeHistory: String = "yth",
+    val floccus: String = "fl",
 ) {
     val filesClean: String get() = files.trim().lowercase().ifEmpty { "f" }
     val pipesClean: String get() = pipes.trim().lowercase().ifEmpty { "s" }
@@ -57,6 +58,7 @@ data class PrefixConfig(
     val clipboardClean: String get() = clipboard.trim().lowercase().ifEmpty { "clip" }
     val systemSettingsClean: String get() = systemSettings.trim().lowercase().ifEmpty { "set" }
     val youtubeHistoryClean: String get() = youtubeHistory.trim().lowercase().ifEmpty { "yth" }
+    val floccusClean: String get() = floccus.trim().lowercase().ifEmpty { "fl" }
 }
 
 /**
@@ -142,10 +144,10 @@ object DefaultSystemShortcuts {
         SystemSettingShortcut(
             id = "pipe_set_index",
             alias = "idx",
-            title = "Pipe Settings: Storage, Dictionary & YT History",
-            subtitle = "Permissions, storage index, offline dictionary, offline YouTube watch history",
+            title = "Pipe Settings: Storage, Floccus, Dict & YT History",
+            subtitle = "Permissions, storage index, Floccus bookmarks, offline dictionary, YT history",
             intentAction = "pipe://settings/INDEX",
-            keywords = "pipe settings index dictionary permissions storage youtube watch history yth",
+            keywords = "pipe settings index dictionary permissions storage youtube watch history yth floccus xbel bookmarks",
             internalPipeSection = "INDEX",
         ),
         SystemSettingShortcut(
@@ -449,6 +451,32 @@ data class PipeBookmark(
     val tags: String = "",
 ) {
     val tagsLower: String = tags.trim().lowercase()
+}
+
+/**
+ * Bookmark synced live from a local Floccus `.xbel` (or exported Netscape `.html`) file.
+ */
+data class FloccusBookmarkItem(
+    val id: String,
+    val title: String,
+    val url: String,
+    val folderPath: String = "",
+) {
+    val usageKey: String = "floccus:$id"
+    val titleLower: String = title.trim().lowercase()
+    val urlLower: String = url.trim().lowercase()
+    val folderPathLower: String = folderPath.trim().lowercase()
+    val hostLower: String = run {
+        val afterScheme = urlLower.substringAfter("://", urlLower)
+        afterScheme.substringBefore('/').substringBefore('?').removePrefix("www.")
+    }
+
+    val subtitleDisplay: String
+        get() = when {
+            folderPath.isNotBlank() && hostLower.isNotBlank() -> "$folderPath · $hostLower"
+            folderPath.isNotBlank() -> "$folderPath · $url"
+            else -> url
+        }
 }
 
 data class InstalledAppItem(

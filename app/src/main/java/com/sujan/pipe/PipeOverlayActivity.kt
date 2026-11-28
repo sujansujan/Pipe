@@ -68,6 +68,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.sujan.pipe.data.DeviceIntegrationManager
+import com.sujan.pipe.data.FloccusBookmarkManager
 import com.sujan.pipe.data.OfflineDictionaryManager
 import com.sujan.pipe.data.OfflineYouTubeHistoryManager
 import com.sujan.pipe.data.PipeRepository
@@ -85,6 +86,7 @@ import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.ContactQuickAction
 import com.sujan.pipe.model.DictionaryEntry
 import com.sujan.pipe.model.EngineColorRole
+import com.sujan.pipe.model.FloccusBookmarkItem
 import com.sujan.pipe.model.InstalledAppItem
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
@@ -153,6 +155,7 @@ class PipeOverlayActivity : ComponentActivity() {
         val showMenuBtn = repository.loadShowSearchBoxMenuBtn()
         val whatsAppFlavor = repository.loadWhatsAppFlavor()
         val autoLaunchExactAlias = repository.loadAutoLaunchExactAlias()
+        val floccusUnifiedSearch = repository.loadFloccusUnifiedSearch()
 
         setContent {
             PipeTheme(
@@ -182,6 +185,8 @@ class PipeOverlayActivity : ComponentActivity() {
                     initialCachedFiles = DeviceIntegrationManager.peekMemoryStorageFiles(),
                     initialCachedApps = DeviceIntegrationManager.peekMemoryInstalledApps(),
                     initialCachedShortcuts = DeviceIntegrationManager.peekMemoryAppShortcuts(),
+                    initialCachedFloccus = FloccusBookmarkManager.peekMemoryBookmarks(),
+                    floccusUnifiedSearch = floccusUnifiedSearch,
                     initialDictInstalled = OfflineDictionaryManager.isDictionaryInstalled(applicationContext),
                     initialYtListenerEnabled = OfflineYouTubeHistoryManager.isNotificationListenerEnabled(applicationContext),
                     initialYtHistoryCount = OfflineYouTubeHistoryManager.peekMemoryHistory().size,
@@ -245,6 +250,11 @@ class PipeOverlayActivity : ComponentActivity() {
                     loadShortcuts = {
                         withContext(Dispatchers.IO) {
                             DeviceIntegrationManager.loadAppShortcuts(applicationContext)
+                        }
+                    },
+                    loadFloccus = {
+                        withContext(Dispatchers.IO) {
+                            FloccusBookmarkManager.syncIfNeeded(applicationContext, forceReload = false)
                         }
                     },
                     loadFiles = { scopedPath ->
@@ -406,6 +416,8 @@ private fun SleekRaycastOverlay(
     initialCachedFiles: List<LocalFileItem>,
     initialCachedApps: List<InstalledAppItem>,
     initialCachedShortcuts: List<AppShortcutItem> = emptyList(),
+    initialCachedFloccus: List<FloccusBookmarkItem> = emptyList(),
+    floccusUnifiedSearch: Boolean = true,
     initialDictInstalled: Boolean = false,
     initialYtListenerEnabled: Boolean = false,
     initialYtHistoryCount: Int = 0,
@@ -417,6 +429,7 @@ private fun SleekRaycastOverlay(
     loadContacts: suspend () -> List<ContactItem>,
     loadApps: suspend () -> List<InstalledAppItem>,
     loadShortcuts: suspend () -> List<AppShortcutItem> = { emptyList() },
+    loadFloccus: suspend () -> List<FloccusBookmarkItem> = { emptyList() },
     loadFiles: suspend (String?) -> List<LocalFileItem>,
     onRecordUsage: (String) -> Map<String, Int>,
     onSaveUniversalAliases: (List<UniversalAlias>) -> Unit = {},
@@ -465,6 +478,7 @@ private fun SleekRaycastOverlay(
     var contacts by remember { mutableStateOf(initialCachedContacts) }
     var installedApps by remember { mutableStateOf(initialCachedApps) }
     var appShortcuts by remember { mutableStateOf(initialCachedShortcuts) }
+    var floccusBookmarks by remember { mutableStateOf(initialCachedFloccus) }
     var storageFiles by remember { mutableStateOf(initialCachedFiles) }
     var scopedFiles by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
     var dictionaryMatches by remember { mutableStateOf<List<DictionaryEntry>>(emptyList()) }
@@ -552,12 +566,14 @@ private fun SleekRaycastOverlay(
                     youtubeHistoryMatches = emptyList(),
                     youtubeHistoryTotalCount = initialYtHistoryCount,
                     isYouTubeListenerEnabled = initialYtListenerEnabled,
+                    floccusBookmarks = initialCachedFloccus,
+                    includeFloccusInUnified = floccusUnifiedSearch,
                 )
             }
         )
     }
 
-    LaunchedEffect(input.text, showIdleSuggestions, activeEngines, activeBookmarks, contacts, installedApps, appShortcuts, universalAliases, storageFiles, scopedFiles, history, usageMap, clipText, prefixes, dictionaryMatches, dictInstalled, ytHistoryMatches, ytHistoryTotalCount) {
+    LaunchedEffect(input.text, showIdleSuggestions, activeEngines, activeBookmarks, contacts, installedApps, appShortcuts, universalAliases, storageFiles, scopedFiles, history, usageMap, clipText, prefixes, dictionaryMatches, dictInstalled, ytHistoryMatches, ytHistoryTotalCount, floccusBookmarks) {
         if (input.text.isBlank() && !showIdleSuggestions) {
             if (results.isNotEmpty()) results = emptyList()
             return@LaunchedEffect
@@ -583,6 +599,8 @@ private fun SleekRaycastOverlay(
                 youtubeHistoryMatches = ytHistoryMatches,
                 youtubeHistoryTotalCount = ytHistoryTotalCount,
                 isYouTubeListenerEnabled = initialYtListenerEnabled,
+                floccusBookmarks = floccusBookmarks,
+                includeFloccusInUnified = floccusUnifiedSearch,
             )
         }
         results = computed
@@ -599,8 +617,10 @@ private fun SleekRaycastOverlay(
             animationSpec = tween(durationMillis = 185, easing = FastOutSlowInEasing),
         )
         // 2. Only load cold caches AFTER the 185ms entrance + keyboard animation is 100% finished
+        delay(30L)
+        val freshFloccus = loadFloccus()
+        if (freshFloccus != floccusBookmarks) floccusBookmarks = freshFloccus
         if (contacts.isEmpty() || installedApps.isEmpty() || appShortcuts.isEmpty() || storageFiles.isEmpty()) {
-            delay(30L)
             val loadedContacts = if (contacts.isEmpty()) loadContacts() else contacts
             val loadedApps = if (installedApps.isEmpty()) loadApps() else installedApps
             val loadedShortcuts = if (appShortcuts.isEmpty()) loadShortcuts() else appShortcuts
@@ -808,6 +828,13 @@ private fun SleekRaycastOverlay(
                 val ok = if (bm.kind == BookmarkKind.LINK) onDispatchUrl(bm.alias, bm.target) else onOpenPath(bm.target)
                 if (!ok) errorMsg = "! could not open ${bm.title}"
             }
+            is PaletteItem.FloccusBookmarkAction -> {
+                if (item.isSetupPrompt || item.bookmark == null) {
+                    onOpenYouTubeSettings()
+                } else {
+                    if (!onDispatchUrl(item.bookmark.title, item.bookmark.url)) errorMsg = "! no browser found"
+                }
+            }
             is PaletteItem.FileAction -> {
                 if (!onOpenPath(item.file.absolutePath)) errorMsg = "! could not open ${item.file.name}"
             }
@@ -889,6 +916,7 @@ private fun SleekRaycastOverlay(
         PromptIntentMode.CONTACTS_ONLY -> "${prefixes.contactsClean}:contacts"
         PromptIntentMode.FILES_ONLY -> "${prefixes.filesClean}:files"
         PromptIntentMode.BOOKMARKS_ONLY -> "${prefixes.bookmarksClean}:bookmarks"
+        PromptIntentMode.FLOCCUS_ONLY -> "${prefixes.floccusClean}:floccus"
         PromptIntentMode.PIPES_LIST -> "${prefixes.pipesClean}:pipes"
         PromptIntentMode.APPS_ONLY -> "${prefixes.appsClean}:launcher"
         PromptIntentMode.HISTORY_ONLY -> "${prefixes.historyClean}:history"
@@ -1726,6 +1754,44 @@ private fun SleekOverlayRow(
                             }
                         }
                     }
+                }
+            }
+        }
+
+        is PaletteItem.FloccusBookmarkAction -> {
+            val fb = item.bookmark
+            val titleText = if (item.isSetupPrompt || fb == null) item.setupTitle else "${fb.title}$aliasSuffix"
+            val subText = if (item.isSetupPrompt || fb == null) item.setupSubtitle else fb.subtitleDisplay
+            val titleAnn = remember(titleText, highlightQuery, pressed, c.fg, c.accent, c.bg) {
+                buildFzfHighlightedText(titleText, highlightQuery, c.fg, c.yellow)
+            }
+            val subAnn = remember(subText, highlightQuery, pressed, c.dim, c.cyan, c.bg) {
+                buildFzfHighlightedText(subText, highlightQuery, c.dim, c.cyan)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr ", style = AsciiType.small, color = if (isTop) c.purple else c.dim)
+                if (fb != null) {
+                    AsciiFaviconBadge(url = fb.url, fallbackText = prefixes.floccusClean, fallbackColor = c.accent3)
+                } else {
+                    AsciiText("[${prefixes.floccusClean}] ", style = AsciiType.small, color = c.accent3)
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(titleAnn, style = if (isTop) AsciiType.title else AsciiType.body, color = c.fg, maxLines = 1)
+                    AsciiText(subAnn, style = AsciiType.small, color = c.dim, maxLines = 1)
+                }
+                if (fb != null) {
+                    AsciiButton("cp", { clipboard.setText(AnnotatedString(fb.url)) })
+                } else {
+                    AsciiButton("set", onExecute, primary = true)
                 }
             }
         }

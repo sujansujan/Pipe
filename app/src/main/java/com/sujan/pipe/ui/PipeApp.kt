@@ -84,6 +84,7 @@ import com.sujan.pipe.model.BookmarkKind
 import com.sujan.pipe.model.ContactItem
 import com.sujan.pipe.model.DictionaryEntry
 import com.sujan.pipe.model.EngineColorRole
+import com.sujan.pipe.model.FloccusBookmarkItem
 import com.sujan.pipe.model.InstalledAppItem
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
@@ -262,6 +263,15 @@ fun extractAliasTargetInfo(
                 subtitle = w.watchUrl,
             )
         }
+        is com.sujan.pipe.domain.PaletteItem.FloccusBookmarkAction -> item.bookmark?.let { fb ->
+            UniversalAlias(
+                targetKey = item.usageKey,
+                alias = current,
+                label = fb.title,
+                category = "fl",
+                subtitle = fb.url,
+            )
+        }
         else -> null
     }
 }
@@ -381,6 +391,13 @@ fun PipeApp(
     onScanDownloadsYouTubeHistory: () -> Unit = {},
     onExportYouTubeHistoryClick: () -> Unit = {},
     onClearYouTubeHistoryClick: () -> Unit = {},
+    onOpenFloccusBookmark: (FloccusBookmarkItem) -> Unit = {},
+    onSetupFloccusClick: () -> Unit = {},
+    onFloccusUnifiedSearchChange: (Boolean) -> Unit = {},
+    onPickFloccusFileClick: () -> Unit = {},
+    onAutoDetectFloccusClick: () -> Unit = {},
+    onSyncFloccusNowClick: () -> Unit = {},
+    onUnlinkFloccusClick: () -> Unit = {},
     onExecuteClipboardAction: (com.sujan.pipe.domain.PaletteItem.ClipboardAction) -> Unit = {},
     onOpenBookmark: (PipeBookmark) -> Unit,
     onOpenLocalFile: (LocalFileItem) -> Unit,
@@ -498,6 +515,8 @@ fun PipeApp(
                         onSetupYouTubeHistoryClick = onSetupYouTubeHistoryClick,
                         onDeleteYouTubeWatch = onDeleteYouTubeWatch,
                         onRequestYouTubeListenerAccess = onRequestYouTubeListenerAccess,
+                        onOpenFloccusBookmark = onOpenFloccusBookmark,
+                        onSetupFloccusClick = onSetupFloccusClick,
                         onExecuteClipboardAction = onExecuteClipboardAction,
                         onOpenBookmark = onOpenBookmark,
                         onOpenLocalFile = onOpenLocalFile,
@@ -617,6 +636,11 @@ fun PipeApp(
                         onScanDownloadsYouTubeHistory = onScanDownloadsYouTubeHistory,
                         onExportYouTubeHistoryClick = onExportYouTubeHistoryClick,
                         onClearYouTubeHistoryClick = onClearYouTubeHistoryClick,
+                        onFloccusUnifiedSearchChange = onFloccusUnifiedSearchChange,
+                        onPickFloccusFileClick = onPickFloccusFileClick,
+                        onAutoDetectFloccusClick = onAutoDetectFloccusClick,
+                        onSyncFloccusNowClick = onSyncFloccusNowClick,
+                        onUnlinkFloccusClick = onUnlinkFloccusClick,
                         onLaunchOverlayPreview = onLaunchOverlayPreview,
                         onPinOverlayShortcut = onPinOverlayShortcut,
                         onOpenDefaultAppsSettings = onOpenDefaultAppsSettings,
@@ -695,6 +719,8 @@ private fun PipePromptScreen(
     onSetupYouTubeHistoryClick: () -> Unit,
     onDeleteYouTubeWatch: (YouTubeWatchEntry) -> Unit,
     onRequestYouTubeListenerAccess: () -> Unit,
+    onOpenFloccusBookmark: (FloccusBookmarkItem) -> Unit = {},
+    onSetupFloccusClick: () -> Unit = {},
     onExecuteClipboardAction: (com.sujan.pipe.domain.PaletteItem.ClipboardAction) -> Unit,
     onOpenBookmark: (PipeBookmark) -> Unit,
     onOpenLocalFile: (LocalFileItem) -> Unit,
@@ -857,6 +883,13 @@ private fun PipePromptScreen(
                         onSubmitPrimaryAction()
                     }
                     is com.sujan.pipe.domain.PaletteItem.BookmarkAction -> onOpenBookmark(item.bookmark)
+                    is com.sujan.pipe.domain.PaletteItem.FloccusBookmarkAction -> {
+                        if (item.isSetupPrompt || item.bookmark == null) {
+                            onSetupFloccusClick()
+                        } else {
+                            onOpenFloccusBookmark(item.bookmark)
+                        }
+                    }
                     is com.sujan.pipe.domain.PaletteItem.FileAction -> onOpenLocalFile(item.file)
                     is com.sujan.pipe.domain.PaletteItem.ContactAction -> {
                         when (item.preferredAction) {
@@ -909,6 +942,19 @@ private fun PipePromptScreen(
             onSearchYouTubeChannel = { channel ->
                 val url = "https://www.youtube.com/results?search_query=${java.net.URLEncoder.encode(channel, "UTF-8")}"
                 onOpenDirectUrl(url)
+            },
+            onBookmarkFloccusBookmark = { fb ->
+                val suggestedAlias = fb.title.lowercase().filter { it.isLetterOrDigit() }.take(6)
+                inlineQuickAdd = com.sujan.pipe.domain.PaletteItem.QuickAddAction(
+                    kind = QuickAddKind.BOOKMARK,
+                    title = "Bookmark: ${fb.title}",
+                    subtitle = fb.url,
+                    isReadyToCommit = false,
+                    arg1 = suggestedAlias,
+                    arg2 = fb.title,
+                    arg3 = fb.url,
+                    bookmarkKind = BookmarkKind.LINK,
+                )
             },
             onRequestYouTubeListenerAccess = onRequestYouTubeListenerAccess,
             onCallContact = onCallContact,
@@ -1039,6 +1085,7 @@ fun AsciiRaycastPaletteWindow(
     onDeleteYouTubeWatch: ((YouTubeWatchEntry) -> Unit)? = null,
     onBookmarkYouTubeWatch: ((YouTubeWatchEntry) -> Unit)? = null,
     onSearchYouTubeChannel: ((String) -> Unit)? = null,
+    onBookmarkFloccusBookmark: ((FloccusBookmarkItem) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
@@ -1065,6 +1112,7 @@ fun AsciiRaycastPaletteWindow(
         PromptIntentMode.CONTACTS_ONLY -> "${prefixes.contactsClean}:contacts"
         PromptIntentMode.FILES_ONLY -> "${prefixes.filesClean}:files"
         PromptIntentMode.BOOKMARKS_ONLY -> "${prefixes.bookmarksClean}:bookmarks"
+        PromptIntentMode.FLOCCUS_ONLY -> "${prefixes.floccusClean}:floccus"
         PromptIntentMode.PIPES_LIST -> "${prefixes.pipesClean}:pipes"
         PromptIntentMode.APPS_ONLY -> "${prefixes.appsClean}:launcher"
         PromptIntentMode.HISTORY_ONLY -> "${prefixes.historyClean}:history"
@@ -1503,6 +1551,10 @@ fun AsciiRaycastPaletteWindow(
             onDeleteYouTubeWatch = { w ->
                 actionSheetItem = null
                 onDeleteYouTubeWatch?.invoke(w)
+            },
+            onBookmarkFloccusBookmark = { fb ->
+                actionSheetItem = null
+                onBookmarkFloccusBookmark?.invoke(fb)
             },
             onAppInfoInstalledApp = { app ->
                 actionSheetItem = null
@@ -2536,6 +2588,21 @@ fun AsciiRaycastRow(
             hasActionSheet = true
             folderPeekPath = if (bm.kind == BookmarkKind.FOLDER) bm.target else null
         }
+        is com.sujan.pipe.domain.PaletteItem.FloccusBookmarkAction -> {
+            val fb = item.bookmark
+            tagText = prefixes.floccusClean
+            tagColor = c.accent3
+            if (item.isSetupPrompt || fb == null) {
+                titleText = item.setupTitle
+                subtitleText = item.setupSubtitle
+                hasActionSheet = false
+            } else {
+                titleText = fb.title
+                subtitleText = fb.subtitleDisplay
+                hasActionSheet = true
+            }
+            folderPeekPath = null
+        }
         is com.sujan.pipe.domain.PaletteItem.EngineAction -> {
             val eng = item.engine
             tagText = "${prefixes.pipesClean}:${eng.keyword}"
@@ -2729,6 +2796,16 @@ fun AsciiRaycastRow(
                         thumbnailPath = item.entry?.thumbnailPath.orEmpty(),
                     )
                 }
+                item is com.sujan.pipe.domain.PaletteItem.FloccusBookmarkAction -> {
+                    val fb = item.bookmark
+                    if (fb != null) {
+                        AsciiFaviconBadge(
+                            url = fb.url,
+                            fallbackText = prefixes.floccusClean,
+                            fallbackColor = c.accent3,
+                        )
+                    }
+                }
             }
 
             Column(
@@ -2812,6 +2889,12 @@ fun AsciiRaycastRow(
                     spokenLabel = "more actions for $titleText",
                 )
             } else if (item is com.sujan.pipe.domain.PaletteItem.YouTubeWatchAction && item.isSetupPrompt) {
+                AsciiButton(
+                    label = "setup",
+                    onClick = onExecute,
+                    primary = true,
+                )
+            } else if (item is com.sujan.pipe.domain.PaletteItem.FloccusBookmarkAction && item.isSetupPrompt) {
                 AsciiButton(
                     label = "setup",
                     onClick = onExecute,
@@ -2988,6 +3071,7 @@ fun AsciiResultActionSheet(
     onSearchYouTubeChannel: (String) -> Unit = {},
     onBookmarkYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
     onDeleteYouTubeWatch: (YouTubeWatchEntry) -> Unit = {},
+    onBookmarkFloccusBookmark: (FloccusBookmarkItem) -> Unit = {},
     onAppInfoInstalledApp: (InstalledAppItem) -> Unit = {},
     onUninstallInstalledApp: (InstalledAppItem) -> Unit = {},
     onCopyText: (String) -> Unit,
@@ -3356,6 +3440,35 @@ fun AsciiResultActionSheet(
                             AsciiSheetActionRow("alias", aliasLabel, onSetAliasClick)
                             AsciiSheetActionRow("copy", "Copy YouTube URL", { onCopyText(w.watchUrl) })
                             AsciiSheetActionRow("delete", "Remove from offline YT history", { onDeleteYouTubeWatch(w) }, isDestructive = true)
+                        } else {
+                            AsciiButton("close", onDismiss)
+                        }
+                    }
+
+                    is com.sujan.pipe.domain.PaletteItem.FloccusBookmarkAction -> {
+                        val fb = item.bookmark
+                        if (fb != null) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    AsciiKindBadge(prefixes.floccusClean, c.accent3)
+                                    Spacer(Modifier.width(8.dp))
+                                    Column {
+                                        AsciiText(fb.title, style = AsciiType.title, color = c.fg, maxLines = 2)
+                                        AsciiText(fb.subtitleDisplay, style = AsciiType.small, color = c.dim, maxLines = 1)
+                                    }
+                                }
+                                AsciiButton("x", onDismiss)
+                            }
+                            AsciiRule(glyph = "-", color = c.border)
+                            AsciiSheetActionRow("open", "Open ${fb.title}", onPrimaryExecute, isPrimary = true)
+                            AsciiSheetActionRow("bm", "Save as Pipe bookmark (with ${prefixes.bookmarksClean} alias)", { onBookmarkFloccusBookmark(fb) })
+                            val aliasLabel = if (!currentAlias.isNullOrBlank()) "Edit alias (@$currentAlias)" else "Set quick alias (@...)"
+                            AsciiSheetActionRow("alias", aliasLabel, onSetAliasClick)
+                            AsciiSheetActionRow("copy", "Copy bookmark URL", { onCopyText(fb.url) })
                         } else {
                             AsciiButton("close", onDismiss)
                         }
@@ -4374,6 +4487,11 @@ private fun PipeSettingsScreen(
     onScanDownloadsYouTubeHistory: () -> Unit = {},
     onExportYouTubeHistoryClick: () -> Unit = {},
     onClearYouTubeHistoryClick: () -> Unit = {},
+    onFloccusUnifiedSearchChange: (Boolean) -> Unit = {},
+    onPickFloccusFileClick: () -> Unit = {},
+    onAutoDetectFloccusClick: () -> Unit = {},
+    onSyncFloccusNowClick: () -> Unit = {},
+    onUnlinkFloccusClick: () -> Unit = {},
     onLaunchOverlayPreview: () -> Unit,
     onPinOverlayShortcut: () -> Unit,
     onOpenDefaultAppsSettings: () -> Unit,
@@ -4665,6 +4783,92 @@ private fun PipeSettingsScreen(
                         }
                     }
 
+                    // Live-linked Floccus Bookmarks (.xbel / .html) Box
+                    AsciiBox(title = "index - floccus bookmarks (${state.prefixConfig.floccusClean})") {
+                        val floccusLinked = state.floccusSourceLabel != "not linked" || state.floccusBookmarks.isNotEmpty()
+                        val syncAge = if (state.floccusLastSyncedMs <= 0L) {
+                            "never"
+                        } else {
+                            val mins = ((System.currentTimeMillis() - state.floccusLastSyncedMs) / 60_000L).coerceAtLeast(0L)
+                            if (mins == 0L) "just now" else "${mins}m ago"
+                        }
+                        AsciiText(
+                            text = if (floccusLinked) {
+                                "synced: ${state.floccusBookmarks.size} bookmarks  |  last check: $syncAge"
+                            } else {
+                                "status: not linked  |  auto-detects Google Drive/bookmarks.xbel"
+                            },
+                            style = AsciiType.body,
+                            color = if (floccusLinked) c.good else c.accent3,
+                        )
+                        AsciiText(
+                            text = if (state.isFloccusSyncing) {
+                                "reading & parsing Floccus bookmarks file..."
+                            } else {
+                                "source: ${state.floccusSourceLabel} (live auto-reload on file change; folder paths searchable)"
+                            },
+                            style = AsciiType.small,
+                            color = c.dim,
+                        )
+                        AsciiToggleRow(
+                            label = "include Floccus in unified & ${state.prefixConfig.bookmarksClean} search",
+                            subtitle = if (state.floccusUnifiedSearch) {
+                                "unified ON: appears in ALL, `${state.prefixConfig.bookmarksClean}`, and `${state.prefixConfig.floccusClean}`"
+                            } else {
+                                "separated: only appears under `${state.prefixConfig.floccusClean} <query>` (and @alias)"
+                            },
+                            checked = state.floccusUnifiedSearch,
+                            onCheckedChange = onFloccusUnifiedSearchChange,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            AsciiButton(
+                                label = if (state.isFloccusSyncing) "syncing..." else "pick .xbel / .html",
+                                onClick = onPickFloccusFileClick,
+                                enabled = !state.isFloccusSyncing,
+                                primary = !floccusLinked,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 46.dp),
+                            )
+                            AsciiButton(
+                                label = "auto-detect",
+                                onClick = onAutoDetectFloccusClick,
+                                enabled = !state.isFloccusSyncing,
+                                primary = floccusLinked,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 46.dp),
+                            )
+                        }
+                        if (floccusLinked) {
+                            Spacer(Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                AsciiButton(
+                                    label = "sync now",
+                                    onClick = onSyncFloccusNowClick,
+                                    enabled = !state.isFloccusSyncing,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 42.dp),
+                                )
+                                AsciiButton(
+                                    label = "unlink",
+                                    onClick = onUnlinkFloccusClick,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 42.dp),
+                                )
+                            }
+                        }
+                    }
+
                     // On-Demand External Offline Dictionary Box
                     AsciiBox(title = "index - offline dictionary (on-demand)") {
                         AsciiText(
@@ -4840,6 +5044,7 @@ private fun PipeSettingsScreen(
                     var clipField by remember(p.clipboard) { mutableStateOf(TextFieldValue(p.clipboard, TextRange(p.clipboard.length))) }
                     var setField by remember(p.systemSettings) { mutableStateOf(TextFieldValue(p.systemSettings, TextRange(p.systemSettings.length))) }
                     var ythField by remember(p.youtubeHistory) { mutableStateOf(TextFieldValue(p.youtubeHistory, TextRange(p.youtubeHistory.length))) }
+                    var floccusField by remember(p.floccus) { mutableStateOf(TextFieldValue(p.floccus, TextRange(p.floccus.length))) }
 
                     val pushPrefixUpdate: (String, String, String, String, String, String, String, String) -> Unit = { fVal, sVal, bVal, appVal, hVal, cVal, dVal, clVal ->
                         onPrefixConfigChange(
@@ -4854,11 +5059,12 @@ private fun PipeSettingsScreen(
                                 clipboard = clVal.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "clip" },
                                 systemSettings = setField.text.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "set" },
                                 youtubeHistory = ythField.text.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "yth" },
+                                floccus = floccusField.text.trim().lowercase().filter { !it.isWhitespace() }.ifEmpty { "fl" },
                             )
                         )
                     }
 
-                    AsciiBox(title = "routing - custom prefixes (f, s, b, app, hist, c, def, clip)") {
+                    AsciiBox(title = "routing - custom prefixes (f, s, b, fl, app, hist, c, def, clip)") {
                         AsciiText(
                             text = "change the command prefixes and row tags used to filter each category:",
                             style = AsciiType.small,
@@ -5008,6 +5214,7 @@ private fun PipeSettingsScreen(
                                                 clipboard = clipField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "clip" },
                                                 systemSettings = it.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "set" },
                                                 youtubeHistory = ythField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "yth" },
+                                                floccus = floccusField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "fl" },
                                             )
                                         )
                                     },
@@ -5033,6 +5240,7 @@ private fun PipeSettingsScreen(
                                                 clipboard = clipField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "clip" },
                                                 systemSettings = setField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "set" },
                                                 youtubeHistory = it.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "yth" },
+                                                floccus = floccusField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "fl" },
                                             )
                                         )
                                     },
@@ -5040,9 +5248,42 @@ private fun PipeSettingsScreen(
                                 )
                             }
                         }
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(Modifier.weight(1f)) {
+                                AsciiTextField(
+                                    label = "floccus prefix",
+                                    promptPrefix = "> ",
+                                    value = floccusField,
+                                    onValueChange = {
+                                        floccusField = it
+                                        onPrefixConfigChange(
+                                            PrefixConfig(
+                                                files = filesField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "f" },
+                                                pipes = pipesField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "s" },
+                                                bookmarks = bookmarksField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "b" },
+                                                apps = appsField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "app" },
+                                                history = histField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "hist" },
+                                                contacts = contactsField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "c" },
+                                                dictionary = dictField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "def" },
+                                                clipboard = clipField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "clip" },
+                                                systemSettings = setField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "set" },
+                                                youtubeHistory = ythField.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "yth" },
+                                                floccus = it.text.trim().lowercase().filter { ch -> !ch.isWhitespace() }.ifEmpty { "fl" },
+                                            )
+                                        )
+                                    },
+                                    placeholder = "fl",
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
+                        }
                         Spacer(Modifier.height(8.dp))
                         AsciiButton(
-                            label = "reset default prefixes (f, s, b, app, hist, c, def, clip, set, yth)",
+                            label = "reset default prefixes (f, s, b, fl, app, hist, c, def, clip, set, yth)",
                             onClick = onResetPrefixConfig,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -5205,6 +5446,7 @@ private fun PipeSettingsScreen(
                                 AsciiText("pipe v2.10.0 (release)", style = AsciiType.title, color = c.purple)
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
                                 AsciiText(leader("yt watch history", "${state.prefixConfig.youtubeHistoryClean} <query> (100% offline)", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
+                                AsciiText(leader("floccus bookmarks", "${state.prefixConfig.floccusClean} <query> (live .xbel)", cols), style = AsciiType.small, color = c.accent3, softWrap = false)
                                 AsciiText(leader("system settings", "${state.prefixConfig.systemSettingsClean} <dev|spot|dns|notif>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("whatsapp / biz", "wa <num> / wab <num>", cols), style = AsciiType.small, color = c.good, softWrap = false)
                                 AsciiText(leader("timer & alarm", "timer 12m / alarm 06:30", cols), style = AsciiType.small, color = c.warn, softWrap = false)

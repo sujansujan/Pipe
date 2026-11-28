@@ -21,6 +21,7 @@ import com.sujan.pipe.model.DefaultBookmarks
 import com.sujan.pipe.model.DefaultEngines
 import com.sujan.pipe.model.DictionaryEntry
 import com.sujan.pipe.model.EngineColorRole
+import com.sujan.pipe.model.FloccusBookmarkItem
 import com.sujan.pipe.model.LocalFileItem
 import com.sujan.pipe.model.PipeBookmark
 import com.sujan.pipe.model.PrefixConfig
@@ -119,6 +120,11 @@ data class PipeUiState(
     val youtubeHistoryCount: Int = 0,
     val youtubeHistoryMatches: List<YouTubeWatchEntry> = emptyList(),
     val isYouTubeHistoryImporting: Boolean = false,
+    val floccusBookmarks: List<FloccusBookmarkItem> = emptyList(),
+    val floccusSourceLabel: String = "not linked",
+    val floccusUnifiedSearch: Boolean = true,
+    val floccusLastSyncedMs: Long = 0L,
+    val isFloccusSyncing: Boolean = false,
     val clipboardPreviewText: String = "",
     val storageFiles: List<LocalFileItem> = emptyList(),
     val scopedFolderFiles: List<LocalFileItem> = emptyList(),
@@ -174,6 +180,9 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             youtubeSaveThumbnails = repository.loadYouTubeSaveThumbnails(),
             youtubeResolveVideoId = repository.loadYouTubeResolveVideoId(),
             youtubeKeepAliveEnabled = repository.loadYouTubeKeepAliveEnabled(),
+            floccusSourceLabel = repository.loadFloccusSourceLabel(),
+            floccusUnifiedSearch = repository.loadFloccusUnifiedSearch(),
+            floccusLastSyncedMs = repository.loadFloccusLastSyncedMs(),
             history = repository.loadHistory(),
             usageCounts = repository.loadUsageCounts(),
             themeMode = repository.loadThemeMode(),
@@ -232,6 +241,8 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
                 youtubeHistoryMatches = snap.youtubeHistoryMatches,
                 youtubeHistoryTotalCount = snap.youtubeHistoryCount,
                 isYouTubeListenerEnabled = snap.isYouTubeListenerEnabled,
+                floccusBookmarks = snap.floccusBookmarks,
+                includeFloccusInUnified = snap.floccusUnifiedSearch,
             )
             _uiState.update { it.copy(paletteResults = computed) }
         }
@@ -362,6 +373,29 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
         _uiState.update { it.copy(youtubeKeepAliveEnabled = enabled) }
     }
 
+    fun syncFloccusState(
+        bookmarks: List<FloccusBookmarkItem>,
+        sourceLabel: String = repository.loadFloccusSourceLabel(),
+        lastSyncedMs: Long = repository.loadFloccusLastSyncedMs(),
+        isSyncing: Boolean = false,
+    ) {
+        _uiState.update {
+            it.copy(
+                floccusBookmarks = bookmarks,
+                floccusSourceLabel = sourceLabel,
+                floccusLastSyncedMs = lastSyncedMs,
+                isFloccusSyncing = isSyncing,
+            )
+        }
+        recomputePaletteAsync()
+    }
+
+    fun setFloccusUnifiedSearch(unified: Boolean) {
+        repository.saveFloccusUnifiedSearch(unified)
+        _uiState.update { it.copy(floccusUnifiedSearch = unified) }
+        recomputePaletteAsync()
+    }
+
     fun setPrefixConfig(config: PrefixConfig) {
         val normalized = PrefixConfig(
             files = config.filesClean,
@@ -374,6 +408,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
             clipboard = config.clipboardClean,
             systemSettings = config.systemSettingsClean,
             youtubeHistory = config.youtubeHistoryClean,
+            floccus = config.floccusClean,
         )
         repository.savePrefixConfig(normalized)
         _uiState.update { it.copy(prefixConfig = normalized) }
@@ -383,7 +418,7 @@ class PipeViewModel(private val repository: PipeRepository) : ViewModel() {
     fun resetPrefixConfig() {
         val def = PrefixConfig()
         repository.savePrefixConfig(def)
-        _uiState.update { it.copy(prefixConfig = def, jsonStatusMessage = "ok: restored default prefixes (f, s, b, app, hist, c, def, clip, set, yth)") }
+        _uiState.update { it.copy(prefixConfig = def, jsonStatusMessage = "ok: restored default prefixes (f, s, b, app, hist, c, def, clip, set, yth, fl)") }
         recomputePaletteAsync()
     }
 
