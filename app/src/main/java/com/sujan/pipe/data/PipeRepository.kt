@@ -23,8 +23,14 @@ enum class ExternalTextMode { OPEN_OVERLAY, OPEN_PROMPT, DIRECT_PIPE }
 
 class PipeRepository(context: Context) {
 
+    private val appContext: Context = context.applicationContext
+
     private val prefs: SharedPreferences =
-        context.applicationContext.getSharedPreferences("pipe_ascii_prefs", Context.MODE_PRIVATE)
+        appContext.getSharedPreferences("pipe_ascii_prefs", Context.MODE_PRIVATE)
+
+    private fun refreshOverlayWidgets() {
+        runCatching { com.sujan.pipe.widget.PipeWidgetProvider.refreshAll(appContext) }
+    }
 
     fun loadEngines(): List<SearchEngine> {
         val raw = prefs.getString("engines_json", null)
@@ -313,13 +319,19 @@ class PipeRepository(context: Context) {
         ThemeMode.entries.firstOrNull { it.name == prefs.getString("theme_mode", ThemeMode.System.name) }
             ?: ThemeMode.System
 
-    fun saveThemeMode(mode: ThemeMode) = prefs.edit().putString("theme_mode", mode.name).apply()
+    fun saveThemeMode(mode: ThemeMode) {
+        prefs.edit().putString("theme_mode", mode.name).apply()
+        refreshOverlayWidgets()
+    }
 
     fun loadPaletteChoice(): PaletteChoice =
         PaletteChoice.entries.firstOrNull { it.name == prefs.getString("palette_choice", PaletteChoice.MOSS.name) }
             ?: PaletteChoice.DRACULA
 
-    fun savePaletteChoice(choice: PaletteChoice) = prefs.edit().putString("palette_choice", choice.name).apply()
+    fun savePaletteChoice(choice: PaletteChoice) {
+        prefs.edit().putString("palette_choice", choice.name).apply()
+        refreshOverlayWidgets()
+    }
 
     fun isHistoryEnabled(): Boolean = prefs.getBoolean("history_enabled", true)
     fun setHistoryEnabled(enabled: Boolean) = prefs.edit().putBoolean("history_enabled", enabled).apply()
@@ -364,19 +376,28 @@ class PipeRepository(context: Context) {
     }
 
     fun loadOverlayOpacity(): Float = prefs.getFloat("overlay_opacity_v1", 0.88f).coerceIn(0.15f, 1.0f)
-    fun saveOverlayOpacity(alpha: Float) = prefs.edit().putFloat("overlay_opacity_v1", alpha.coerceIn(0.15f, 1.0f)).apply()
+    fun saveOverlayOpacity(alpha: Float) {
+        prefs.edit().putFloat("overlay_opacity_v1", alpha.coerceIn(0.15f, 1.0f)).apply()
+        refreshOverlayWidgets()
+    }
 
     fun loadOverlayDimAmount(): Float = prefs.getFloat("overlay_dim_v1", 0.35f).coerceIn(0.0f, 0.85f)
     fun saveOverlayDimAmount(dim: Float) = prefs.edit().putFloat("overlay_dim_v1", dim.coerceIn(0.0f, 0.85f)).apply()
 
     fun loadOverlayCornerRadiusDp(): Int = prefs.getInt("overlay_corner_dp_v2", 10).coerceIn(0, 28)
-    fun saveOverlayCornerRadiusDp(dp: Int) = prefs.edit().putInt("overlay_corner_dp_v2", dp.coerceIn(0, 28)).apply()
+    fun saveOverlayCornerRadiusDp(dp: Int) {
+        prefs.edit().putInt("overlay_corner_dp_v2", dp.coerceIn(0, 28)).apply()
+        refreshOverlayWidgets()
+    }
 
     fun loadOverlayBottomAnchored(): Boolean = prefs.getBoolean("overlay_bottom_v2", true)
     fun saveOverlayBottomAnchored(bottom: Boolean) = prefs.edit().putBoolean("overlay_bottom_v2", bottom).apply()
 
     fun loadOverlayForceDark(): Boolean = prefs.getBoolean("overlay_force_dark_v2", false)
-    fun saveOverlayForceDark(forceDark: Boolean) = prefs.edit().putBoolean("overlay_force_dark_v2", forceDark).apply()
+    fun saveOverlayForceDark(forceDark: Boolean) {
+        prefs.edit().putBoolean("overlay_force_dark_v2", forceDark).apply()
+        refreshOverlayWidgets()
+    }
 
     fun loadOverlayShowIdleSuggestions(): Boolean = prefs.getBoolean("overlay_idle_suggestions_v1", false)
     fun saveOverlayShowIdleSuggestions(show: Boolean) = prefs.edit().putBoolean("overlay_idle_suggestions_v1", show).apply()
@@ -394,13 +415,22 @@ class PipeRepository(context: Context) {
     }
 
     fun loadSearchBoxPrefix(): String = prefs.getString("search_box_prefix_v1", "> ") ?: "> "
-    fun saveSearchBoxPrefix(prefix: String) = prefs.edit().putString("search_box_prefix_v1", prefix).apply()
+    fun saveSearchBoxPrefix(prefix: String) {
+        prefs.edit().putString("search_box_prefix_v1", prefix).apply()
+        refreshOverlayWidgets()
+    }
 
     fun loadSearchBoxPlaceholder(): String = prefs.getString("search_box_placeholder_v2", "pipe for???") ?: "pipe for???"
-    fun saveSearchBoxPlaceholder(hint: String) = prefs.edit().putString("search_box_placeholder_v2", hint).apply()
+    fun saveSearchBoxPlaceholder(hint: String) {
+        prefs.edit().putString("search_box_placeholder_v2", hint).apply()
+        refreshOverlayWidgets()
+    }
 
     fun loadShowSearchBoxScopeBadge(): Boolean = prefs.getBoolean("search_box_scope_badge_v1", true)
-    fun saveShowSearchBoxScopeBadge(show: Boolean) = prefs.edit().putBoolean("search_box_scope_badge_v1", show).apply()
+    fun saveShowSearchBoxScopeBadge(show: Boolean) {
+        prefs.edit().putBoolean("search_box_scope_badge_v1", show).apply()
+        refreshOverlayWidgets()
+    }
 
     fun loadAutoLaunchExactAlias(): Boolean =
         prefs.getBoolean("auto_launch_exact_alias_v1", false)
@@ -410,7 +440,10 @@ class PipeRepository(context: Context) {
     }
 
     fun loadShowSearchBoxMenuBtn(): Boolean = prefs.getBoolean("search_box_menu_btn_v1", true)
-    fun saveShowSearchBoxMenuBtn(show: Boolean) = prefs.edit().putBoolean("search_box_menu_btn_v1", show).apply()
+    fun saveShowSearchBoxMenuBtn(show: Boolean) {
+        prefs.edit().putBoolean("search_box_menu_btn_v1", show).apply()
+        refreshOverlayWidgets()
+    }
 
     fun loadExternalTextMode(): ExternalTextMode =
         ExternalTextMode.entries.firstOrNull { it.name == prefs.getString("ext_mode", ExternalTextMode.OPEN_OVERLAY.name) }

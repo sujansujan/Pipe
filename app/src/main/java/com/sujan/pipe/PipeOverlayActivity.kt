@@ -121,16 +121,30 @@ import kotlinx.coroutines.withContext
 
 class PipeOverlayActivity : ComponentActivity() {
 
+    companion object {
+        const val EXTRA_OPEN_CALC_MODE = "com.sujan.pipe.EXTRA_OPEN_CALC_MODE"
+        const val EXTRA_OPEN_QUICK_ADD = "com.sujan.pipe.EXTRA_OPEN_QUICK_ADD"
+    }
+
     private val repository by lazy { PipeRepository(applicationContext) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         overridePendingTransition(0, 0)
         super.onCreate(savedInstanceState)
 
+        val initialOpenCalc = intent?.getBooleanExtra(EXTRA_OPEN_CALC_MODE, false) == true
+        val initialOpenQuickAdd = intent?.getBooleanExtra(EXTRA_OPEN_QUICK_ADD, false) == true
+
         val dimAmount = repository.loadOverlayDimAmount()
         window?.let { w ->
             WindowCompat.setDecorFitsSystemWindows(w, false)
             w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            if (initialOpenCalc) {
+                w.setSoftInputMode(
+                    WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN or
+                        WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+                )
+            }
             w.attributes = w.attributes.apply {
                 this.dimAmount = dimAmount
             }
@@ -167,6 +181,8 @@ class PipeOverlayActivity : ComponentActivity() {
             ) {
                 SleekRaycastOverlay(
                     initialQuery = initialText,
+                    initialOpenCalcMode = initialOpenCalc,
+                    initialOpenQuickAdd = initialOpenQuickAdd,
                     engines = engines,
                     bookmarks = bookmarks,
                     prefixes = prefixes,
@@ -381,6 +397,19 @@ class PipeOverlayActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        recreate()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations && !isFinishing) {
+            finish()
+        }
+    }
+
     override fun finish() {
         super.finish()
         overridePendingTransition(0, 0)
@@ -398,6 +427,8 @@ class PipeOverlayActivity : ComponentActivity() {
 @Composable
 private fun SleekRaycastOverlay(
     initialQuery: String,
+    initialOpenCalcMode: Boolean = false,
+    initialOpenQuickAdd: Boolean = false,
     engines: List<SearchEngine>,
     bookmarks: List<PipeBookmark>,
     prefixes: PrefixConfig,
@@ -476,7 +507,18 @@ private fun SleekRaycastOverlay(
     var usageMap by remember { mutableStateOf(initialUsage) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var statusMsg by remember { mutableStateOf<String?>(null) }
-    var inlineQuickAdd by remember { mutableStateOf<PaletteItem.QuickAddAction?>(null) }
+    var inlineQuickAdd by remember {
+        mutableStateOf<PaletteItem.QuickAddAction?>(
+            if (initialOpenQuickAdd) {
+                PaletteItem.QuickAddAction(
+                    kind = QuickAddKind.BOOKMARK,
+                    title = "Quick Add",
+                    subtitle = "",
+                    isReadyToCommit = false,
+                )
+            } else null
+        )
+    }
     var contacts by remember { mutableStateOf(initialCachedContacts) }
     var installedApps by remember { mutableStateOf(initialCachedApps) }
     var appShortcuts by remember { mutableStateOf(initialCachedShortcuts) }
@@ -491,7 +533,7 @@ private fun SleekRaycastOverlay(
     var expandedFolderChildren by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
     var previewImageFile by remember { mutableStateOf<LocalFileItem?>(null) }
     var clipText by remember { mutableStateOf("") }
-    var isCalcMode by remember { mutableStateOf(false) }
+    var isCalcMode by remember { mutableStateOf(initialOpenCalcMode) }
     var calcExpression by remember { mutableStateOf("") }
     var calcTape by remember { mutableStateOf<List<com.sujan.pipe.domain.CalcTapeEntry>>(emptyList()) }
     val focusManager = LocalFocusManager.current
@@ -643,9 +685,14 @@ private fun SleekRaycastOverlay(
 
     LaunchedEffect(Unit) {
         // 1. Trigger keyboard and synchronized 185ms FastOutSlowIn entrance simultaneously on Frame #1
+        //    (unless launched directly into built-in T9 Calculator mode from the widget `[=]` button)
         runCatching {
-            focusRequester.requestFocus()
-            keyboardController?.show()
+            if (initialOpenCalcMode) {
+                keyboardController?.hide()
+            } else {
+                focusRequester.requestFocus()
+                keyboardController?.show()
+            }
         }
         enterAnim.animateTo(
             targetValue = 1f,
