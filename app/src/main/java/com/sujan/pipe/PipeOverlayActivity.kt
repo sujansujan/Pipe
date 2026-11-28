@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
@@ -59,6 +60,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
@@ -489,7 +491,40 @@ private fun SleekRaycastOverlay(
     var expandedFolderChildren by remember { mutableStateOf<List<LocalFileItem>>(emptyList()) }
     var previewImageFile by remember { mutableStateOf<LocalFileItem?>(null) }
     var clipText by remember { mutableStateOf("") }
+    var isCalcMode by remember { mutableStateOf(false) }
+    var calcExpression by remember { mutableStateOf("") }
+    var calcTape by remember { mutableStateOf<List<com.sujan.pipe.domain.CalcTapeEntry>>(emptyList()) }
+    val focusManager = LocalFocusManager.current
     val dictInstalled = initialDictInstalled
+
+    val enterCalcMode: (String) -> Unit = { seedExpr ->
+        inlineQuickAdd = null
+        aliasEditTarget = null
+        errorMsg = null
+        statusMsg = null
+        if (seedExpr.isNotBlank()) {
+            calcExpression = com.sujan.pipe.domain.PipeCalculator.prettifyExpression(seedExpr)
+        }
+        isCalcMode = true
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
+
+    val exitCalcMode: () -> Unit = {
+        isCalcMode = false
+        val t = input.text.trimStart().lowercase()
+        if (t.startsWith("=") || t == "calc" || t.startsWith("calc ") || t == "calculator" || t.startsWith("calculator ")) {
+            input = TextFieldValue("")
+        }
+        runCatching {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
+
+    BackHandler(enabled = isCalcMode) {
+        exitCalcMode()
+    }
 
     // Synchronized 185ms FastOutSlowIn entrance curve matching Android system IME animation
     val enterAnim = remember { Animatable(0f) }
@@ -745,6 +780,9 @@ private fun SleekRaycastOverlay(
     val executeItem: (PaletteItem) -> Unit = { item ->
         usageMap = onRecordUsage(item.usageKey)
         when (item) {
+            is PaletteItem.CalculatorAction -> {
+                enterCalcMode(item.expression)
+            }
             is PaletteItem.DirectUrlAction -> {
                 if (!onDispatchUrl(item.displayHost, item.targetUrl)) errorMsg = "! no browser found"
             }
@@ -926,6 +964,7 @@ private fun SleekRaycastOverlay(
         PromptIntentMode.SYSTEM_SETTINGS_ONLY -> "${prefixes.systemSettingsClean}:sys"
         PromptIntentMode.DIRECT_NUMBER_ONLY -> "wa:num"
         PromptIntentMode.TIMER_ALARM_ONLY -> "clk:time"
+        PromptIntentMode.CALCULATOR_ONLY -> "=:calc"
         else -> parsedCommand.mode.scopeBadge
     }
     val shouldShowList = input.text.isNotBlank() || showIdleSuggestions
@@ -950,7 +989,7 @@ private fun SleekRaycastOverlay(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 420.dp)
+                .heightIn(max = if (isCalcMode) 520.dp else 420.dp)
                 .graphicsLayer {
                     alpha = syncProgress
                     translationY = (1f - syncProgress) * slideDistancePx
@@ -971,6 +1010,36 @@ private fun SleekRaycastOverlay(
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
+            if (isCalcMode) {
+                com.sujan.pipe.ui.PipeCalculatorT9Panel(
+                    expression = calcExpression,
+                    tape = calcTape,
+                    onExpressionChange = {
+                        calcExpression = it
+                        statusMsg = null
+                    },
+                    onCommitResult = { entry ->
+                        calcTape = (listOf(entry) + calcTape.filterNot { it.expression == entry.expression && it.plainValue == entry.plainValue }).take(10)
+                    },
+                    onCopyResult = { plain ->
+                        clipboard.setText(AnnotatedString(plain))
+                        statusMsg = "ok: copied $plain"
+                    },
+                    onExitToQwerty = exitCalcMode,
+                    isOverlayStyle = true,
+                    keySurfaceColor = glassSurface,
+                    keyBorderColor = glassBorder,
+                    cornerRadiusDp = cornerRadiusDp,
+                )
+                if (statusMsg != null) {
+                    AsciiText(
+                        text = statusMsg!!,
+                        style = AsciiType.small,
+                        color = c.good,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            } else {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1035,6 +1104,13 @@ private fun SleekRaycastOverlay(
                         modifier = Modifier.padding(horizontal = 4.dp),
                     )
                 }
+
+                AsciiButton(
+                    label = "=",
+                    primary = isCalcMode,
+                    onClick = { enterCalcMode("") },
+                    spokenLabel = "open t9 calculator",
+                )
 
                 AsciiButton(
                     label = "+",
@@ -1319,6 +1395,7 @@ private fun SleekRaycastOverlay(
                         )
                     }
                 }
+            }
             }
         }
     }
@@ -1755,6 +1832,40 @@ private fun SleekOverlayRow(
                         }
                     }
                 }
+            }
+        }
+
+        is PaletteItem.CalculatorAction -> {
+            val titleText = when {
+                item.isValid -> "= ${item.formattedValue}"
+                item.expression.isBlank() -> "Open T9 Calculator"
+                else -> "! ${item.errorMessage ?: "invalid expression"}"
+            }
+            val subText = if (item.expression.isBlank()) {
+                "tap or press RET to switch keyboard to T9 keypad"
+            } else {
+                "${com.sujan.pipe.domain.PipeCalculator.prettifyExpression(item.expression)} • tap to open T9 pad"
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clip(rowShape)
+                    .background(rowBg, rowShape)
+                    .clickable(interactionSource = src, indication = null, role = Role.Button, onClick = onExecute)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsciiText("$ptr ", style = AsciiType.small, color = if (isTop) c.purple else c.dim)
+                AsciiText("[=] ", style = AsciiType.small, color = c.accent)
+                Column(modifier = Modifier.weight(1f)) {
+                    AsciiText(titleText, style = AsciiType.title, color = if (item.isValid) c.good else c.fg, maxLines = 1)
+                    AsciiText(subText, style = AsciiType.small, color = c.dim, maxLines = 1)
+                }
+                if (item.isValid) {
+                    AsciiButton("cp", { clipboard.setText(AnnotatedString(item.plainValue)) })
+                }
+                AsciiButton("t9", onExecute, primary = true)
             }
         }
 

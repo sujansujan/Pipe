@@ -385,6 +385,7 @@ enum class PromptIntentMode(val scopeBadge: String) {
     SYSTEM_SETTINGS_ONLY("set:sys"),
     DIRECT_NUMBER_ONLY("wa:num"),
     TIMER_ALARM_ONLY("clk:time"),
+    CALCULATOR_ONLY("=:calc"),
     SCOPED_FOLDER("b:folder"),
     ENGINE_ONLY("s:pipe"),
     ADD_COMMAND("+add"),
@@ -564,6 +565,17 @@ sealed interface PaletteItem {
         val subtitle: String,
         override val usageKey: String = if (isAlarm) "alarm:$hour24:$minute" else "timer:$totalSeconds",
         override val rankScore: Int = 97_000,
+        override val usageCount: Int = 0,
+    ) : PaletteItem
+
+    data class CalculatorAction(
+        val expression: String,
+        val plainValue: String,
+        val formattedValue: String,
+        val isValid: Boolean,
+        val errorMessage: String? = null,
+        override val usageKey: String = "calc:t9",
+        override val rankScore: Int = 98_000,
         override val usageCount: Int = 0,
     ) : PaletteItem
 }
@@ -809,6 +821,15 @@ object QueryRouter {
         }
         if (firstLower == "del" || firstLower == "rm" || firstLower == "remove" || (firstLower == "-" && hasSpaceAfterFirst)) {
             return ParsedPromptCommand(PromptIntentMode.RM_COMMAND, remainder)
+        }
+
+        // Separate Built-in T9 Calculator: explicit `=`, `=<expr>`, `calc`, or `calculator` only
+        if (firstLower == "=" || firstLower == "calc" || firstLower == "calculator") {
+            return ParsedPromptCommand(PromptIntentMode.CALCULATOR_ONLY, remainder)
+        }
+        if (firstLower.startsWith("=") && firstLower.length > 1) {
+            val inlineExpr = (firstToken.drop(1) + (if (remainder.isNotEmpty()) " $remainder" else "")).trim()
+            return ParsedPromptCommand(PromptIntentMode.CALCULATOR_ONLY, inlineExpr)
         }
 
         val bPrefix = prefixes.bookmarksClean
@@ -1082,6 +1103,20 @@ object QueryRouter {
             PromptIntentMode.ADD_COMMAND -> buildQuickAddSuggestions(cmd.filterQuery, clipboardText, prefixes)
 
             PromptIntentMode.RM_COMMAND -> buildQuickRemoveSuggestions(cmd.filterQuery, bookmarks, engines, history, prefixes)
+
+            PromptIntentMode.CALCULATOR_ONLY -> {
+                val expr = cmd.filterQuery.trim()
+                val eval = PipeCalculator.evaluate(expr)
+                listOf(
+                    PaletteItem.CalculatorAction(
+                        expression = expr,
+                        plainValue = eval.plainValue,
+                        formattedValue = eval.formattedValue,
+                        isValid = eval.isValid,
+                        errorMessage = eval.errorMessage,
+                    )
+                )
+            }
 
             PromptIntentMode.YOUTUBE_HISTORY_ONLY -> {
                 val q = cmd.filterQuery.trim()

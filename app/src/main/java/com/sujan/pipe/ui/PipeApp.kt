@@ -58,7 +58,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
@@ -75,8 +77,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.platform.LocalContext
 import com.sujan.pipe.data.ExternalTextMode
+import com.sujan.pipe.domain.CalcTapeEntry
 import com.sujan.pipe.domain.DirectNumberPrimaryMode
 import com.sujan.pipe.domain.FuzzyMatcher
+import com.sujan.pipe.domain.PipeCalculator
 import com.sujan.pipe.domain.PromptIntentMode
 import com.sujan.pipe.domain.QueryRouter
 import com.sujan.pipe.domain.QuickAddKind
@@ -747,9 +751,38 @@ private fun PipePromptScreen(
     onLaunchOverlay: () -> Unit,
 ) {
     val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     var inlineQuickAdd by remember { mutableStateOf<com.sujan.pipe.domain.PaletteItem.QuickAddAction?>(null) }
+    var isCalcMode by remember { mutableStateOf(false) }
+    var calcExpression by remember { mutableStateOf("") }
+    var calcTape by remember { mutableStateOf<List<CalcTapeEntry>>(emptyList()) }
     val p = state.prefixConfig
+
+    val enterCalcMode: (String) -> Unit = { seedExpr ->
+        inlineQuickAdd = null
+        if (seedExpr.isNotBlank()) {
+            calcExpression = PipeCalculator.prettifyExpression(seedExpr)
+        }
+        isCalcMode = true
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
+
+    val exitCalcMode: () -> Unit = {
+        isCalcMode = false
+        if (state.parsedCommand.mode == PromptIntentMode.CALCULATOR_ONLY) {
+            onSearchInputChange(TextFieldValue(""))
+        }
+        runCatching {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
+
+    BackHandler(enabled = isCalcMode) {
+        exitCalcMode()
+    }
 
     var lastAutoLaunchedQuery by remember { mutableStateOf("") }
     LaunchedEffect(state.searchInput.text, state.paletteResults, state.autoLaunchExactAlias, state.universalAliases) {
@@ -846,6 +879,9 @@ private fun PipePromptScreen(
             onAppInfoInstalledApp = onAppInfoInstalledApp,
             onUninstallInstalledApp = onUninstallInstalledApp,
             headerRightActions = {
+                AsciiButton("=", {
+                    if (isCalcMode) exitCalcMode() else enterCalcMode("")
+                }, primary = isCalcMode, spokenLabel = "t9 calculator")
                 AsciiButton("+", {
                     if (inlineQuickAdd != null) {
                         inlineQuickAdd = null
@@ -870,6 +906,7 @@ private fun PipePromptScreen(
             onSubmitPrimary = onSubmitPrimaryAction,
             onExecuteItem = { item ->
                 when (item) {
+                    is com.sujan.pipe.domain.PaletteItem.CalculatorAction -> enterCalcMode(item.expression)
                     is com.sujan.pipe.domain.PaletteItem.DirectUrlAction -> onOpenDirectUrl(item.targetUrl)
                     is com.sujan.pipe.domain.PaletteItem.SystemSettingAction -> onOpenSystemSetting(item.shortcut)
                     is com.sujan.pipe.domain.PaletteItem.AppShortcutAction -> onLaunchAppShortcut(item.shortcut)
@@ -985,6 +1022,15 @@ private fun PipePromptScreen(
             onPreviewImage = { onPreviewImageFile(it) },
             onRequestContactsPermission = onRequestContactsPermission,
             onRequestFilesPermission = onRequestFilesPermission,
+            isCalcMode = isCalcMode,
+            calcExpression = calcExpression,
+            calcTape = calcTape,
+            onCalcExpressionChange = { calcExpression = it },
+            onCommitCalcResult = { entry ->
+                calcTape = (listOf(entry) + calcTape.filterNot { it.expression == entry.expression && it.plainValue == entry.plainValue }).take(10)
+            },
+            onEnterCalcMode = enterCalcMode,
+            onExitCalcMode = exitCalcMode,
             modifier = Modifier.weight(1f),
         )
     }
@@ -1086,6 +1132,13 @@ fun AsciiRaycastPaletteWindow(
     onBookmarkYouTubeWatch: ((YouTubeWatchEntry) -> Unit)? = null,
     onSearchYouTubeChannel: ((String) -> Unit)? = null,
     onBookmarkFloccusBookmark: ((FloccusBookmarkItem) -> Unit)? = null,
+    isCalcMode: Boolean = false,
+    calcExpression: String = "",
+    calcTape: List<CalcTapeEntry> = emptyList(),
+    onCalcExpressionChange: (String) -> Unit = {},
+    onCommitCalcResult: (CalcTapeEntry) -> Unit = {},
+    onEnterCalcMode: (String) -> Unit = {},
+    onExitCalcMode: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val c = LocalAscii.current
@@ -1106,7 +1159,9 @@ fun AsciiRaycastPaletteWindow(
         }
     }
 
-    val scopeBadge = when (parsedCommand.mode) {
+    val scopeBadge = if (isCalcMode) {
+        "=:calc"
+    } else when (parsedCommand.mode) {
         PromptIntentMode.SCOPED_FOLDER -> "${prefixes.bookmarksClean}:${parsedCommand.scopedFolderBookmark?.alias ?: "folder"}"
         PromptIntentMode.ENGINE_ONLY -> "${prefixes.pipesClean}:${parsedCommand.matchedEngine?.keyword ?: "pipe"}"
         PromptIntentMode.CONTACTS_ONLY -> "${prefixes.contactsClean}:contacts"
@@ -1122,6 +1177,7 @@ fun AsciiRaycastPaletteWindow(
         PromptIntentMode.SYSTEM_SETTINGS_ONLY -> "${prefixes.systemSettingsClean}:settings"
         PromptIntentMode.DIRECT_NUMBER_ONLY -> "wa:number"
         PromptIntentMode.TIMER_ALARM_ONLY -> "clk:timer"
+        PromptIntentMode.CALCULATOR_ONLY -> "=:calc"
         else -> parsedCommand.mode.scopeBadge
     }
 
@@ -1130,7 +1186,7 @@ fun AsciiRaycastPaletteWindow(
         Triple(prefixes.filesClean, "[f]ile", parsedCommand.mode == PromptIntentMode.FILES_ONLY || parsedCommand.mode == PromptIntentMode.DIRS_ONLY),
         Triple(prefixes.contactsClean, "[c]ontact", parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY),
         Triple(prefixes.systemSettingsClean, "[s]et", parsedCommand.mode == PromptIntentMode.SYSTEM_SETTINGS_ONLY),
-        Triple("wa", "[w]a", parsedCommand.mode == PromptIntentMode.DIRECT_NUMBER_ONLY),
+        Triple("=", "[=]calc", isCalcMode || parsedCommand.mode == PromptIntentMode.CALCULATOR_ONLY),
     )
 
     Column(
@@ -1160,6 +1216,39 @@ fun AsciiRaycastPaletteWindow(
         }
 
         AsciiRule(glyph = "-", color = c.border)
+
+        var calcStatusMsg by remember { mutableStateOf<String?>(null) }
+        if (isCalcMode) {
+            Spacer(Modifier.weight(1f))
+            if (calcStatusMsg != null) {
+                AsciiText(
+                    text = "  $calcStatusMsg",
+                    style = AsciiType.small,
+                    color = c.good,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
+            PipeCalculatorT9Panel(
+                expression = calcExpression,
+                tape = calcTape,
+                onExpressionChange = {
+                    onCalcExpressionChange(it)
+                    calcStatusMsg = null
+                },
+                onCommitResult = onCommitCalcResult,
+                onCopyResult = { plain ->
+                    clipboard.setText(AnnotatedString(plain))
+                    calcStatusMsg = "ok: copied $plain"
+                },
+                onExitToQwerty = {
+                    calcStatusMsg = null
+                    onExitCalcMode()
+                },
+                isOverlayStyle = false,
+            )
+        } else {
 
         if (!hasContactsPermission && parsedCommand.mode == PromptIntentMode.CONTACTS_ONLY && onRequestContactsPermission != null) {
             Row(
@@ -1339,7 +1428,9 @@ fun AsciiRaycastPaletteWindow(
                         label = chipLabel,
                         active = isActive,
                         onClick = {
-                            if (isActive) {
+                            if (alias == "=") {
+                                onEnterCalcMode("")
+                            } else if (isActive) {
                                 onSearchInputChange(TextFieldValue(""))
                             } else {
                                 onAliasPillClick(alias)
@@ -1436,6 +1527,7 @@ fun AsciiRaycastPaletteWindow(
                 primary = true,
                 spokenLabel = "run top match",
             )
+        }
         }
     }
 
@@ -2522,6 +2614,22 @@ fun AsciiRaycastRow(
             hasActionSheet = false
             folderPeekPath = null
         }
+        is com.sujan.pipe.domain.PaletteItem.CalculatorAction -> {
+            tagText = "="
+            tagColor = c.accent
+            titleText = when {
+                item.isValid -> "= ${item.formattedValue}"
+                item.expression.isBlank() -> "Open T9 Calculator"
+                else -> "! ${item.errorMessage ?: "invalid expression"}"
+            }
+            subtitleText = if (item.expression.isBlank()) {
+                "tap or press RET to switch keyboard to T9 keypad"
+            } else {
+                "${PipeCalculator.prettifyExpression(item.expression)} • tap to open T9 keypad"
+            }
+            hasActionSheet = false
+            folderPeekPath = null
+        }
         is com.sujan.pipe.domain.PaletteItem.DictionaryAction -> {
             tagText = prefixes.dictionaryClean
             tagColor = c.accent2
@@ -2897,6 +3005,12 @@ fun AsciiRaycastRow(
             } else if (item is com.sujan.pipe.domain.PaletteItem.FloccusBookmarkAction && item.isSetupPrompt) {
                 AsciiButton(
                     label = "setup",
+                    onClick = onExecute,
+                    primary = true,
+                )
+            } else if (item is com.sujan.pipe.domain.PaletteItem.CalculatorAction) {
+                AsciiButton(
+                    label = "t9",
                     onClick = onExecute,
                     primary = true,
                 )
@@ -5447,6 +5561,7 @@ private fun PipeSettingsScreen(
                                 AsciiText(leader("package", "com.sujan.pipe", cols), style = AsciiType.small, color = c.dim, softWrap = false)
                                 AsciiText(leader("yt watch history", "${state.prefixConfig.youtubeHistoryClean} <query> (100% offline)", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("floccus bookmarks", "${state.prefixConfig.floccusClean} <query> (live .xbel)", cols), style = AsciiType.small, color = c.accent3, softWrap = false)
+                                AsciiText(leader("t9 calculator", "= / calc (built-in T9 pad)", cols), style = AsciiType.small, color = c.accent, softWrap = false)
                                 AsciiText(leader("system settings", "${state.prefixConfig.systemSettingsClean} <dev|spot|dns|notif>", cols), style = AsciiType.small, color = c.accent2, softWrap = false)
                                 AsciiText(leader("whatsapp / biz", "wa <num> / wab <num>", cols), style = AsciiType.small, color = c.good, softWrap = false)
                                 AsciiText(leader("timer & alarm", "timer 12m / alarm 06:30", cols), style = AsciiType.small, color = c.warn, softWrap = false)
@@ -5579,6 +5694,7 @@ fun PipePromptStep1Preview() {
             launchError = null,
             focusRequester = remember { FocusRequester() },
             headerRightActions = {
+                AsciiButton("=", {})
                 AsciiButton("+", {})
                 AsciiButton("lib", {})
                 AsciiButton("set", {})

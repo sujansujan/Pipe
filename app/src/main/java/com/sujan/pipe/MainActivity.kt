@@ -240,6 +240,12 @@ class MainActivity : ComponentActivity() {
                             viewModel.recordItemUsage(top.usageKey)
                             handleTimerAlarmAction(top, skipUi = true)
                         }
+                        is com.sujan.pipe.domain.PaletteItem.CalculatorAction -> {
+                            if (top.isValid) {
+                                clipboard.setText(AnnotatedString(top.plainValue))
+                                viewModel.setJsonStatusMessage("ok: copied ${top.formattedValue}")
+                            }
+                        }
                         is com.sujan.pipe.domain.PaletteItem.DictionaryAction -> {
                             if (top.isSetupPrompt) {
                                 handleSetupDictionaryClick { dictImportLauncher.launch(arrayOf("*/*")) }
